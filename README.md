@@ -8,6 +8,7 @@ A macOS menu bar app for **Claude Code**. It shows what Claude is doing and lets
 
 - **Sessions.** An animated icon while Claude works, a yellow dot when it waits for your permission, a turn timer and context-window usage for each session. Click a session to focus the terminal or editor it runs in.
 - **MCP.** Every server and every tool has its own switch. A muted tool disappears from Claude's context at the next session start.
+- **Codex too.** If you also run **OpenAI Codex**, its sessions appear in the same list as Claude's — same states, same turn timer, same context figure, same "needs you" dot — and its MCP servers in the same tab, with switches. Codex asks you once to trust the hooks; until you do, its sessions stay invisible. Everything is read from what Codex already writes on this machine.
 - **Limits.** 5-hour and 7-day usage as bars in the menu bar; the panel lists them with reset times, plus Fable's weekly window on plans that have one. If you also use **OpenAI Codex**, its own windows appear beside Claude's — read from the session file Codex writes itself, without a token or a request.
 
 ## Install
@@ -98,6 +99,7 @@ Server and tool switches apply to new sessions: Claude Code assembles the tool l
 - **Thinking words** — one of Claude Code's own spinner verbs ("Manifesting…") in place of "Thinking…".
 - **Limits via Anthropic API** — the usage poll behind the 5h/7d bars; off means the request never happens (see [PRIVACY.md](PRIVACY.md)).
 - **Codex limits** — Codex's own 5-hour and weekly windows in the strip, read from the newest file in `~/.codex/sessions`. Nothing is sent anywhere, and a figure older than the window it measures is dropped rather than shown, so the row disappears until Codex runs again.
+- **Codex MCP servers** — Codex's own servers in the MCP tab, in their own groups, with the same switches. Asking Codex for the tool names starts each configured server the way Codex itself does, so with a slow server this is the switch to turn off.
 - **Anonymous usage ping** — once a day: app version, macOS version, chip, install channel, and no identifier, so the project can count copies in use. Off means the request never happens; `CONTROL_BAR_NO_ANALYTICS=1` in the environment does the same. Exact bytes in [PRIVACY.md](PRIVACY.md).
 
 **Appearance**

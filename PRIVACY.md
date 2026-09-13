@@ -116,6 +116,18 @@ Mac, and all of it is listed here rather than left to be discovered.
   conversation itself is not parsed, nothing is copied, and no request is made — the figures are
   already on disk. Switch the option off and the directory is not opened at all. Your
   `~/.codex/auth.json` is **not** read: this app never asks OpenAI anything on your behalf.
+- **Codex's hook payloads and the head of its session file**, once you have trusted the hooks
+  Codex finds in `~/.codex/hooks.json`. A Codex hook hands over the same shape Claude Code's
+  does — session id, working directory, the tool about to run, the path of its session file —
+  and the file's FIRST line is read once per session for two facts: which surface it runs on and
+  whether the thread is yours or one of its workers. The rest of the file is read only from its
+  end, and only for numbers (the token counts and the limit snapshot). The conversation is never
+  parsed, nothing is copied out, and nothing is sent anywhere.
+- **Codex's MCP configuration**, if that option is on (Settings → General → "Codex MCP
+  servers"): the server list comes from `codex mcp list --json` and `codex mcp get --json`, and
+  the tool names from Codex's own app-server — which starts each configured server to ask it, the
+  way Codex does itself. Nothing leaves the machine, and `~/.codex/config.toml` is never parsed
+  by this app.
 - **The current directory and git branch** of each session, to label its row.
 
 ## Where it writes
@@ -124,9 +136,11 @@ Everything of its own lives under `~/.claude/control-bar/`. The complete list:
 
 - **Per session:** one small JSON file in `state.d/` (state, working directory, transcript path,
   pid, context figures), and the context percentage the session's status line reported in
-  `context.d/`. Both are deleted with the session.
-- **The MCP picture:** `mcp.json`, the per-server descriptions cache `descriptions.json`, and
-  the model-to-context-window table `model-windows.json`.
+  `context.d/`. Both are deleted with the session. A Codex session's file is the same shape, in
+  `codex/state.d/`, plus which surface it runs on.
+- **The MCP picture:** `mcp.json`, `codex/mcp.json` for Codex's servers, the per-server
+  descriptions cache `descriptions.json`, and the model-to-context-window table
+  `model-windows.json`.
 - **The limits:** `limits.json`, and `codex/limits.json` for the Codex windows — percentages,
   window lengths, reset stamps and the plan name, and nothing else out of the Codex session.
 - **Install bookkeeping:** `owner.json` (which channel owns the hooks), `paths.json` (where the

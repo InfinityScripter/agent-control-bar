@@ -35,6 +35,20 @@ a clock or a percentage) is usually enough. Cmd-drag rearranges menu bar items.
 - Confirm it's running with `pgrep -x ClaudeControlBar`: a number means it's running (it may just be hidden), no output means it exited because no Claude session is active.
 - If first-launch setup never took, run the installer manually: `node "/Applications/Claude Control Bar.app/Contents/Resources/install.js"`. Installed as a plugin, the app lives in `~/Applications` instead.
 
+**Codex sessions don't show up?** Codex reviews hooks it has not seen before and asks you to
+trust them, once, on its own screen — and it runs none of them until you do. So: start `codex`
+in a terminal, confirm the hooks named `.claude/control-bar/update.js` and `lifecycle.js`, and
+the sessions appear from that moment. Two things follow from it:
+
+- The screen comes back after an app update that changes a hook's command. Codex identifies a
+  hook by a hash of the command, so a new command is a new hook to it. Confirming again is all
+  it takes.
+- If you declined, nothing is broken and nothing retries silently — the hooks sit in
+  `~/.codex/hooks.json` unused. `codex mcp list` still works, so Codex's MCP servers show up in
+  the panel either way; only its sessions depend on the hooks.
+
+Check what the app sees with `/usr/bin/python3 "/Applications/Claude Control Bar.app/Contents/Resources/scripts/mcpbar.py" doctor` — it prints the newest Codex session file it found and how many Codex MCP servers it knows about.
+
 **Seeing 2 icons?** The desktop app shows its own menu bar icon (the quick-screenshot one). To avoid two icons sitting side by side, open Claude's **Settings → General** and turn that built-in menu bar item off.
 
 **MCP checks fail with `EPERM`, or you declined "access files on a network volume"?** Both are

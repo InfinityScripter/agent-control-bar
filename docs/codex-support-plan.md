@@ -15,6 +15,49 @@ Settings → Appearance → *Limits strip* стоит выбор **Two rows** (�
 ни окно Fable, ни второе окно Codex. Почему именно так, и что взято у конкурентов, —
 `docs/codex-landscape.md`, раздел «Что взято в код».
 
+**Фаза 0 пройдена на живой машине (2026-09-13, codex-cli 0.154.0).** Что подтвердилось и что
+в плане ниже оказалось неверным:
+
+- **Подтверждено.** Хуки Codex срабатывают и отдают `session_id`, `cwd`, `transcript_path`,
+  `model`, `permission_mode` (плюс `source` у `SessionStart`, `turn_id` и `prompt` у
+  `UserPromptSubmit`, `reason` у `SessionEnd`). `process.ppid` в хуке — это **сам процесс
+  `codex`** (`ps -o comm= -p $PPID` → `codex`), так что риск «родителем остаётся login shell»
+  снят, и живость сессии считается так же, как у Claude. `codex mcp list --json` перечисляет
+  и **выключенные** серверы (в отличие от `claude mcp list`), поэтому досинтезировать их из
+  прошлого состояния не нужно; `codex mcp get --json` отдаёт `enabled_tools`/`disabled_tools`.
+  `mcpServerStatus/list` у app-server отдаёт полные схемы инструментов и `pluginId`.
+- **Неверно в §0.3b:** у `config/batchWrite` параметр называется `edits` (не `items`), а внутри
+  — `keyPath`, `value` и **обязательный** `mergeStrategy`, всё в camelCase. Запрос со
+  snake_case отвергается с `missing field 'mergeStrategy'`. Проверено записью в копию конфига:
+  комментарии и чужие таблицы остаются на месте.
+- **Неверно в §0.3a:** в таблице `threads` файла `state_5.sqlite` **нет** колонки `originator`.
+  Есть `source`, `thread_source` (`user` / `subagent` / `guardian_review`), `cli_version`,
+  `name`, `title`. Surface берётся из `originator` в **первой строке rollout**, а не из индекса;
+  живые значения — `codex_cli_rs`, `codex_vscode`, `codex_work_desktop` / `Codex Desktop`,
+  `codex_exec`.
+- **Неверно в §0.2 (и это дало бы врущую цифру):** контекст сессии считается по
+  `last_token_usage`, а **не** по `total_token_usage`. Второе — накопительный счёт за всё, что
+  было оплачено: на живой 110-ходовой сессии он дошёл до 25 374 147 при окне 828 400, то есть
+  любая сессия после нескольких ходов показывала бы 100 %. `last_token_usage.total_tokens` на
+  той же сессии вырос с 60 тыс. до 323 тыс. и окна ни разу не превысил.
+- **Реальные имена инструментов** в rollout'ах этой машины: `exec`, `js`, `spawn_agent`,
+  `wait_agent`, `list_agents`, `followup_task`, `send_message`, `wait` — список `TOOL_LABELS`
+  собран из них плюс реестра инструментов `openai/codex`.
+
+**Отклонения от плана, сделанные сознательно:**
+
+- **Второго писателя `codex/limits.json` не появилось.** План (§2.1, §2.2) предлагал писать его
+  ещё и из хука; но лимиты и так лежат в свежем rollout, который `codex-limits` читает раз в
+  пять минут, — второй писатель добавил бы согласование форматов и ни одного нового факта.
+  Правило `.claude/rules/architecture.md` про единственного писателя осталось верным.
+- **Отдельных `hooks/codex-install.js` и `codex/owner.json` тоже нет.** Установка живёт ветвью в
+  `install.js` (как и предлагает §2.2 в качестве варианта), а аренда хуков одна на оба агента:
+  `~/.codex/hooks.json` — единственный канал Codex, поэтому он ставится в обоих каналах, и
+  предикат владения существует в одной копии, а не в четырёх.
+- **События не переименовываются в коде.** Наш `hooks.json` для Codex сразу зовёт
+  `update.js pre --provider codex`, поэтому карта «событие Codex → внутреннее слово» не нужна:
+  `Interrupt` просто указывает на то же слово `stop`.
+
 **Что уже в ветке** (шаг 5, частично; остальное по плану ниже):
 
 - `scripts/mcpbar.py codex-limits` — лимиты Codex из свежего `rollout-*.jsonl` в
@@ -24,8 +67,17 @@ Settings → Appearance → *Limits strip* стоит выбор **Two rows** (�
 - Swift: `LimitsSet`/`NamedWindow` — провайдеро-независимые окна, полоска на два провайдера в
   двух раскладках, правило «снимок старше своего окна не показывается», фолбэк значка на Codex,
   когда у Claude цифр нет вовсе.
-- Не сделано и остаётся по плану: хуки и сессии Codex (шаги 1–3), опрос эндпоинта (шаг 5
-  целиком), уведомление о сбросе (шаг 6), MCP Codex (6а–6б), настройка «лимиты в значке».
+- **Сделано 2026-09-13 (шаги 1–3 и 6а–6б).** Сессии Codex: `--provider codex` у обоих хуков,
+  установка хуков в `~/.codex/hooks.json` мержем, `codex/state.d/`, поля `provider`/`surface` в
+  `Session`, ключ `"<provider>:<id>"` в карте сессий, жизненный цикл по двум процессам, глиф
+  провайдера в строке. MCP Codex: `mcpbar.py codex-mcp refresh | toggle-server | toggle-tool`,
+  `codex/mcp.json` в форме `mcp.json`, второй `MCPModel`, группы *Codex · config.toml* и
+  *Codex · plugins* во вкладке MCP, маршрутизация переключателей по провайдеру, тумблер
+  *Codex MCP servers*.
+- Не сделано и остаётся по плану: опрос эндпоинта `wham/usage` (шаг 5 целиком — нужен, только
+  когда сессий Codex не было совсем), уведомление о сбросе лимита (шаг 6), настройка «лимиты в
+  значке» (сейчас значок падает на Codex сам, когда у Claude цифр нет), деградированный режим
+  `notify` для старых сборок Codex.
 
 Факты про Codex ниже сверены с исходниками `openai/codex` (коммит `9469737`, 2026-09-10,
 crates `codex-rs/hooks`, `codex-rs/rollout`, `codex-rs/protocol`, `codex-rs/backend-client`,
