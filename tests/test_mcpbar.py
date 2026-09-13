@@ -1918,11 +1918,43 @@ class CodexLimits(unittest.TestCase):
             self.token_count({"used_percent": 20, "window_minutes": 300},
                              stamp="2026-09-11T11:00:00Z"),
         ])
-        snapshot, ts = mcpbar.codex_snapshot(path)
+        snapshot, ts, _model = mcpbar.codex_snapshot(path)
         self.assertEqual(snapshot["primary"]["used_percent"], 20)
         # Момент записи, а не время файла: панель показывает возраст цифр, и возраст
         # недельного снимка должен читаться неделей, а не «только что».
         self.assertEqual(ts, 1_789_124_400)   # 2026-09-11T11:00:00Z
+
+    def test_резервная_модель_помечает_запись(self):
+        """Кончился обычный лимит — Codex уводит сессию на резервную модель, и снимок в файле
+        начинает мерить ДРУГОЙ пул. limit_id у обоих пулов одинаковый ("codex"), так что
+        отличает их только модель хода: без пометки панель показала бы резервные проценты
+        как обычные, и 100% выжранного пятичасового окна остались бы невидимыми."""
+        record = mcpbar.codex_limits_record(
+            {"primary": {"used_percent": 13, "window_minutes": 10080}},
+            ts=1, model="gpt-reserve")
+        self.assertTrue(record["reserve"])
+
+    def test_обычная_модель_ничего_не_помечает(self):
+        record = mcpbar.codex_limits_record(
+            {"primary": {"used_percent": 13, "window_minutes": 300}}, ts=1, model="gpt-5.6-terra")
+        self.assertNotIn("reserve", record)
+
+    def test_модель_снимка_берётся_из_хода_а_не_из_всего_файла(self):
+        """Сессия начинается на обычной модели и переезжает на резервную, когда лимит кончился.
+        Мерить надо модель ПОСЛЕДНЕГО хода: первая строка файла сказала бы, что пул обычный,
+        когда он уже резервный."""
+        path = self.rollout("rollout-2026-09-11T10-00-00-mix.jsonl", [
+            {"timestamp": "2026-09-11T10:00:00Z", "type": "turn_context",
+             "payload": {"turn_id": "1", "model": "gpt-5.6-terra"}},
+            self.token_count({"used_percent": 10, "window_minutes": 300}),
+            {"timestamp": "2026-09-11T11:00:00Z", "type": "turn_context",
+             "payload": {"turn_id": "2", "model": "gpt-reserve"}},
+            self.token_count({"used_percent": 13, "window_minutes": 10080},
+                             stamp="2026-09-11T11:00:00Z"),
+        ])
+        snapshot, ts, model = mcpbar.codex_snapshot(path)
+        self.assertEqual(snapshot["primary"]["used_percent"], 13)
+        self.assertEqual(model, "gpt-reserve")
 
     def test_свежий_файл_побеждает_а_архив_пропускается(self):
         old = self.rollout("rollout-2026-09-10T10-00-00-old.jsonl",
@@ -1964,6 +1996,119 @@ class CodexLimits(unittest.TestCase):
         seam_dir = os.path.join(repo, "build", "seam")
         os.makedirs(seam_dir, exist_ok=True)
         shutil.copyfile(mcpbar.CODEX_LIMITS, os.path.join(seam_dir, "codex-limits.json"))
+
+    def test_резерв_доезжает_до_файла(self):
+        """Сквозь весь путь: ход на резервной модели → пометка в codex/limits.json. Swift-сторона
+        шва читает ровно этот файл и по пометке подписывает окно резервным."""
+        self.rollout("rollout-2026-09-11T10-00-00-res.jsonl", [
+            {"timestamp": "2026-09-11T10:00:00Z", "type": "turn_context",
+             "payload": {"turn_id": "1", "model": "gpt-reserve"}},
+            self.token_count({"used_percent": 13, "window_minutes": 10080,
+                              "resets_at": 1_789_700_000}, plan="plus"),
+        ])
+        mcpbar.fetch_codex_limits()
+        with open(mcpbar.CODEX_LIMITS) as fh:
+            written = json.load(fh)
+        self.assertTrue(written["reserve"])
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        seam_dir = os.path.join(repo, "build", "seam")
+        os.makedirs(seam_dir, exist_ok=True)
+        shutil.copyfile(mcpbar.CODEX_LIMITS,
+                        os.path.join(seam_dir, "codex-limits-reserve.json"))
+
+
+class CodexHooks(unittest.TestCase):
+    """Codex запускает только те хуки, которым человек дал доверие. Наши он не запускает,
+    пока их не одобрили, — и тогда ни один файл сессии Codex не пишется, а вкладка Sessions
+    молча пуста. Молчание неотличимо от «Codex просто не запущен», поэтому статус доверия
+    спрашивается у самого Codex и доезжает до панели отдельным файлом."""
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.saved = {k: getattr(mcpbar, k)
+                      for k in ("CODEX", "CODEX_ROOT", "CODEX_HOOKS", "ROOT",
+                                "codex_hooks_list")}
+        mcpbar.CODEX = os.path.join(self._dir.name, ".codex")
+        self.root = os.path.join(self._dir.name, "control-bar")
+        mcpbar.ROOT = self.root
+        mcpbar.CODEX_ROOT = os.path.join(self.root, "codex")
+        mcpbar.CODEX_HOOKS = os.path.join(self.root, "codex", "hooks.json")
+
+    def tearDown(self):
+        for key, value in self.saved.items():
+            setattr(mcpbar, key, value)
+        self._dir.cleanup()
+
+    def groups(self, *hooks):
+        """Форма ответа `hooks/list` — проверена живьём на codex-cli 0.154.0."""
+        return [{"cwd": "/x", "hooks": list(hooks)}]
+
+    def ours(self, trust, event="preToolUse"):
+        command = ('PATH="/opt/homebrew/bin" node ' + os.path.join(self.root, "update.js")
+                   + " pre --provider codex")
+        return {"eventName": event, "command": command, "enabled": True, "trustStatus": trust}
+
+    def test_считаются_только_свои_неодобренные(self):
+        """Чужой неодобренный хук — не наше дело: человеку нельзя показывать подсказку про
+        наши хуки из-за чужого, который он сознательно оставил без доверия."""
+        alien = {"eventName": "preToolUse", "command": "/usr/local/bin/somebody-else",
+                 "enabled": True, "trustStatus": "untrusted"}
+        count = mcpbar.codex_untrusted_ours(
+            self.groups(self.ours("untrusted"), self.ours("trusted", "stop"), alien))
+        self.assertEqual(count, 1)
+
+    def test_дом_с_апострофом_и_соседний_бэкап(self):
+        """Обе формы записи пути, как их пишет hooks/install.js. В доме с апострофом голого
+        пути в команде нет вовсе — только экранированный, и наивный поиск подстроки дал бы
+        ноль, то есть подсказку не увидел бы ровно тот, у кого путь непростой. А справа путь
+        якорится: «update.js» — начало соседского «update.js.bak», и он не наш."""
+        script = os.path.join(self.root, "update.js")
+        quoted = "node '" + script.replace("'", "'\\''") + "' pre --provider codex"
+        backup = {"eventName": "preToolUse", "command": f"node {script}.bak pre",
+                  "enabled": True, "trustStatus": "untrusted"}
+        mine = {"eventName": "preToolUse", "command": quoted,
+                "enabled": True, "trustStatus": "untrusted"}
+        self.assertEqual(mcpbar.codex_untrusted_ours(self.groups(mine, backup)), 1)
+
+    def test_выключенный_хук_не_считается(self):
+        """Выключенный не запустится и с доверием — подсказка про него врала бы."""
+        off = dict(self.ours("untrusted"), enabled=False)
+        self.assertEqual(mcpbar.codex_untrusted_ours(self.groups(off)), 0)
+
+    def test_неожиданная_форма_это_ноль_а_не_падение(self):
+        self.assertEqual(mcpbar.codex_untrusted_ours(None), 0)
+        self.assertEqual(mcpbar.codex_untrusted_ours([{"hooks": "нет"}]), 0)
+        self.assertEqual(mcpbar.codex_untrusted_ours([{"hooks": [{"command": None}]}]), 0)
+
+    def test_файл_пишется_только_владельцу(self):
+        """В нём ничего секретного, но каталог общий для staff, и режим здесь тот же, что
+        у соседних файлов состояния — одно правило на весь каталог."""
+        os.makedirs(mcpbar.CODEX, exist_ok=True)
+        mcpbar.codex_hooks_list = lambda: (self.groups(self.ours("untrusted")), None)
+        mcpbar.fetch_codex_hooks()
+        with open(mcpbar.CODEX_HOOKS) as fh:
+            written = json.load(fh)
+        self.assertEqual(written["untrusted"], 1)
+        self.assertEqual(stat.S_IMODE(os.stat(mcpbar.CODEX_HOOKS).st_mode), 0o600)
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        seam_dir = os.path.join(repo, "build", "seam")
+        os.makedirs(seam_dir, exist_ok=True)
+        shutil.copyfile(mcpbar.CODEX_HOOKS, os.path.join(seam_dir, "codex-hooks.json"))
+
+    def test_без_codex_ничего_не_пишется(self):
+        self.assertIn("~/.codex", mcpbar.fetch_codex_hooks())
+        self.assertFalse(os.path.exists(mcpbar.CODEX_HOOKS))
+
+    def test_молчание_app_server_не_гасит_прошлый_ответ(self):
+        """Отказ app-server — это «не знаю», а не «всё одобрено»: перезаписать ноль поверх
+        честной восьмёрки значит убрать подсказку ровно тогда, когда она нужна."""
+        os.makedirs(mcpbar.CODEX, exist_ok=True)
+        mcpbar.codex_hooks_list = lambda: (self.groups(self.ours("untrusted")), None)
+        mcpbar.fetch_codex_hooks()
+        mcpbar.codex_hooks_list = lambda: ([], "app-server timed out")
+        mcpbar.fetch_codex_hooks()
+        with open(mcpbar.CODEX_HOOKS) as fh:
+            self.assertEqual(json.load(fh)["untrusted"], 1)
 
 
 class CodexMCP(unittest.TestCase):

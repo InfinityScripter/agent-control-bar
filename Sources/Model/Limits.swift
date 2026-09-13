@@ -76,7 +76,12 @@ struct NamedWindow: Equatable {
     /// The two characters the menu bar icon has room for beside a bar, or nil when the window's
     /// length is unknown. The icon labels every bar it draws, and there is no honest short label
     /// for a window whose duration the writer never reported — so that bar is not drawn at all.
-    var shortTitle: String? {
+    var shortTitle: String? { NamedWindow.short(minutes: minutes) }
+
+    /// The same label as a free function, because a window whose title is the POOL's name — the
+    /// reserve one — has to carry its length in the badge, and a badge is a stored property that
+    /// cannot ask a computed one during init.
+    static func short(minutes: Int?) -> String? {
         guard let minutes, minutes > 0 else { return nil }
         if minutes < 60 { return "\(minutes)m" }
         if minutes % 1440 == 0 { return "\(minutes / 1440)d" }
@@ -164,14 +169,21 @@ struct LimitsSet: Equatable {
 extension NamedWindow {
     /// One entry of the `windows` array in codex/limits.json, as scripts/mcpbar.py writes it from
     /// the rollout snapshot: a percentage, the window's length in minutes, and the reset stamp.
-    init?(codex object: [String: Any]) {
+    ///
+    /// `reserve` is the whole record's flag, not the window's: once Codex has moved the session
+    /// onto its reserve model, every window in that snapshot measures the reserve pool. Naming it
+    /// "7 days" like any other weekly window would be the strip's worst kind of lie — the figure
+    /// is real, but it is about a pool the reader is not thinking about, while the ordinary window
+    /// it replaced is full and absent. So the pool takes the name and the length moves to the
+    /// badge, exactly as Fable's weekly slice is already drawn.
+    init?(codex object: [String: Any], reserve: Bool) {
         guard let window = LimitWindow(json: object) else { return nil }
         let kind = object["kind"] as? String ?? ""
         let minutes = (object["window_minutes"] as? NSNumber)?.intValue
         self.key = kind.isEmpty ? "window" : kind
         self.minutes = minutes.flatMap { $0 > 0 ? $0 : nil }
-        self.title = LimitsSet.title(minutes: self.minutes, kind: kind)
-        self.badge = nil
+        self.title = reserve ? "Reserve" : LimitsSet.title(minutes: self.minutes, kind: kind)
+        self.badge = reserve ? NamedWindow.short(minutes: self.minutes) : nil
         self.window = window
     }
 }
@@ -181,7 +193,8 @@ extension LimitsSet {
     /// reports is not fixed, and a file of named keys would have had to invent a name for each.
     init?(codex root: [String: Any]) {
         guard let raw = root["windows"] as? [[String: Any]] else { return nil }
-        let windows = raw.compactMap { NamedWindow(codex: $0) }
+        let reserve = root["reserve"] as? Bool ?? false
+        let windows = raw.compactMap { NamedWindow(codex: $0, reserve: reserve) }
         guard !windows.isEmpty else { return nil }
         self.provider = "codex"
         self.windows = windows

@@ -98,7 +98,7 @@ Server and tool switches apply to new sessions: Claude Code assembles the tool l
 - **Timer in menu bar** — the running turn's elapsed time next to the icon. The session rows always show theirs.
 - **Thinking words** — one of Claude Code's own spinner verbs ("Manifesting…") in place of "Thinking…".
 - **Limits via Anthropic API** — the usage poll behind the 5h/7d bars; off means the request never happens (see [PRIVACY.md](PRIVACY.md)).
-- **Codex limits** — Codex's own 5-hour and weekly windows in the strip, read from the newest file in `~/.codex/sessions`. Nothing is sent anywhere, and a figure older than the window it measures is dropped rather than shown, so the row disappears until Codex runs again.
+- **Codex limits** — Codex's own 5-hour and weekly windows in the strip, read from the newest file in `~/.codex/sessions`. Nothing is sent anywhere, and a figure older than the window it measures is dropped rather than shown, so the row disappears until Codex runs again. When Codex has moved you onto its **reserve** model — what it does once the ordinary limit runs out — the window says `RESERVE` rather than its length, because from then on the figure measures the reserve pool and not the limit you were watching.
 - **Codex MCP servers** — Codex's own servers in the MCP tab, in their own groups, with the same switches. Asking Codex for the tool names starts each configured server the way Codex itself does, so with a slow server this is the switch to turn off.
 - **Anonymous usage ping** — once a day: app version, macOS version, chip, install channel, and no identifier, so the project can count copies in use. Off means the request never happens; `CONTROL_BAR_NO_ANALYTICS=1` in the environment does the same. Exact bytes in [PRIVACY.md](PRIVACY.md).
 

@@ -220,6 +220,11 @@ struct PanelSnapshot: Equatable {
     /// True when there is no live session but the desktop app is up — the panel offers a way back
     /// in rather than showing an empty tab.
     var offerOpenClaude = false
+    /// True when Codex is skipping this app's hooks for want of trust AND no Codex session is
+    /// showing. Both halves matter: the missing rows are the symptom a reader is looking at, and
+    /// without the second half the line would appear beside Codex rows that are plainly there —
+    /// which happens while one hook of the set is still waiting to be approved.
+    var codexHooksBlocked = false
     /// One entry per provider that has figures. A provider with none is absent rather than
     /// drawn empty: an empty bar reads as "you have not used it", which is not what "no data"
     /// means.
@@ -384,6 +389,12 @@ extension PanelSnapshot {
         contentCap = c.panelContentCap
         sessions = c.panelSessions(now: now)
         offerOpenClaude = sessions.isEmpty && c.desktopRunning
+        // Asked of every session this app knows about, not of the rows above: a Codex session that
+        // has simply been resting longer than the hide-idle age is missing from the list too, and
+        // saying "hidden — approve its hooks" about THAT one names the wrong cause entirely. Once
+        // Codex writes down a session at all, its hooks are running, whatever else is unapproved.
+        codexHooksBlocked = c.codexHooksUntrusted > 0
+            && !c.sessions.values.contains { $0.provider == "codex" }
         (limitGroups, limitsNote) = c.panelLimitGroups(now: now)
         limitsLayout = c.limitsLayout
         limitsProvider = c.limitsProvider

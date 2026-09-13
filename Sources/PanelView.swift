@@ -249,19 +249,8 @@ struct PanelView: View {
 
     private var notificationsWarning: some View {
         Button { store.openNotificationSettings() } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "bell.slash").font(.system(size: 10))
-                Text("Notifications are off — open System Settings")
-                    .font(.system(size: 11))
-                    .lineLimit(1)
-            }
-            .foregroundStyle(Color(nsColor: .systemOrange))
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color(nsColor: .systemOrange).opacity(0.12)))
-            .contentShape(Rectangle())
+            PanelNotice(glyph: "bell.slash", text: "Notifications are off — open System Settings")
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .padding(.top, 8)

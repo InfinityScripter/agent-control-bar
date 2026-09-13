@@ -1264,6 +1264,26 @@ check(codexSet?.live(at: 1_789_100_000).map { $0.key } == ["secondary"],
 check(codexSet?.live(at: 1_790_000_000).isEmpty == true,
       "and a snapshot older than every window it carries shows nothing at all")
 
+// The reserve pool: when the ordinary limit runs out, Codex moves the session onto its reserve
+// model, and from then on the snapshot in the rollout measures a DIFFERENT pool. Unlabelled, its
+// 13% reads as the ordinary weekly figure — while the five-hour window it replaced sits at 100%
+// and is nowhere on screen. The badge is what stops the strip telling that lie.
+let reserveSet = LimitsSet(codex: [
+    "ts": 1_789_000_000.0, "source": "rollout", "plan": "plus", "reserve": true,
+    "windows": [["kind": "primary", "used_percentage": 13, "window_minutes": 10080,
+                 "resets_at": 1_789_500_000.0] as [String: Any]] as [[String: Any]],
+])
+check(reserveSet?.windows.first?.title == "Reserve",
+      "a reserve window is named for the pool, not for its length: "
+        + "\(reserveSet?.windows.first?.title ?? "nil")")
+check(reserveSet?.windows.first?.badge == "7d",
+      "and its length moves into the badge, the way Fable's weekly slice is already drawn")
+check(reserveSet?.windows.first?.minutes == 10080,
+      "the duration itself survives, because it is what dates the snapshot")
+check(reserveSet?.live(at: 1_789_100_000).count == 1, "and the window is still dated by its reset")
+// Without the flag nothing changes for anyone who never hit the reserve.
+check(codexSet?.windows.first?.badge == nil, "an ordinary window carries no badge")
+
 // No reset stamp at all: the window's own length is what dates the figure. Without this rule a
 // Codex build that stopped sending resets_at would either vanish or lie forever.
 let undated = LimitsSet(codex: [
@@ -1347,6 +1367,23 @@ if !FileManager.default.fileExists(atPath: codexSeamPath) {
           "and the short window drops out once its reset has passed")
 } else {
     check(false, "codex seam fixture unreadable")
+}
+
+// The same seam for a reserve record: written by the real fetch_codex_limits() from a rollout
+// whose last turn ran on the reserve model.
+let reserveSeamPath = FileManager.default.currentDirectoryPath
+    + "/build/seam/codex-limits-reserve.json"
+if !FileManager.default.fileExists(atPath: reserveSeamPath) {
+    check(false, "codex reserve seam fixture missing at \(reserveSeamPath) — run the python "
+        + "suite first (/usr/bin/python3 -m unittest discover -s tests)")
+} else if let data = FileManager.default.contents(atPath: reserveSeamPath),
+          let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let seamSet = LimitsSet(codex: raw) {
+    check(seamSet.windows.first?.title == "Reserve",
+          "the reserve flag the real writer put in the file reaches the strip's wording")
+    check(seamSet.windows.first?.badge == "7d", "and its badge says how long the window is")
+} else {
+    check(false, "codex reserve seam fixture unreadable")
 }
 
 // MARK: Codex MCP — a second agent's servers in the same tab
