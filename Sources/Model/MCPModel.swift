@@ -35,7 +35,16 @@ struct MCPServer {
     /// copy of that logic is exactly what produced rules that matched nothing.
     let toolPrefix: String
     var state: String   // ok | failed | pending | off | unknown (remote project server, unprobed)
-    let source: String  // user | claude.ai | plugin | project
+    let source: String  // user | claude.ai | plugin | project | codex | codex-plugin
+    /// Which agent configures this server: "claude" or "codex". A switch on the row is routed by
+    /// this — the two agents are asked to change their own config by completely different
+    /// commands, and a file written before Codex existed has to keep reading as Claude's.
+    let provider: String
+    /// The Codex plugin a server arrived with, "" for one declared in config.toml. Carried
+    /// because the setting for a plugin server lives in the plugin's own table, and writing to
+    /// the ordinary path would create a second, empty server of the same name instead of
+    /// changing this one.
+    let plugin: String
     /// The project a local/project-scoped server belongs to. These exist only for the session
     /// working in that directory — the row has to say which one, or two sessions in different
     /// projects read the menu as contradicting itself.
@@ -198,6 +207,10 @@ final class MCPModel {
         revision += 1
     }
 
+    /// The one door into the parser for the model checks: the reader half of the python→swift
+    /// seam is this function, and a private one could only be tested through a temp file.
+    static func parse(server raw: [String: Any]) -> MCPServer { self.server(from: raw) }
+
     private static func server(from raw: [String: Any]) -> MCPServer {
         let denied = Set(raw["deniedTools"] as? [String] ?? [])
         let docs = raw["toolDocs"] as? [String: String] ?? [:]
@@ -221,6 +234,8 @@ final class MCPModel {
             toolPrefix: raw["toolPrefix"] as? String ?? name,
             state: raw["state"] as? String ?? "failed",
             source: raw["source"] as? String ?? "user",
+            provider: raw["provider"] as? String ?? "claude",
+            plugin: raw["plugin"] as? String ?? "",
             project: raw["project"] as? String,
             needsApproval: raw["needsApproval"] as? Bool ?? false,
             status: raw["status"] as? String ?? "",
@@ -231,11 +246,16 @@ final class MCPModel {
 
 /// Servers grouped the way they are configured, because that is where the user goes to change
 /// them: a plugin server is fixed in the plugin, a project one lives in the repo's .mcp.json.
+/// Codex's two come last and name their agent: with both agents on screen "Local config" alone
+/// would not say whose, and the two Codex groups are separate because the user changes them in
+/// different places — its config.toml versus a plugin's own manifest.
 let mcpGroups: [(key: String, title: String)] = [
     ("user", "Local config"),
     ("claude.ai", "claude.ai connectors"),
     ("plugin", "From plugins"),
     ("project", "Project"),
+    ("codex", "Codex · config.toml"),
+    ("codex-plugin", "Codex · plugins"),
 ]
 
 /// Drops the bookkeeping prefix: "claude.ai Figma" -> "Figma", "plugin:figma:figma" -> "figma".

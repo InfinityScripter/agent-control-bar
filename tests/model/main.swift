@@ -375,6 +375,60 @@ if !FileManager.default.fileExists(atPath: sessionSeamPath) {
     check(false, "session seam fixture unreadable")
 }
 
+// MARK: Codex sessions — a second agent in the same list, told apart by one field
+
+// An old state file has no provider at all and must keep reading as Claude's: the app keys its
+// session map by "<provider>:<id>", and a nil-ish provider there would key every pre-upgrade
+// session under ":<id>" and reap it from a directory that does not exist.
+let claudeShaped = Session(json: ["state": "thinking", "pid": 4242], id: "old")
+check(claudeShaped.provider == "claude", "a file without a provider is Claude's")
+check(claudeShaped.surface.isEmpty, "and carries no surface")
+
+let codexSession = Session(json: [
+    "state": "tool", "label": "Running command", "provider": "codex", "surface": "ide",
+    "model": "gpt-5.6-sol", "pid": 777, "ts": nowTs, "started": true,
+    "pct": 21, "tokens": 41_420, "window": 200_000, "assumed": false,
+], id: "c1")
+check(codexSession.provider == "codex", "the provider crosses over")
+check(codexSession.surface == "ide", "so does the surface")
+check(codexSession.key == "codex:c1" && claudeShaped.key == "claude:old",
+      "the map key carries the provider, so two agents' ids cannot collide: "
+      + "\(codexSession.key) / \(claudeShaped.key)")
+// The states are the same vocabulary for both agents, or every consumer of isWorkingState,
+// priority(of:) and the icon renderer would need a second branch.
+check(isWorkingState(codexSession.state) && isActiveState(codexSession.state),
+      "a Codex session works and is active by the same words as Claude's")
+
+// The badge. Codex's surface is a fact from its own rollout, Claude's is guessed from an
+// entrypoint — so they are two paths to one pill, and an unknown Codex surface shows nothing
+// rather than a wrong "CLI".
+check(SessionFormat.surfaceTag(codexSession) == "IDE", "the Codex surface becomes its badge")
+check(SessionFormat.surfaceTag(Session(json: ["provider": "codex", "surface": "exec"], id: "x")) == "EXEC",
+      "a non-interactive codex exec run says so")
+check(SessionFormat.surfaceTag(Session(json: ["provider": "codex", "surface": ""], id: "x")).isEmpty,
+      "an unnamed surface gets no badge instead of a guessed one")
+check(SessionFormat.surfaceTag(Session(json: ["entrypoint": "claude-desktop"], id: "x")) == "APP",
+      "Claude's own badges are untouched")
+
+// The js→swift seam for Codex, written by the real update.js during the node suite.
+let codexSessionSeamPath = FileManager.default.currentDirectoryPath + "/build/seam/codex-session.json"
+if !FileManager.default.fileExists(atPath: codexSessionSeamPath) {
+    check(false, "codex seam fixture missing at \(codexSessionSeamPath) — run the node suite first "
+        + "(node --test tests/*.test.js), it writes build/seam/codex-session.json")
+} else if let data = FileManager.default.contents(atPath: codexSessionSeamPath),
+          let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+    let parsed = Session(json: raw, id: raw["sessionId"] as? String ?? "?")
+    check(parsed.provider == "codex", "the provider the hook wrote survives the js→swift trip")
+    check(parsed.surface == "ide", "the surface read from the rollout crosses over")
+    check(parsed.label == "Editing", "a Codex tool name arrives as a word a person can read")
+    check(parsed.pct == 21 && parsed.window == 200_000,
+          "the context Codex itself reported crosses over: \(parsed.pct.map(String.init) ?? "nil")")
+    check(!parsed.assumed, "and is not marked a guess, because Codex states the window")
+    check(parsed.model == "gpt-5.6-sol", "the model crosses over from the payload")
+} else {
+    check(false, "codex seam fixture unreadable")
+}
+
 try? FileManager.default.removeItem(atPath: sessionsDir)
 
 // The python→swift seam. Everything above parses a fixture written BY HAND — the same schema
@@ -1294,6 +1348,46 @@ if !FileManager.default.fileExists(atPath: codexSeamPath) {
 } else {
     check(false, "codex seam fixture unreadable")
 }
+
+// MARK: Codex MCP — a second agent's servers in the same tab
+
+// The whole point of writing codex/mcp.json in mcp.json's shape: one parser, no second
+// reader to drift. If this breaks, the Codex group in the MCP tab silently empties.
+let codexMCPSeam = FileManager.default.currentDirectoryPath + "/build/seam/codex-mcp.json"
+if !FileManager.default.fileExists(atPath: codexMCPSeam) {
+    check(false, "codex mcp seam fixture missing at \(codexMCPSeam) — run the python suite "
+        + "first (/usr/bin/python3 -m unittest discover -s tests), it writes "
+        + "build/seam/codex-mcp.json")
+} else {
+    let codexServers = MCPModel(path: codexMCPSeam)
+    check(codexServers.reloadIfChanged(), "the codex/mcp.json the real refresh wrote parses")
+    let wiki = codexServers.servers.first { $0.name == "wiki" }
+    check(wiki != nil, "a Codex server survives the python→swift trip")
+    check(wiki?.provider == "codex",
+          "it knows which agent it belongs to, so a switch cannot be routed to the wrong one")
+    check(wiki?.source == "codex", "and lands in the Codex group: \(wiki?.source ?? "nil")")
+    check(wiki?.tools.count == 2, "its tool list arrives whole")
+    check(wiki?.tools.first { $0.name == "Delete" }?.enabled == false,
+          "a tool Codex's own deny list forbids reads as switched off here")
+    check(wiki?.tools.first { $0.name == "Read" }?.params.first?.required == true,
+          "tool parameters survive the border, not just the names")
+    check(codexServers.servers.first { $0.name == "off-one" }?.disabled == true,
+          "a server disabled in config.toml arrives disabled")
+    check(codexServers.servers.first { $0.name == "needs-login" }?.state == "auth",
+          "and one waiting for OAuth says so instead of reading as broken")
+}
+
+// An old Claude server file has no provider field at all and must keep reading as Claude's —
+// the switch routing is a string comparison, and "" would route nowhere.
+let claudeServer = MCPModel.parse(server: ["name": "wiki", "state": "ok"])
+check(claudeServer.provider == "claude", "a server without a provider is Claude's")
+check(claudeServer.plugin.isEmpty, "and carries no plugin id")
+
+// Both agents' groups in one table, in the order the tab draws them. Codex's two are separate
+// because the user changes them in different places: one in config.toml, one in the plugin.
+check(mcpGroups.map(\.key) == ["user", "claude.ai", "plugin", "project", "codex", "codex-plugin"],
+      "the group table carries both agents: \(mcpGroups.map(\.key))")
+
 
 print(failures == 0 ? "\nall model checks passed" : "\n\(failures) failed")
 exit(failures == 0 ? 0 : 1)

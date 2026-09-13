@@ -33,9 +33,24 @@ struct Session {
     var linesRemoved: Int?
     var dirty: Int?        // files with uncommitted changes in cwd; nil outside a git repo
 
+    // Which agent this session belongs to: "claude" or "codex". A string rather than an enum for
+    // the same reason `state` is one — the value is produced by a hook in another language, and a
+    // third agent must not require a synchronized Swift edit. A file without the field is
+    // Claude's: it was written before Codex existed, and every pre-upgrade session has one.
+    var provider: String = "claude"
+    // Where a Codex session runs: "cli", "ide", "app", "exec", or "" when its rollout named an
+    // originator we do not know. Claude's equivalent is inferred from entrypoint + TERM_PROGRAM
+    // instead, because Claude Code does not state it.
+    var surface: String = ""
+
     var eff: String = ""   // effective state, recomputed once per tick in evaluate()
     var branch: String = ""      // git branch (or short SHA when detached); "" outside a repo
     var displayName: String = "" // project, parent-qualified when two live sessions share a name
+
+    // The key this session is held under, and the reason it is not just the id: two agents
+    // generate session ids independently, and one collision would make a Codex session's file
+    // overwrite a Claude session's row — or be deleted from the wrong directory.
+    var key: String { provider + ":" + id }
 
     init(json o: [String: Any], id: String) {
         self.id = id
@@ -61,6 +76,8 @@ struct Session {
         self.linesAdded = (o["linesAdded"] as? NSNumber)?.intValue
         self.linesRemoved = (o["linesRemoved"] as? NSNumber)?.intValue
         self.dirty = (o["dirty"] as? NSNumber)?.intValue
+        self.provider = o["provider"] as? String ?? "claude"
+        self.surface = o["surface"] as? String ?? ""
     }
 }
 

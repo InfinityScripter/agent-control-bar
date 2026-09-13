@@ -107,6 +107,7 @@ private struct GeneralSettings: View {
             }
             Section {
                 Toggle("Codex limits", isOn: store.codexLimits)
+                Toggle("Codex MCP servers", isOn: store.codexServers)
             } header: {
                 Text("Codex")
             } footer: {
@@ -116,7 +117,11 @@ private struct GeneralSettings: View {
                      + "file as it works. This reads the newest one for those two figures — no "
                      + "token, no request, nothing sent anywhere. A figure older than the window "
                      + "it measures is dropped rather than shown, so the row disappears until "
-                     + "Codex runs again.")
+                     + "Codex runs again.\n\n"
+                     + "The second switch lists Codex's own MCP servers in the MCP tab, with the "
+                     + "same switches. Asking Codex for the tool names starts each configured "
+                     + "server, the way Codex itself does — so with a slow server, turn this off "
+                     + "and the servers stop being asked.")
             }
             if store.analyticsConfigured {
                 Section {

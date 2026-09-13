@@ -33,7 +33,9 @@ extension StatusController {
         let eff = effState(s, now: now)
         let working = isWorkingState(eff) && s.startedAt > 0
         return PanelSession(
-            id: s.id,
+            id: s.key,
+            sessionID: s.id,
+            provider: s.provider,
             name: sessionName(s),
             branch: s.branch,
             status: panelStatus(s, eff: eff),
@@ -41,7 +43,7 @@ extension StatusController {
             elapsed: working ? elapsed(max(0, (now - s.startedAt).clampedInt)) : nil,
             pct: s.pct,
             assumed: s.assumed,
-            tag: surfaceTag(s),
+            tag: SessionFormat.surfaceTag(s),
             entrypoint: s.entrypoint,
             termProgram: s.termProgram,
             termBundle: s.termBundle,
@@ -188,12 +190,15 @@ extension StatusController {
 
     func panelServer(_ server: MCPServer) -> PanelServer {
         PanelServer(
-            id: server.name,
+            id: server.provider + ":" + server.name,
+            serverName: server.name,
+            provider: server.provider,
             name: mcpShortName(server.name),
             state: server.state,
             tail: serverTail(server),
             enabled: !server.disabled,
-            checking: mcp.isChecking(server.name, backendBusy: mcpChecking),
+            checking: model(of: server.provider).isChecking(server.name,
+                                                            backendBusy: mcpChecking),
             prefix: server.toolPrefix,
             tip: serverTip(server),
             tools: server.tools.map { tool in

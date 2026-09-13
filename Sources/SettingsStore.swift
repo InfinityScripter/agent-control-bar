@@ -46,6 +46,9 @@ final class SettingsStore: ObservableObject {
     var codexLimits: Binding<Bool> {
         bind({ $0.codexLimits }, { $0.applyCodexLimits($1) }, or: true)
     }
+    var codexServers: Binding<Bool> {
+        bind({ $0.codexServers }, { $0.applyCodexServers($1) }, or: true)
+    }
     var limitsLayout: Binding<PanelLimitsLayout> {
         bind({ $0.limitsLayout }, { $0.applyLimitsLayout($1) }, or: .rows)
     }
@@ -135,6 +138,17 @@ extension StatusController {
         if on { pollLimits() }
     }
 
+    /// Off empties the Codex groups in the MCP tab rather than leaving a stale list: the list is
+    /// only true while something keeps asking Codex for it.
+    func applyCodexServers(_ on: Bool) {
+        codexServers = on
+        UserDefaults.standard.set(on, forKey: "codexServers")
+        if on, FileManager.default.fileExists(atPath: codexHome) {
+            runQuietCommand("codex-mcp", "refresh")
+        }
+        refreshCounts()
+    }
+
     /// Off drops the figures rather than freezing them, exactly as the Anthropic switch does.
     /// Nothing is spent either way: Codex's numbers are read out of a file it wrote itself, so
     /// what this switches off is the reading, not a request.
@@ -147,7 +161,7 @@ extension StatusController {
         // The same gate pollLimits applies: switching this on where Codex has never run should
         // not spawn a process to be told there is nothing to read.
         if on, FileManager.default.fileExists(atPath: codexSessionsDir) {
-            runLimitsCommand("codex-limits")
+            runQuietCommand("codex-limits")
         }
         loadCodexLimits()
         refreshCounts()

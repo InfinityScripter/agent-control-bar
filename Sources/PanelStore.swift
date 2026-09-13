@@ -72,12 +72,13 @@ final class PanelStore: ObservableObject {
     /// backend has caught up and republishes, so the switch moves under the finger rather than at
     /// the end of a check that takes half a minute. Nothing here writes to the MCP model — that
     /// direction is closed off in .claude/rules/architecture.md.
-    func setServer(_ name: String, enabled: Bool) {
-        controller?.setMCPServer(name, enabled: enabled)
+    func setServer(_ server: PanelServer, enabled: Bool) {
+        controller?.setMCPServer(server.serverName, provider: server.provider, enabled: enabled)
     }
 
-    func setTool(server: String, tool: String, prefix: String, enabled: Bool) {
-        controller?.setMCPTool(server: server, tool: tool, prefix: prefix, enabled: enabled)
+    func setTool(server: PanelServer, tool: String, enabled: Bool) {
+        controller?.setMCPTool(server: server.serverName, tool: tool, prefix: server.prefix,
+                               provider: server.provider, enabled: enabled)
     }
 
     /// The switcher's pick. Written through the controller like every other setting, so the
@@ -103,7 +104,7 @@ final class PanelStore: ObservableObject {
 
     func openSession(_ session: PanelSession) {
         controller?.closePanel()
-        controller?.openSession(session.id, entrypoint: session.entrypoint,
+        controller?.openSession(session.sessionID, entrypoint: session.entrypoint,
                                 termProgram: session.termProgram, termBundle: session.termBundle)
     }
 
@@ -234,7 +235,14 @@ struct PanelSnapshot: Equatable {
 }
 
 struct PanelSession: Equatable, Identifiable {
+    /// "<provider>:<id>" — unique across agents, which is what a list identity has to be.
     let id: String
+    /// The agent's own session id, which is what its own app answers to on a click.
+    let sessionID: String
+    /// "claude" or "codex". Only the rows of a second agent carry a visible pill: with Codex
+    /// absent there is nothing to tell apart, and a "CLAUDE" pill on every row of a
+    /// Claude-only panel is noise that pushes the branch name out of the line.
+    let provider: String
     let name: String
     let branch: String
     /// "Thinking…", "Working…", "Needs you", or "Idle" — the row's own words for its state.
@@ -320,8 +328,15 @@ struct PanelServerGroup: Equatable, Identifiable {
 }
 
 struct PanelServer: Equatable, Identifiable {
-    /// The full name, which is what settings.json addresses and what the toggle passes back.
+    /// "<provider>:<name>". The provider is in here because both agents can have a server of the
+    /// same name, and a list identity that collides makes SwiftUI reuse the wrong row.
     let id: String
+    /// The full name, which is what the agent's own config addresses and what the toggle passes
+    /// back — never the shortened display name.
+    let serverName: String
+    /// Which agent configures this server. The switch is routed by it: the two are asked to
+    /// change their own config by entirely different commands.
+    let provider: String
     let name: String
     let state: String
     /// The right-hand column: a tool count, or the reason there is no count.
@@ -383,7 +398,9 @@ extension PanelMCP {
         // Taken once. `MCPModel.visible` filters the server array on every read, and the four
         // figures below used to ask for it four times — five throwaway arrays per refresh, each
         // copy retaining every server's nested tool list.
-        let shown = c.mcp.visible
+        // Both agents in one picture. Concatenated rather than merged by name: two agents can
+        // have a server of the same name, and they are two different servers.
+        let shown = c.mcp.visible + (c.codexServers ? c.codexMCP.visible : [])
         live = shown.filter { $0.state == "ok" }.count
         visible = shown.count
         // Short on purpose: the header has to fit a title, this, and two buttons across 300pt,
@@ -396,8 +413,9 @@ extension PanelMCP {
             changeIsBad = !moved.down.isEmpty
         }
         checking = c.mcpChecking
+        let all = c.mcp.servers + (c.codexServers ? c.codexMCP.servers : [])
         groups = mcpGroups.compactMap { group in
-            let servers = c.mcp.servers
+            let servers = all
                 .filter { $0.source == group.key }
                 .sorted { $0.name < $1.name }
                 .map { c.panelServer($0) }
@@ -405,9 +423,17 @@ extension PanelMCP {
                                                             servers: servers)
         }
         waitingAuth = c.mcp.waitingAuth.map(mcpShortName)
-        error = c.mcp.error
-        errorIsPermission = (c.mcp.error?.contains("EPERM") ?? false)
-            || (c.mcp.error?.localizedCaseInsensitiveContains("operation not permitted") ?? false)
+        // Both, joined, rather than one masking the other: when `claude mcp list` and Codex's
+        // app-server fail at the same moment — a network volume unmounted, a machine asleep —
+        // showing one reason and discarding the other sends the user looking in one place for a
+        // problem that is in two. Claude's comes first; its failure is the one that can empty
+        // the whole tab.
+        let reasons = [c.mcp.error, c.codexServers ? c.codexMCP.error : nil].compactMap { $0 }
+        error = reasons.isEmpty ? nil : reasons.joined(separator: " · ")
+        // Asked of whichever reason carries it: the buttons this unlocks reset THIS app's
+        // network-volume decision, and that decision is the app's, not one agent's.
+        errorIsPermission = reasons.contains { $0.contains("EPERM")
+            || $0.localizedCaseInsensitiveContains("operation not permitted") }
     }
 
     /// The same sentence the menu's "changed:" row carried, minus its layout.
