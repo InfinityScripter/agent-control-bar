@@ -53,19 +53,33 @@ const forget = (id) => {
 // An unknown originator yields no surface rather than a guessed one: a wrong "CLI" badge on a
 // desktop session is worse than no badge.
 const CODEX_SURFACES = {
-  codex_cli_rs: "cli", codex_vscode: "ide", codex_work_desktop: "app",
+  // Two spellings for the terminal: codex_cli_rs is what older builds wrote, "codex-tui" is what
+  // 0.154 writes — measured across 303 rollouts on this machine, where codex_cli_rs appears zero
+  // times. Dropping the old one would blank the badge for anyone still on a build that sends it.
+  codex_cli_rs: "cli", "codex-tui": "cli", codex_vscode: "ide", codex_work_desktop: "app",
   "Codex Desktop": "app", codex_exec: "exec",
 };
+
+// How much of that first line is worth reading. It used to be 8 KB, and on this machine every one
+// of 303 rollouts opens with more than that — median 19 KB, largest 70 KB — so the parse threw on
+// half an object, the catch said "unknown", and no session from this build ever got a badge.
+// Half a megabyte leaves the line room to grow; past it the answer is no answer, never a
+// truncated line handed to JSON.parse.
+const CODEX_META_BYTES = 524288;
 
 const codexMeta = (transcript) => {
   if (!transcript) return { surface: "", worker: false };
   let fd;
   try {
     fd = fs.openSync(transcript, "r");
-    const buf = Buffer.alloc(8192);
-    const read = fs.readSync(fd, buf, 0, 8192, 0);
-    const line = buf.toString("utf8", 0, read).split("\n")[0];
-    const meta = (JSON.parse(line) || {}).payload || {};
+    const buf = Buffer.alloc(CODEX_META_BYTES);
+    const read = fs.readSync(fd, buf, 0, CODEX_META_BYTES, 0);
+    const text = buf.toString("utf8", 0, read);
+    const end = text.indexOf("\n");
+    // No newline: the file's own size tells the two cases apart — a file one record long (the
+    // whole read is the line) against a line that does not end inside what we took.
+    if (end === -1 && read < fs.fstatSync(fd).size) return { surface: "", worker: false };
+    const meta = (JSON.parse(end === -1 ? text : text.slice(0, end)) || {}).payload || {};
     return {
       surface: CODEX_SURFACES[meta.originator] || "",
       // Anything that is not the user's own thread is somebody's worker: `subagent` and

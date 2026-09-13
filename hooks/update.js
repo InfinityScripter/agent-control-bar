@@ -52,18 +52,39 @@ const safeId = (s) => String(s || "").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 6
 // and the CI identity guard for twenty lines; the repo already keeps the hook-ownership
 // predicate in three copies for the same reason.)
 const CODEX_SURFACES = {
-  codex_cli_rs: "cli", codex_vscode: "ide", codex_work_desktop: "app",
+  // Two spellings for the terminal: codex_cli_rs is what older builds wrote, "codex-tui" is what
+  // 0.154 writes — measured across 303 rollouts on this machine, where codex_cli_rs appears zero
+  // times. Dropping the old one would blank the badge for anyone still on a build that sends it.
+  codex_cli_rs: "cli", "codex-tui": "cli", codex_vscode: "ide", codex_work_desktop: "app",
   "Codex Desktop": "app", codex_exec: "exec",
 };
+
+// Mirrors CODEX_META_BYTES in lifecycle.js — keep the two in step.
+//
+// It used to be 8 KB, and on this machine EVERY one of 303 rollouts opens with more than that:
+// median 19 KB, largest 70 KB, all of it workspace roots and git information. So the parse threw
+// on half an object, the catch swallowed it, and no session from this build ever got a badge —
+// silently, because a missing badge looks like a design decision. Half a megabyte leaves room
+// for that line to keep growing; past it there is no answer, never a truncated line parsed anyway.
+const CODEX_META_BYTES = 524288;
 
 const codexRollout = (transcript) => {
   if (!transcript) return null;
   let fd;
   try {
     fd = fs.openSync(transcript, "r");
-    const buf = Buffer.alloc(8192);
-    const read = fs.readSync(fd, buf, 0, 8192, 0);
-    const meta = (JSON.parse(buf.toString("utf8", 0, read).split("\n")[0]) || {}).payload || {};
+    const buf = Buffer.alloc(CODEX_META_BYTES);
+    const read = fs.readSync(fd, buf, 0, CODEX_META_BYTES, 0);
+    const text = buf.toString("utf8", 0, read);
+    const end = text.indexOf("\n");
+    // No newline means one of two opposite things, and the file's own size is what tells them
+    // apart. Read the whole file and found none: the session is one record old — every session at
+    // its first hook — and the whole read IS the line. Read less than the file holds: the line
+    // does not end inside what we took, and a truncated object handed to JSON.parse is exactly
+    // the silent failure this ceiling was raised for. Asking the buffer instead of the file would
+    // miss the third case, a short read on a network volume.
+    if (end === -1 && read < fs.fstatSync(fd).size) return null;
+    const meta = (JSON.parse(end === -1 ? text : text.slice(0, end)) || {}).payload || {};
     return {
       // An unknown originator yields no surface rather than a guessed one: a wrong "CLI" badge
       // on a desktop session is worse than no badge.

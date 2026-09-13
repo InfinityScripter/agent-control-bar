@@ -794,6 +794,47 @@ test("the codex surface comes from the rollout's own originator", () => {
   }
 });
 
+test("a fat session_meta line still names the surface", () => {
+  // Codex 0.154 writes 18.6 KB into that first line on this machine — workspace roots, git
+  // information, the lot. The reader used to take 8 KB of it, which is half a JSON object: the
+  // parse threw, the catch swallowed it, and every session from that build lost its badge
+  // silently. Nothing in the panel said why, because a missing badge looks like a design choice.
+  const home = sandbox();
+  // A second record after it, so the line really is cut at its newline rather than at the end of
+  // the file — the shape a live rollout has, and the branch the one-line fixture never exercises.
+  const transcript = rollout(home, [tokenCount(1000, 200000)], {
+    originator: "Codex Desktop", workspace_roots: ["x".repeat(30000)],
+  });
+  run(lifecyclePath, home, ["start", "--provider", "codex"], JSON.stringify({
+    session_id: "fat", cwd: home, transcript_path: transcript, source: "startup",
+  }));
+  const state = JSON.parse(fs.readFileSync(path.join(codexStateDir(home), "fat.json"), "utf8"));
+  assert.equal(state.surface, "app");
+
+  // The per-event hook carries its own copy of the reader, and only the SessionStart one was
+  // covered — a fix applied to one file and forgotten in the other would have passed.
+  run(updatePath, home, ["post", "--provider", "codex"], JSON.stringify({
+    session_id: "fat-post", cwd: home, transcript_path: transcript, tool_name: "exec",
+  }));
+  const posted = JSON.parse(
+    fs.readFileSync(path.join(codexStateDir(home), "fat-post.json"), "utf8"));
+  assert.equal(posted.surface, "app", "update.js reads the same fat line");
+});
+
+test("a session_meta line longer than the reader will ever take yields no badge, not a wrong one", () => {
+  // The ceiling has to exist — a rollout whose first line is a megabyte is not worth reading on
+  // every hook — and past it the answer is "unknown", exactly as for an originator nobody knows.
+  const home = sandbox();
+  const transcript = rollout(home, [], {
+    originator: "Codex Desktop", workspace_roots: ["x".repeat(600000)],
+  });
+  run(lifecyclePath, home, ["start", "--provider", "codex"], JSON.stringify({
+    session_id: "huge", cwd: home, transcript_path: transcript, source: "startup",
+  }));
+  const state = JSON.parse(fs.readFileSync(path.join(codexStateDir(home), "huge.json"), "utf8"));
+  assert.equal(state.surface, "");
+});
+
 test("a codex session start reaps its own dead sessions and leaves Claude's alone", () => {
   const home = sandbox();
   fs.mkdirSync(codexStateDir(home), { recursive: true });

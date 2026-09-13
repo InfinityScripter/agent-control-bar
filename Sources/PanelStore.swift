@@ -104,7 +104,8 @@ final class PanelStore: ObservableObject {
 
     func openSession(_ session: PanelSession) {
         controller?.closePanel()
-        controller?.openSession(session.sessionID, entrypoint: session.entrypoint,
+        controller?.openSession(session.sessionID, threadURL: session.threadURL,
+                                entrypoint: session.entrypoint,
                                 termProgram: session.termProgram, termBundle: session.termBundle)
     }
 
@@ -261,6 +262,10 @@ struct PanelSession: Equatable, Identifiable {
     let entrypoint: String
     let termProgram: String
     let termBundle: String
+    /// Where a click should land when the session's own agent can open the conversation itself:
+    /// only Codex's desktop app has such a link, and only for sessions it is the right place for.
+    /// Nil means the ordinary rules apply — raise the terminal or the editor it runs in.
+    let threadURL: URL?
     let detail: PanelSessionDetail
 
     var working: Bool { isWorkingState(eff) }

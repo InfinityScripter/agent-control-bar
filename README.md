@@ -8,7 +8,7 @@ A macOS menu bar app for **Claude Code**. It shows what Claude is doing and lets
 
 - **Sessions.** An animated icon while Claude works, a yellow dot when it waits for your permission, a turn timer and context-window usage for each session. Click a session to focus the terminal or editor it runs in.
 - **MCP.** Every server and every tool has its own switch. A muted tool disappears from Claude's context at the next session start.
-- **Codex too.** If you also run **OpenAI Codex**, its sessions appear in the same list as Claude's — same states, same turn timer, same context figure, same "needs you" dot — and its MCP servers in the same tab, with switches. Codex asks you once to trust the hooks; until you do, its sessions stay invisible. Everything is read from what Codex already writes on this machine.
+- **Codex too.** If you also run **OpenAI Codex**, its sessions appear in the same list as Claude's — same states, same turn timer, same context figure, same "needs you" dot — and its MCP servers in the same tab, with switches. Clicking a Codex row lands where the session can actually be read: a desktop session opens its own conversation through Codex's `codex://threads/` link, a terminal one raises its terminal. Codex asks you once to trust the hooks; until you do, its sessions stay invisible, and the panel says so rather than showing nothing. Everything is read from what Codex already writes on this machine.
 - **Limits.** 5-hour and 7-day usage as bars in the menu bar; the panel lists them with reset times, plus Fable's weekly window on plans that have one. If you also use **OpenAI Codex**, its own windows appear beside Claude's — read from the session file Codex writes itself, without a token or a request.
 
 ## Install

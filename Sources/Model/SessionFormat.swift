@@ -20,6 +20,29 @@ enum SessionFormat {
         return "CLI"
     }
 
+    // The link that opens ONE Codex conversation, or nil when the click belongs somewhere else.
+    //
+    // Codex's desktop app registers the `codex://` scheme and spells a single thread as
+    // `codex://threads/<id>` — its own resources carry that template, and the id the hooks record
+    // is the thread id. That is the same depth a Claude desktop row already gets: the conversation
+    // itself, not merely the app, which is normally frontmost anyway.
+    //
+    // Only a session Codex itself calls a desktop one. A terminal session is read where the user
+    // put it, and pulling them into another app for the same conversation is worse than raising
+    // that terminal. An unknown surface is NOT treated as desktop either, however tempting: this
+    // build's own hooks answer "unknown" for an originator they have never seen, and a CLI
+    // session whose terminal left no trace in the environment would then be dragged into the
+    // desktop app. Unknown means unknown here, the same as it does where the surface is read.
+    static func codexThreadURL(_ s: Session) -> URL? {
+        guard s.provider == "codex", s.surface == "app", !s.id.isEmpty else { return nil }
+        // Percent-encoded as a path component: an id carrying a slash would otherwise address a
+        // different route of the app, and one carrying "?" would arrive as a query.
+        guard let id = s.id.addingPercentEncoding(
+            withAllowedCharacters: CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~")))
+        else { return nil }
+        return URL(string: "codex://threads/" + id)
+    }
+
     // "claude-fable-5-1" -> "Fable 5.1", "claude-opus-4-8-20260101" -> "Opus 4.8". Unknown
     // shapes fall through untouched: a wrong pretty name is worse than a raw id.
     static func prettyModel(_ id: String) -> String {
