@@ -43,6 +43,15 @@ final class SettingsStore: ObservableObject {
     var oauthLimits: Binding<Bool> {
         bind({ $0.oauthLimits }, { $0.applyOAuthLimits($1) }, or: true)
     }
+    var codexLimits: Binding<Bool> {
+        bind({ $0.codexLimits }, { $0.applyCodexLimits($1) }, or: true)
+    }
+    var codexServers: Binding<Bool> {
+        bind({ $0.codexServers }, { $0.applyCodexServers($1) }, or: true)
+    }
+    var limitsLayout: Binding<PanelLimitsLayout> {
+        bind({ $0.limitsLayout }, { $0.applyLimitsLayout($1) }, or: .rows)
+    }
     var analytics: Binding<Bool> {
         bind({ $0.analytics }, { $0.applyAnalytics($1) }, or: true)
     }
@@ -127,6 +136,50 @@ extension StatusController {
         // rewrite: off must drop oauth-sourced numbers on the next tick, on must re-adopt them.
         limitsMTime = nil
         if on { pollLimits() }
+    }
+
+    /// Off empties the Codex groups in the MCP tab rather than leaving a stale list: the list is
+    /// only true while something keeps asking Codex for it.
+    func applyCodexServers(_ on: Bool) {
+        codexServers = on
+        UserDefaults.standard.set(on, forKey: "codexServers")
+        if on, FileManager.default.fileExists(atPath: codexHome) {
+            runQuietCommand("codex-mcp", "refresh")
+        }
+        refreshCounts()
+    }
+
+    /// Off drops the figures rather than freezing them, exactly as the Anthropic switch does.
+    /// Nothing is spent either way: Codex's numbers are read out of a file it wrote itself, so
+    /// what this switches off is the reading, not a request.
+    func applyCodexLimits(_ on: Bool) {
+        codexLimits = on
+        UserDefaults.standard.set(on, forKey: "codexLimits")
+        // The mtime gate would otherwise hold the pre-toggle figures until the file's next
+        // rewrite, which for a quiet Codex install could be days.
+        codexLimitsMTime = nil
+        // The same gate pollLimits applies: switching this on where Codex has never run should
+        // not spawn a process to be told there is nothing to read.
+        if on, FileManager.default.fileExists(atPath: codexSessionsDir) {
+            runQuietCommand("codex-limits")
+        }
+        loadCodexLimits()
+        refreshCounts()
+    }
+
+    /// Nothing to re-read: the layout is only how the same figures are arranged, so the panel
+    /// republishing is the whole effect.
+    func applyLimitsLayout(_ layout: PanelLimitsLayout) {
+        limitsLayout = layout
+        UserDefaults.standard.set(layout.rawValue, forKey: "limitsLayout")
+        refreshCounts()
+    }
+
+    /// The switcher's pick, written from the panel rather than from Settings. Remembered so that
+    /// someone who went looking for their Codex figures finds them there next time.
+    func applyLimitsProvider(_ provider: String) {
+        limitsProvider = provider
+        UserDefaults.standard.set(provider, forKey: "limitsProvider")
     }
 
     func applyAnimStyle(_ style: AnimStyle) {

@@ -15,7 +15,8 @@ Three parts, deliberately separated:
 - **MCP** — a Python backend runs `claude mcp list` and a `tools/list` round trip on a slow
   timer, and switches servers/tools by editing `~/.claude/settings.json`.
 - **Limits** — a five-minute poll of Anthropic's usage endpoint, plus an optional `statusLine`
-  capture.
+  capture. OpenAI Codex's own windows are read on the same timer from the session file Codex
+  writes in `~/.codex/sessions` — a local read, with no token and no request of its own.
 
 So yes: this app *does* change machine state (settings.json, the statusLine wrapper) and *does*
 make network requests (Anthropic usage endpoint, a daily update check, and it starts the user's

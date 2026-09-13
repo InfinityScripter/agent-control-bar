@@ -5,12 +5,27 @@ final class StatusController: NSObject, NSWindowDelegate {
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let root = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/control-bar")
     let stateDir = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/control-bar/state.d")
+    /// Codex's sessions, written by the same two hooks with `--provider codex`. A directory of
+    /// its own rather than a shared one: the Claude contract already has two writers and its own
+    /// reap rules, and a stray Codex file in state.d would be cleaned up by rules meant for
+    /// somebody else.
+    let codexStateDir = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/control-bar/codex/state.d")
     let claudeDesktopBundleID = "com.anthropic.claudefordesktop"
 
     // MARK: MCP + limits
     lazy var mcp = MCPModel(
         path: (root as NSString).appendingPathComponent("mcp.json"))
+    /// Codex's servers, written by `mcpbar.py codex-mcp refresh` in exactly mcp.json's shape so
+    /// one parser reads both. A second model rather than a merged file: the two are rewritten by
+    /// two different commands on their own schedules, and a single file would need one writer to
+    /// hold the other's data intact through every refresh.
+    lazy var codexMCP = MCPModel(
+        path: (root as NSString).appendingPathComponent("codex/mcp.json"))
     var limits: Limits?
+    /// Codex's own windows, read from codex/limits.json — the snapshot scripts/mcpbar.py lifts
+    /// out of the newest rollout file that Codex itself wrote. Its own mtime gate below, because
+    /// the two files are rewritten by two separate commands on the same timer.
+    var codexWindows: LimitsSet?
     var mcpBusy = false
     var recheckTimer: Timer?
     /// How often the MCP picture is rebuilt from scratch in the background. Measured at ~34s a
@@ -64,8 +79,8 @@ final class StatusController: NSObject, NSWindowDelegate {
     var stalePruneAge: TimeInterval { UserDefaults.standard.object(forKey: "hideIdleAfter") as? Double ?? 900 }
 
     let engine = SessionEngine()  // the state machine lives in Sessions.swift, testable
-    var sessions: [String: Session] = [:]  // id -> latest parsed per-session state
-    var fileMTimes: [String: Date] = [:]   // "<id>.json" -> last-parsed mtime (re-parse only on change)
+    var sessions: [String: Session] = [:]  // "<provider>:<id>" -> latest parsed per-session state
+    var fileMTimes: [String: Date] = [:]   // "<provider>:<id>" -> last-parsed mtime (re-parse only on change)
     var gitHeadCache: [String: String] = [:]  // cwd -> resolved HEAD path ("" = confirmed non-git)
     var uiConfigCache: (mtime: Date?, values: [String: Double])?
     // Stored state used by the extensions in Updates.swift, SessionRows.swift and
@@ -84,6 +99,13 @@ final class StatusController: NSObject, NSWindowDelegate {
     var notificationsDenied = false     // the one macOS permission this app has; see notify()
     var lastNotifiedChangeAt: Date?     // dedupe: notifyMCPChange runs on every reload, the change lives 45 s
     var limitsMTime: Date?              // limits.json parse gate; nil forces a re-read (see loadLimits)
+    var codexLimitsMTime: Date?         // the same gate for codex/limits.json
+    /// Where Codex keeps the session files its limit figures are read out of. Owned by Codex,
+    /// never written here.
+    let codexSessionsDir = (NSHomeDirectory() as NSString).appendingPathComponent(".codex/sessions")
+    /// Codex's own directory. Its presence is the whole test for "is Codex installed here" —
+    /// asked afresh rather than cached, so installing Codex later needs no restart.
+    let codexHome = (NSHomeDirectory() as NSString).appendingPathComponent(".codex")
     var selfUpdating = false            // one update at a time (DMG install or source build)
     var updateBuild: Process?           // the in-flight source build; Quit terminates it (see quit())
     var updateDownload: URLSessionDownloadTask?  // the in-flight DMG download; Quit cancels it
@@ -154,6 +176,16 @@ final class StatusController: NSObject, NSWindowDelegate {
     var iconSystem = false // false = brand Orange; true = adaptive black/white (template image)
     var useThinkingWords = true     // rotate a playful verb ("Manifesting…") in place of "Thinking…"
     var oauthLimits = true          // poll Anthropic's usage endpoint for the 5h/7d/Fable limits
+    var codexLimits = true          // read Codex's own limit snapshot out of ~/.codex/sessions
+    /// Whether Codex's MCP servers are listed and switchable. On by default like the limits, and
+    /// for the same reason — a machine without Codex sees nothing either way — but its own
+    /// switch, because this one is the half that starts every configured server to ask it for its
+    /// tools, and someone with a slow one may not want that on a ten-minute timer.
+    var codexServers = true
+    var limitsLayout = PanelLimitsLayout.rows   // how the strip shows two providers at once
+    /// Which provider the switcher layout is showing. Remembered across opens: someone who
+    /// switched to Codex was answering "how much Codex have I got left", not this once.
+    var limitsProvider = "claude"
     var analytics = true            // the anonymous daily ping (Sources/Analytics.swift); env var and endpoint also gate it
     var sessionWord: [String: String] = [:] // id -> current thinking word; re-picked on each entry into "thinking"
     var soundThreshold: Double = 0  // 0 = off; else the min turn length (seconds) that chimes on completion
@@ -232,6 +264,10 @@ final class StatusController: NSObject, NSWindowDelegate {
         if d.object(forKey: "iconSystem") != nil { iconSystem = d.bool(forKey: "iconSystem") }
         if d.object(forKey: "thinkingWords") != nil { useThinkingWords = d.bool(forKey: "thinkingWords") }
         if d.object(forKey: "oauthLimits") != nil { oauthLimits = d.bool(forKey: "oauthLimits") }
+        if d.object(forKey: "codexLimits") != nil { codexLimits = d.bool(forKey: "codexLimits") }
+        if d.object(forKey: "codexServers") != nil { codexServers = d.bool(forKey: "codexServers") }
+        if let s = d.string(forKey: "limitsLayout"), let l = PanelLimitsLayout(rawValue: s) { limitsLayout = l }
+        if let s = d.string(forKey: "limitsProvider") { limitsProvider = s }
         if d.object(forKey: "analytics") != nil { analytics = d.bool(forKey: "analytics") }
         if d.object(forKey: "soundThreshold") != nil { soundThreshold = d.double(forKey: "soundThreshold") }
         if let s = d.string(forKey: "needsYouSound") { needsYouSound = s }
@@ -556,6 +592,12 @@ final class StatusController: NSObject, NSWindowDelegate {
                 self.backendRunning = max(0, self.backendRunning - 1)
                 self.mcpBusy = self.backendRunning > 0
                 self.mcp.reloadIfChanged(force: true)
+                // Both models, or the promise in the comment below holds for one agent only.
+                // A refused Codex toggle leaves codex/mcp.json exactly as it was — same mtime,
+                // so the tick's gated re-read sees nothing to do — and the optimistic flip sat
+                // on screen looking applied until the ten-minute refresh came round. Forced,
+                // because "unchanged file" is precisely the case that has to be re-read.
+                self.codexMCP.reloadIfChanged(force: true)
                 self.notifyMCPChange()
                 // The backend's own answer has to land in the open menu too, not just the
                 // optimistic guess that preceded it — otherwise a toggle the backend refused
@@ -581,6 +623,13 @@ final class StatusController: NSObject, NSWindowDelegate {
     @objc func refreshMCP() {
         guard !refreshQueued else { refreshAgain = true; return }
         refreshQueued = true
+        // Codex's list is asked for on the same occasions as Claude's, and coalesces with it for
+        // the same reason: this one starts every configured Codex server to ask it for its tools,
+        // which is the expensive thing a second queued check would repeat for nothing. Gated on
+        // the switch AND on Codex being installed, so a Mac without it spawns nothing.
+        if codexServers, FileManager.default.fileExists(atPath: codexHome) {
+            runQuietCommand("codex-mcp", "refresh")
+        }
         runBackend(["refresh"]) { [weak self] in
             guard let self else { return }
             self.refreshQueued = false
@@ -591,18 +640,37 @@ final class StatusController: NSObject, NSWindowDelegate {
         }
     }
 
-    /// One usage poll: mcpbar.py reads the account limits from Anthropic's usage endpoint —
-    /// the same one /usage in Claude Code asks — and rewrites limits.json; the 0.4s tick picks
-    /// the file up. Not routed through runBackend: that toggles mcpBusy and re-reads mcp.json,
-    /// and a limits poll has nothing to say about either. Off switch in Options, because it
-    /// spends the user's own OAuth token, even if only against Anthropic's own API.
+    /// One round of limit figures, one provider at a time. For Claude, mcpbar.py asks Anthropic's
+    /// usage endpoint — the same one /usage in Claude Code asks — and rewrites limits.json; for
+    /// Codex it reads the newest session file Codex left on disk and writes codex/limits.json.
+    /// Either way the 0.4s tick picks the file up.
+    ///
+    /// Each has its own off switch, for different reasons: the Anthropic poll spends the user's
+    /// own OAuth token, and the Codex read opens files that belong to another program.
     func pollLimits() {
-        guard oauthLimits, !backend.script.isEmpty else { return }
+        if oauthLimits { runQuietCommand("limits") }
+        // Not gated on the switch above, and deliberately: reading Codex's figures costs no token
+        // and no request at all. Codex writes them into its own session file as it goes, and the
+        // command only reads the newest one — so the only thing to opt out of is the reading.
+        //
+        // The stat is worth it: without it a Mac that has never run Codex — most of them — would
+        // spawn a process every five minutes to be told there is nothing to read. Asked afresh
+        // each poll, so installing Codex later is picked up without a restart.
+        if codexLimits, FileManager.default.fileExists(atPath: codexSessionsDir) {
+            runQuietCommand("codex-limits")
+        }
+    }
+
+    /// Run one backend command for the file it writes and nothing else. Not routed through runBackend:
+    /// that toggles mcpBusy and re-reads mcp.json, and a poll that only rewrites its own file
+    /// has nothing to say about either — the tick's mtime gate picks the file up.
+    func runQuietCommand(_ command: String...) {
+        guard !backend.script.isEmpty else { return }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
             let task = Process()
             task.executableURL = URL(fileURLWithPath: self.backend.python)
-            task.arguments = [self.backend.script, "limits"]
+            task.arguments = [self.backend.script] + command
             task.standardOutput = FileHandle.nullDevice
             task.standardError = FileHandle.nullDevice
             try? task.run()
@@ -616,9 +684,21 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// re-reads, and only a real difference redraws anything.
     func refreshCounts() { if panelIsOpen { panelStore.refresh() } }
 
-    func setMCPServer(_ name: String, enabled: Bool) {
-        mcp.setServerLocally(name, enabled: enabled)
-        runBackend(["toggle-server", name, enabled ? "--on" : "--off"])
+    /// Which model holds a provider's servers. One place, so a new provider cannot be half-wired.
+    func model(of provider: String) -> MCPModel { provider == "codex" ? codexMCP : mcp }
+
+    func setMCPServer(_ name: String, provider: String = "claude", enabled: Bool) {
+        // Two agents, two configs, two commands. The provider comes off the row the user
+        // clicked rather than being guessed from the name: the same server name can be
+        // configured in both agents, and asking Claude to switch off Codex's copy would edit
+        // the wrong file and leave the row lying about what happened.
+        let codex = provider == "codex"
+        model(of: provider).setServerLocally(name, enabled: enabled)
+        if codex {
+            runBackend(["codex-mcp", "toggle-server", name, enabled ? "--on" : "--off"])
+        } else {
+            runBackend(["toggle-server", name, enabled ? "--on" : "--off"])
+        }
         scheduleRecheck()
         // Last, not first: the row draws a spinner while a check is running or ordered, so it has
         // to be redrawn after the work is on its way rather than before.
@@ -646,20 +726,33 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// into the spelling Claude Code actually uses inside a tool name. Building the rule here was
     /// the bug: for a plugin or a claude.ai connector it produced `mcp__claude.ai Figma__…`,
     /// which matches no tool at all — the switch went off and the tool kept loading.
-    func setMCPTool(server: String, tool: String, prefix: String, enabled: Bool) {
+    func setMCPTool(server: String, tool: String, prefix: String, provider: String = "claude",
+                    enabled: Bool) {
         // Local first, then the backend. Rewriting settings.json and re-deriving the whole picture
         // takes long enough that the counts would sit stale until the panel is reopened, which
         // reads as the switch having done nothing. No recheck is scheduled, unlike a server
         // toggle: a tool moving in or out of the context does not change which servers answered.
-        mcp.setToolLocally(server: server, tool: tool, enabled: enabled)
+        model(of: provider).setToolLocally(server: server, tool: tool, enabled: enabled)
         refreshCounts()
-        runBackend(["toggle-tool", MCPServer.fullToolName(prefix: prefix, tool: tool),
-                    "--server", server, "--tool", tool, enabled ? "--on" : "--off"])
+        if provider == "codex" {
+            // No rule to pass: Codex keeps its own deny list per server, by plain tool name,
+            // so there is no `mcp__…__…` spelling for the script to match against.
+            runBackend(["codex-mcp", "toggle-tool", "--server", server, "--tool", tool,
+                        enabled ? "--on" : "--off"])
+        } else {
+            runBackend(["toggle-tool", MCPServer.fullToolName(prefix: prefix, tool: tool),
+                        "--server", server, "--tool", tool, enabled ? "--on" : "--off"])
+        }
     }
 
-    @objc func openSettingsJSON() {
+    @objc func openSettingsJSON() { openConfig(of: "claude") }
+
+    /// The file where THIS agent's servers are configured. The button used to be a fixed path to
+    /// settings.json, which for a Codex row opens a file that has nothing to do with it.
+    func openConfig(of provider: String) {
+        let path = provider == "codex" ? ".codex/config.toml" : ".claude/settings.json"
         NSWorkspace.shared.open(URL(fileURLWithPath:
-            (NSHomeDirectory() as NSString).appendingPathComponent(".claude/settings.json")))
+            (NSHomeDirectory() as NSString).appendingPathComponent(path)))
     }
 
     func loadLimits() {
@@ -687,6 +780,34 @@ final class StatusController: NSObject, NSWindowDelegate {
         // The parse lives in Sources/Model/Limits.swift so the model check can cover it;
         // a file with no readable window at all reads as "no data", not as zeros.
         limits = Limits(json: root)
+    }
+
+    /// codex/limits.json, on the same stat-per-tick gate as the Claude file above.
+    ///
+    /// Off has to mean the figures go away rather than stop moving, exactly as it does for the
+    /// Anthropic poll: the file survives the switch, so the switch is what decides.
+    func loadCodexLimits() {
+        guard codexLimits else {
+            codexWindows = nil
+            return
+        }
+        let path = (root as NSString).appendingPathComponent("codex/limits.json")
+        let stamp = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate])
+            as? Date
+        // No file at all is an answer: the figures go, rather than standing until a restart.
+        // A file that is there but unreadable is a half-written rewrite, and the previous parse
+        // is the better of the two things to show for the few milliseconds that lasts.
+        guard let stamp else {
+            codexWindows = nil
+            codexLimitsMTime = nil
+            return
+        }
+        if stamp == codexLimitsMTime { return }
+        guard let data = FileManager.default.contents(atPath: path),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return }
+        codexLimitsMTime = stamp
+        codexWindows = LimitsSet(codex: object)
     }
 
     /// A server falling over is worth interrupting for; a tool count moving is not — that is
@@ -786,7 +907,13 @@ final class StatusController: NSObject, NSWindowDelegate {
         // Both are mtime checks against a file another process rewrites atomically, so this is
         // a stat() per tick, not a parse — the parse happens only when something actually moved.
         if mcp.reloadIfChanged() { notifyMCPChange() }
+        // Codex's file is re-read on the same tick and behind the same mtime gate, but without
+        // the change notification: "a server went down" is worth interrupting someone about for
+        // the agent they are working in, and a second notification for the other agent's servers
+        // — refreshed on our own timer, not by anything they just did — is noise.
+        if codexServers { codexMCP.reloadIfChanged() }
         loadLimits()
+        loadCodexLimits()
         evaluate()
         // The panel is a live window, not a menu frozen at open time: the per-session clocks, the
         // limit figures and the server states all move under it. The store publishes only when
@@ -804,48 +931,87 @@ final class StatusController: NSObject, NSWindowDelegate {
     }
 
     func currentGauge() -> Gauge {
-        Gauge(fiveHour: limits?.fiveHour?.fraction,
-              sevenDay: limits?.sevenDay?.fraction)
+        // Built first and tested for emptiness, rather than asking whether Claude has limits at
+        // all: a plan that reports only its Fable window has limits and still draws no bars here,
+        // and that used to leave the icon blank while Codex figures sat unused below.
+        let claude = Gauge(fiveHour: limits?.fiveHour?.fraction,
+                           sevenDay: limits?.sevenDay?.fraction)
+        if !claude.isEmpty { return claude }
+        // Codex only when Claude has no figures at all. The icon has room for two labelled bars,
+        // and a pair mixed from two accounts would need a provider mark beside each one to mean
+        // anything — so the rule here is the simple one: whoever has numbers gets the bars. Which
+        // provider leads when both do is a setting of its own, and it is not this release.
+        let live = (codexWindows?.live(at: Date().timeIntervalSince1970) ?? [])
+            .filter { $0.shortTitle != nil }.prefix(2)
+        guard let first = live.first else { return Gauge() }
+        let second = live.count > 1 ? live.last : nil
+        return Gauge(fiveHour: first.window.fraction, sevenDay: second?.window.fraction,
+                     labels: (first.shortTitle ?? "", second?.shortTitle ?? ""))
     }
 
-    // The .json session files currently in state.d/ (ignores the .tmp files mid-write).
-    func stateFileNames() -> [String] {
-        ((try? FileManager.default.contentsOfDirectory(atPath: stateDir)) ?? []).filter { $0.hasSuffix(".json") }
+    // Every agent's state directory, in the order their rows are keyed. The provider string is
+    // the one written into the files themselves — see Session.provider.
+    var stateDirs: [(provider: String, path: String)] {
+        [("claude", stateDir), ("codex", codexStateDir)]
     }
 
-    // Refresh `sessions` from state.d/, re-parsing only files whose mtime changed (writes are
-    // atomic renames, so a content update bumps mtime and is never read torn).
+    // The session files currently on disk, both agents' (ignores the .tmp files mid-write).
+    // Keyed "<provider>:<id>", because the two agents mint their ids independently and the
+    // dictionaries below must not be able to mix them up.
+    func stateFiles() -> [(key: String, path: String, provider: String, id: String)] {
+        stateDirs.flatMap { provider, dir in
+            ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? [])
+                .filter { $0.hasSuffix(".json") }
+                .map { name in
+                    let id = (name as NSString).deletingPathExtension
+                    return (key: provider + ":" + id,
+                            path: (dir as NSString).appendingPathComponent(name),
+                            provider: provider, id: id)
+                }
+        }
+    }
+
+    // Where a session's own file lives — the one place that turns a session back into a path,
+    // so the reap in evaluate() cannot delete out of the wrong agent's directory.
+    func statePath(of s: Session) -> String {
+        let dir = s.provider == "codex" ? codexStateDir : stateDir
+        return (dir as NSString).appendingPathComponent(s.id + ".json")
+    }
+
+    // Refresh `sessions` from the state directories, re-parsing only files whose mtime changed
+    // (writes are atomic renames, so a content update bumps mtime and is never read torn).
     func reloadSessions() {
         let fm = FileManager.default
-        let files = stateFileNames()
-        let present = Set(files)
+        let files = stateFiles()
+        let present = Set(files.map { $0.key })
         for key in Array(fileMTimes.keys) where !present.contains(key) {
             fileMTimes[key] = nil
-            let id = (key as NSString).deletingPathExtension
             // Symmetric with the pid-death reap in evaluate(): a SessionEnd deletes the file,
             // and the engine's transcript cache plus the per-session bookkeeping must go with
             // it — or one small entry per session ever seen stays for the app's lifetime.
-            if let gone = sessions[id], !gone.transcript.isEmpty {
+            if let gone = sessions[key], !gone.transcript.isEmpty {
                 engine.dropCache(forTranscript: gone.transcript)
             }
-            sessions[id] = nil
-            prevState[id] = nil; sessionWord[id] = nil; turnStart[id] = nil
+            sessions[key] = nil
+            prevState[key] = nil; sessionWord[key] = nil; turnStart[key] = nil
         }
         for f in files {
-            let full = (stateDir as NSString).appendingPathComponent(f)
-            guard let attrs = try? fm.attributesOfItem(atPath: full),
+            guard let attrs = try? fm.attributesOfItem(atPath: f.path),
                   let m = attrs[.modificationDate] as? Date else { continue }
-            if fileMTimes[f] == m { continue }
-            fileMTimes[f] = m
-            guard let data = fm.contents(atPath: full),
+            if fileMTimes[f.key] == m { continue }
+            fileMTimes[f.key] = m
+            guard let data = fm.contents(atPath: f.path),
                   let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-            let id = (f as NSString).deletingPathExtension
-            var s = Session(json: o, id: id)
+            var s = Session(json: o, id: f.id)
+            // The directory a file was found in settles the provider, whatever the file says: a
+            // hand-edited or truncated `provider` must not send the reap at another agent's
+            // directory, and a file in codex/state.d is a Codex session by construction.
+            s.provider = f.provider
             // A hook event means activity in that cwd, which may have JUST become a repo (git init /
             // first branch mid-session) — a cached "" (non-git) would otherwise stick until app restart.
             if gitHeadCache[s.cwd] == "" { gitHeadCache[s.cwd] = nil }
             s.branch = branchForCwd(s.cwd)   // only on file change (a hook event), never on a bare tick
-            sessions[id] = s
+            sessions[f.key] = s
         }
     }
 
@@ -914,11 +1080,11 @@ final class StatusController: NSObject, NSWindowDelegate {
     // Reads prevState, which the evaluate() loop writes only AFTER this runs, so it must be called
     // there before that write. Tracks the turn's start while the session is working.
     func completionEdge(_ s: Session, now: Double) -> Bool {
-        if isWorkingState(s.state), s.startedAt > 0 { turnStart[s.id] = s.startedAt }
-        let prev = prevState[s.id] ?? ""
+        if isWorkingState(s.state), s.startedAt > 0 { turnStart[s.key] = s.startedAt }
+        let prev = prevState[s.key] ?? ""
         var edge = false
-        if soundThreshold > 0, s.state == "done", prev != "done", let st = turnStart[s.id], st > 0, now - st >= soundThreshold { edge = true }
-        if s.state == "done" { turnStart[s.id] = 0 }
+        if soundThreshold > 0, s.state == "done", prev != "done", let st = turnStart[s.key], st > 0, now - st >= soundThreshold { edge = true }
+        if s.state == "done" { turnStart[s.key] = 0 }
         return edge
     }
 
@@ -926,8 +1092,8 @@ final class StatusController: NSObject, NSWindowDelegate {
         let now = Date().timeIntervalSince1970
         var chime = false, needsYou = false
 
-        for id in Array(sessions.keys) {
-            guard var s = sessions[id] else { continue }
+        for key in Array(sessions.keys) {
+            guard var s = sessions[key] else { continue }
             s.eff = engine.effectiveState(s, now: now)   // compute once per tick; the menu + tooltip reuse it
             // Reap on PROCESS death, not idle time: a session leaves only when its `claude` process is
             // gone (closed/crashed terminal, quit app), so an idle-but-open session stays and the icon
@@ -936,24 +1102,24 @@ final class StatusController: NSObject, NSWindowDelegate {
             let dead = s.pid > 0 ? !pidAlive(s.pid)
                                  : (s.eff == "idle" && stalePruneAge > 0 && now - s.ts > stalePruneAge)
             if dead {
-                try? FileManager.default.removeItem(atPath: (stateDir as NSString).appendingPathComponent(id + ".json"))
-                sessions[id] = nil; fileMTimes[id + ".json"] = nil; prevState[id] = nil; sessionWord[id] = nil; turnStart[id] = nil
+                try? FileManager.default.removeItem(atPath: statePath(of: s))
+                sessions[key] = nil; fileMTimes[key] = nil; prevState[key] = nil; sessionWord[key] = nil; turnStart[key] = nil
                 if !s.transcript.isEmpty { engine.dropCache(forTranscript: s.transcript) }
                 continue
             }
-            sessions[id] = s
+            sessions[key] = s
             updateThinkingWord(s)
             if completionEdge(s, now: now) { chime = true }
             // The frontmost-app lookup is a workspace query, so it runs only on the raw edge.
-            if !needsYouSound.isEmpty, s.state == "permission", prevState[s.id] != "permission",
-               NeedsYouSound.shouldCue(prevState: prevState[s.id], state: s.state, effective: s.eff,
+            if !needsYouSound.isEmpty, s.state == "permission", prevState[s.key] != "permission",
+               NeedsYouSound.shouldCue(prevState: prevState[s.key], state: s.state, effective: s.eff,
                                        hostBundle: s.termBundle,
                                        frontmost: NSWorkspace.shared.frontmostApplication?.bundleIdentifier) {
                 needsYou = true
             }
-            prevState[s.id] = s.state
+            prevState[s.key] = s.state
         }
-        for id in Array(prevState.keys) where sessions[id] == nil { prevState[id] = nil; sessionWord[id] = nil; turnStart[id] = nil }
+        for key in Array(prevState.keys) where sessions[key] == nil { prevState[key] = nil; sessionWord[key] = nil; turnStart[key] = nil }
         // Keyed by cwd, so it outlived the sessions above: an entry per directory ever seen, for
         // the app's lifetime. Kept only for directories a live session still points at.
         let liveCwds = Set(sessions.values.map(\.cwd))
@@ -969,15 +1135,15 @@ final class StatusController: NSObject, NSWindowDelegate {
         // genuinely unique row.
         var cwdsByProject: [String: Set<String>] = [:]
         for s in sessions.values where !s.project.isEmpty && !s.cwd.isEmpty { cwdsByProject[s.project, default: []].insert(s.cwd) }
-        for id in Array(sessions.keys) {
-            guard var s = sessions[id] else { continue }
+        for key in Array(sessions.keys) {
+            guard var s = sessions[key] else { continue }
             if !s.cwd.isEmpty, (cwdsByProject[s.project]?.count ?? 0) > 1 {
                 let parent = (((s.cwd as NSString).deletingLastPathComponent) as NSString).lastPathComponent
                 s.displayName = parent.isEmpty ? s.project : parent + "/" + s.project
             } else {
                 s.displayName = s.project
             }
-            sessions[id] = s
+            sessions[key] = s
         }
 
         // Surface the single highest-priority session (permission > working > …); ties broken by
@@ -1059,16 +1225,20 @@ final class StatusController: NSObject, NSWindowDelegate {
     var claudeProbedAt: Double = 0
     var claudeWasRunning = false
 
-    /// Is Claude Code itself running, whatever it has or has not written to disk?
+    /// Is an agent itself running, whatever it has or has not written to disk?
     ///
     /// Only consulted when everything else says the app is not needed, and the answer is held for
     /// ten seconds — otherwise a session that writes no state file would have this walking the
-    /// process table on every tick, forever.
-    func claudeCodeRunning() -> Bool {
+    /// process table on every tick, forever. Both agents in one probe: a Codex session whose
+    /// hooks the user has not trusted yet writes nothing at all, and quitting the app out from
+    /// under it is exactly the "only works with the desktop app" bug this probe was added for.
+    /// `codex` is the process name whichever way it was installed — the npm wrapper execs the
+    /// native binary rather than staying in the picture as `node`.
+    func agentRunning() -> Bool {
         let now = Date().timeIntervalSince1970
         if now - claudeProbedAt < 10 { return claudeWasRunning }
         claudeProbedAt = now
-        claudeWasRunning = RunningProcesses.exists(named: "claude")
+        claudeWasRunning = RunningProcesses.existsAny(of: ["claude", "codex"])
         return claudeWasRunning
     }
 
@@ -1101,7 +1271,7 @@ final class StatusController: NSObject, NSWindowDelegate {
             // on the PATH, hooks switched off, settings sources that skip the user's file —
             // leaves no state file, and quitting on that evidence killed the app ten seconds
             // after launch with Claude Code running in a terminal the whole time.
-            guard now.timeIntervalSince(since) >= idleQuitDelay, !claudeCodeRunning() else { return }
+            guard now.timeIntervalSince(since) >= idleQuitDelay, !agentRunning() else { return }
             // Notification-fed flag could have missed a launch (e.g. delivered while the run loop
             // was blocked); confirm with LaunchServices before the irreversible step.
             if claudeDesktopRunningLive() { desktopRunning = true; notNeededSince = nil; return }

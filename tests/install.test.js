@@ -357,3 +357,157 @@ test("a settings.json symlinked into dotfiles stays a symlink", (t) => {
   runUninstaller(home);
   assert.ok(fs.lstatSync(settingsPath).isSymbolicLink(), "uninstall replaced the symlink");
 });
+
+// --- Codex CLI hooks -------------------------------------------------------------------
+// ~/.codex/hooks.json has the same shape as Claude's settings.json hooks block, and on a real
+// machine it already holds other tools' hooks — this one had five foreign entries. Merging is
+// therefore the whole job; clobbering would silently disable somebody else's product.
+
+const codexHooksPath = (home) => path.join(home, ".codex", "hooks.json");
+const codexCommands = (home) =>
+  Object.values(JSON.parse(fs.readFileSync(codexHooksPath(home), "utf8")).hooks)
+    .flat().flatMap((entry) => entry.hooks || []).map((hook) => hook.command || "");
+
+test("codex hooks are merged in beside foreign ones, and a second run changes nothing", (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "control-bar-codex-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
+  const foreign = "/bin/sh '/Users/somebody/.orca/agent-hooks/codex-hook.sh'";
+  fs.writeFileSync(codexHooksPath(home), JSON.stringify({
+    hooks: {
+      PreToolUse: [{ hooks: [{ type: "command", command: foreign, timeout: 10 }] }],
+      SessionStart: [{ hooks: [{ type: "command", command: foreign }] }],
+    },
+    // A sibling key the installer has no business touching.
+    experimental: { something: true },
+  }, null, 2));
+
+  runInstaller(home);
+
+  const commands = codexCommands(home);
+  assert.equal(commands.filter((c) => c === foreign).length, 2, "both foreign hooks survive");
+  const ours = commands.filter((c) => c.includes("--provider codex"));
+  assert.equal(ours.length, 8, "eight codex events are covered");
+  const file = JSON.parse(fs.readFileSync(codexHooksPath(home), "utf8"));
+  assert.equal(file.experimental.something, true, "sibling keys are left alone");
+  // Codex has no Notification event; the permission signal is PermissionRequest, and Interrupt
+  // is a bonus Claude has no equivalent of — Esc arrives as an event instead of being guessed
+  // from the transcript.
+  assert.deepEqual(Object.keys(file.hooks).sort(), [
+    "Interrupt", "PermissionRequest", "PostToolUse", "PreToolUse", "SessionEnd",
+    "SessionStart", "Stop", "UserPromptSubmit",
+  ]);
+
+  // Codex re-asks for trust whenever a hook command changes, so a rewrite that does not change
+  // the commands must not happen at all — every app launch runs this installer.
+  const first = fs.readFileSync(codexHooksPath(home));
+  runInstaller(home);
+  assert.deepEqual(fs.readFileSync(codexHooksPath(home)), first);
+});
+
+test("codex's one-second events get a budget that fits inside it", (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "control-bar-codex-budget-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
+
+  runInstaller(home);
+
+  const hooks = JSON.parse(fs.readFileSync(codexHooksPath(home), "utf8")).hooks;
+  const timeoutOf = (evt) => hooks[evt][0].hooks[0].timeout;
+  // Codex caps SessionEnd and Interrupt at one second (three at most) and kills the hook after
+  // it. Asking for more would be a lie; these two only delete a file or write one.
+  assert.equal(timeoutOf("SessionEnd"), 3);
+  assert.equal(timeoutOf("Interrupt"), 3);
+  assert.equal(timeoutOf("PreToolUse"), 10);
+});
+
+test("a machine without codex gets no codex hooks at all", (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "control-bar-nocodex-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
+
+  runInstaller(home);
+
+  assert.ok(!fs.existsSync(path.join(home, ".codex")), "no directory is created for it either");
+});
+
+test("the plugin channel owns Claude's hooks but codex's are still installed", (t) => {
+  // The lease exists because Claude Code merges plugin hooks with settings.json hooks and runs
+  // both. Codex reads neither — ~/.codex/hooks.json is its only channel, so standing down there
+  // means Codex sessions are invisible for everyone who installed the plugin.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "control-bar-codex-plugin-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const pluginRoot = path.join(home, "plugin");
+  fs.mkdirSync(pluginRoot, { recursive: true });
+  fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+  fs.mkdirSync(path.join(home, ".claude", "control-bar"), { recursive: true });
+  fs.writeFileSync(path.join(home, ".claude", "settings.json"), JSON.stringify({ hooks: {} }));
+  fs.writeFileSync(path.join(home, ".claude", "control-bar", "owner.json"),
+    JSON.stringify({ channel: "plugin", pluginRoot }));
+
+  runInstaller(home);
+
+  assert.deepEqual(readSettings(home).hooks, {}, "Claude's hooks stay with the plugin");
+  assert.equal(codexCommands(home).filter((c) => c.includes("--provider codex")).length, 8);
+  // The commands point at the copies in ~/.claude/control-bar, so those have to exist whichever
+  // channel won the lease.
+  for (const name of ["update.js", "lifecycle.js"]) {
+    assert.ok(fs.existsSync(path.join(home, ".claude", "control-bar", name)), name + " was deployed");
+  }
+});
+
+test("a codex hooks file that does not parse is left alone", (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "control-bar-codex-broken-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
+  fs.writeFileSync(codexHooksPath(home), "{ not json");
+
+  runInstaller(home);
+
+  // Rewriting it from {} would take the user's own Codex hooks with it, and Claude's hooks must
+  // still get installed either way.
+  assert.equal(fs.readFileSync(codexHooksPath(home), "utf8"), "{ not json");
+  assert.equal(statusBarCommands(readSettings(home)).length, 8, "Claude's install still happened");
+});
+
+test("uninstalling takes the codex hooks with it and leaves foreign ones", (t) => {
+  // Left behind, they point at scripts that no longer exist: Codex would run a failing hook on
+  // every single event, for the rest of the install's life.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "control-bar-codex-off-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
+  const foreign = "/bin/sh '/Users/somebody/hook.sh'";
+  fs.writeFileSync(codexHooksPath(home), JSON.stringify({
+    hooks: { Stop: [{ hooks: [{ type: "command", command: foreign }] }] } }, null, 2));
+
+  runInstaller(home);
+  runUninstaller(home);
+
+  const file = JSON.parse(fs.readFileSync(codexHooksPath(home), "utf8"));
+  assert.deepEqual(Object.keys(file.hooks), ["Stop"], "only the foreign event is left");
+  assert.deepEqual(codexCommands(home), [foreign]);
+});
+
+test("handing Claude's hooks to the plugin does not disturb the codex ones", (t) => {
+  // bootstrap.py runs `uninstall.js --hooks-only` when the plugin claims the lease. That is a
+  // Claude-channel conflict and nothing to do with Codex — and every removal-plus-reinstall of
+  // a Codex hook makes Codex ask the user to trust it again.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "control-bar-codex-lease-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
+
+  runInstaller(home);
+  const before = fs.readFileSync(codexHooksPath(home));
+  execFileSync(process.execPath, ["-e",
+    `require("node:child_process").execSync = () => {};\nrequire(process.env.SCRIPT_PATH);`,
+    "uninstall.js", "--hooks-only"],
+    { env: { ...process.env, HOME: home, SCRIPT_PATH: uninstallerPath }, stdio: "pipe" });
+
+  assert.deepEqual(fs.readFileSync(codexHooksPath(home)), before);
+  assert.deepEqual(readSettings(home).hooks, {}, "Claude's own hooks did go");
+});

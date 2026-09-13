@@ -67,7 +67,8 @@ struct PanelView: View {
 
     @ViewBuilder
     private var limitsStrip: some View {
-        if store.snapshot.limits.isEmpty {
+        let groups = store.snapshot.limitGroups
+        if groups.isEmpty {
             Text(store.snapshot.limitsNote)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
@@ -76,14 +77,117 @@ struct PanelView: View {
                 .padding(.vertical, 9)
                 .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(PanelTheme.wellFill(scheme)))
+        } else if groups.count == 1, let only = groups.first {
+            // One provider needs no switcher and no second name to be told apart from — with one
+            // exception. A Claude-only strip is what most installs have always seen and keeps its
+            // bare row of cells; a lone Codex one would otherwise show "5 HOURS" and "7 DAYS"
+            // that read exactly like Claude's, so it keeps its name.
+            limitRow(only, named: only.provider != "claude")
         } else {
+            switch store.snapshot.limitsLayout {
+            case .rows:
+                VStack(spacing: 6) {
+                    ForEach(groups) { limitRow($0, named: true) }
+                }
+            case .switcher:
+                VStack(spacing: 6) {
+                    providerSwitcher(groups)
+                    limitRow(shownGroup(groups), named: false)
+                }
+            }
+        }
+    }
+
+    /// Which provider the switcher is showing. A remembered pick that no longer has figures falls
+    /// back to the first group rather than to an empty strip — a provider can go quiet for a week
+    /// and come back, and the pick is worth keeping across that.
+    private func shownGroup(_ groups: [PanelLimitGroup]) -> PanelLimitGroup {
+        groups.first { $0.provider == store.snapshot.limitsProvider } ?? groups[0]
+    }
+
+    private func limitRow(_ group: PanelLimitGroup, named: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if named { limitHeader(group) }
             HStack(spacing: 5) {
-                ForEach(store.snapshot.limits) { limit in
+                ForEach(group.limits) { limit in
                     PanelLimitTile(limit: limit)
                 }
             }
-            .help("Limits · " + store.snapshot.limitsNote)
         }
+        .help(group.tip)
+    }
+
+    /// Who the row belongs to, and when the first of its windows comes back. The reset sits here
+    /// rather than in every cell because at 300pt a cell has room for a name, a figure and a bar
+    /// — and the window that resets first is the only one whose countdown changes a decision.
+    private func limitHeader(_ group: PanelLimitGroup) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: group.glyph).font(.system(size: 9, weight: .semibold))
+            Text(group.plan.map { "\(group.title) · \($0)" } ?? group.title)
+                .font(.system(size: 10, weight: .semibold))
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            if let resets = group.resets {
+                Text("resets \(resets)")
+                    .font(.system(size: 9.5).monospacedDigit())
+                    .lineLimit(1)
+            }
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 3)
+    }
+
+    /// The switcher, built like the tab bar below it because it is the same gesture in the same
+    /// window. The hairline under each name is the part that matters: a switcher whose inactive
+    /// side says nothing turns the other provider into a blind spot, and "am I about to run out
+    /// of anything" is the question the strip exists to answer. So every tab carries its
+    /// provider's fullest window, coloured by the same thresholds as the bars themselves.
+    private func providerSwitcher(_ groups: [PanelLimitGroup]) -> some View {
+        let current = shownGroup(groups).provider
+        return HStack(spacing: 2) {
+            ForEach(groups) { group in
+                let active = group.provider == current
+                Button { store.selectLimitsProvider(group.provider) } label: {
+                    VStack(spacing: 4) {
+                        HStack(spacing: 5) {
+                            Image(systemName: group.glyph).font(.system(size: 10, weight: .medium))
+                            Text(group.title)
+                                .font(.system(size: 11.5, weight: active ? .medium : .regular))
+                                .lineLimit(1)
+                            if let resets = group.resets {
+                                Text(resets)
+                                    .font(.system(size: 10).monospacedDigit())
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .foregroundStyle(active ? Color.primary : Color.secondary)
+                        if let worst = group.worst {
+                            PanelBar(value: worst.fraction,
+                                     fill: PanelTheme.level(worst.fraction)
+                                        ?? Color.primary.opacity(active ? 0.45 : 0.25),
+                                     height: 2.5)
+                                .padding(.horizontal, 6)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(active ? PanelTheme.raisedFill(scheme) : .clear)
+                            .shadow(color: active ? .black.opacity(0.10) : .clear,
+                                    radius: 1, y: 1))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(active ? [.isSelected] : [])
+                .accessibilityLabel(group.tip + (group.worst.map { ", fullest window \($0.used)%" } ?? ""))
+                .help(group.tip)
+            }
+        }
+        .padding(2)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(PanelTheme.wellFill(scheme)))
     }
 
     // MARK: tabs
@@ -168,7 +272,7 @@ struct PanelView: View {
 
     private var footer: some View {
         HStack(spacing: 8) {
-            Text(store.snapshot.limits.isEmpty ? "" : "Limits · " + store.snapshot.limitsNote)
+            Text(store.snapshot.limitGroups.isEmpty ? "" : "Limits · " + store.snapshot.limitsNote)
                 .font(.system(size: 10.5))
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)

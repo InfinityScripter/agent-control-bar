@@ -11,6 +11,10 @@ import Cocoa
 struct Gauge {
     var fiveHour: Double?
     var sevenDay: Double?
+    /// What the two bars are called. Claude's pair is fixed, so it is the default; Codex reports
+    /// the length of its own windows and a plan can carry a pair that is neither 5 hours nor a
+    /// week, which is why the labels are passed in rather than spelled here.
+    var labels: (String, String) = ("5h", "7d")
 
     /// Everything that changes what the bars look like, in one string — the part of the cache key
     /// for a composed menu bar icon that this type owns.
@@ -19,7 +23,7 @@ struct Gauge {
     }
 
     var rows: [(String, Double)] {
-        [("5h", fiveHour), ("7d", sevenDay)].compactMap { label, value in
+        [(labels.0, fiveHour), (labels.1, sevenDay)].compactMap { label, value in
             value.map { (label, $0) }
         }
     }
@@ -45,6 +49,21 @@ struct Gauge {
         // One device pixel is the floor for anything above zero — the battery gauge makes the
         // same promise, so "critically low" and "empty" stay distinguishable.
         return pct > 0 ? max(honest, 1 / scale) : 0
+    }
+
+    /// The label as VoiceOver should read it. "5h" out loud is "five aitch", which is not what a
+    /// screen reader should say about a five-hour window; anything the app has no word for is
+    /// read as it is rather than mislabelled as one of the two it knows.
+    static func spoken(_ label: String) -> String {
+        guard let unit = label.last, let count = Int(label.dropLast()) else { return label }
+        let word: String
+        switch unit {
+        case "h": word = "hour"
+        case "d": word = "day"
+        case "m": word = "minute"
+        default: return label
+        }
+        return "\(count) \(word)"
     }
 
     static func level(_ value: Double) -> NSColor? {
@@ -137,7 +156,7 @@ struct Gauge {
         // Drawn bars carry no text the system can read, so without this the item is silent to
         // VoiceOver — a regression against the plain label it replaces.
         image.accessibilityDescription = shown
-            .map { "\($0.0 == "5h" ? "5 hour" : "7 day") limit \(($0.1 * 100).rounded().clampedInt)%" }
+            .map { "\(Gauge.spoken($0.0)) limit \(($0.1 * 100).rounded().clampedInt)%" }
             .joined(separator: ", ")
         return image
     }

@@ -30,6 +30,38 @@ const settingsPath = path.join(home, ".claude", "settings.json");
 // duplicate set of hooks has to go.
 const hooksOnly = process.argv.includes("--hooks-only");
 
+// Codex's hooks go only on a real uninstall, never on --hooks-only: the lease is a Claude Code
+// problem (it merges plugin hooks with settings.json hooks and runs both), while
+// ~/.codex/hooks.json is the single channel Codex reads. Removing and re-adding an entry there
+// makes Codex ask the user to trust it again, so the lease handover must not touch it.
+// On a real uninstall they have to go, though — left behind they point at scripts that were
+// just deleted, and Codex would run a failing hook on every event from then on.
+if (!hooksOnly) {
+  const codexHooksPath = path.join(home, ".codex", "hooks.json");
+  try {
+    const file = JSON.parse(fs.readFileSync(codexHooksPath, "utf8"));
+    const before = JSON.stringify(file, null, 2) + "\n";
+    for (const evt of Object.keys((file || {}).hooks || {})) {
+      // Per-hook, so a foreign hook sharing the entry survives; the event key goes only when
+      // nothing of anyone's is left under it.
+      file.hooks[evt] = (file.hooks[evt] || [])
+        .map((e) => ({ ...e, hooks: (e.hooks || []).filter((h) => !isOurs(h.command || "")) }))
+        .filter((e) => (e.hooks || []).length > 0);
+      if (file.hooks[evt].length === 0) delete file.hooks[evt];
+    }
+    const next = JSON.stringify(file, null, 2) + "\n";
+    if (next !== before) {
+      const tmp = `${codexHooksPath}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, next, { mode: fs.statSync(codexHooksPath).mode });
+      fs.renameSync(tmp, codexHooksPath);
+      console.log("Removed control-bar hooks from", codexHooksPath);
+    }
+  } catch {
+    // No Codex, no hooks file, or one that does not parse: nothing to remove, and a file we
+    // cannot read is one we must not rewrite from a guess.
+  }
+}
+
 if (!hooksOnly) {
   // Undo the statusLine interception first, while the script that knows how still exists: the
   // limits capture rewires settings.json's statusLine.command to this install's statusline.sh,

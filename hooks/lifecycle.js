@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// SessionStart/SessionEnd hooks. Usage: node lifecycle.js <start|end>  (hook JSON, incl. session_id, on stdin)
+// SessionStart/SessionEnd hooks. Usage: node lifecycle.js <start|end> [--provider codex]
+// (hook JSON, incl. session_id, on stdin)
 
 const fs = require("fs");
 const os = require("os");
@@ -9,11 +10,17 @@ const cp = require("child_process");
 const BUNDLE_ID = "io.github.infinityscripter.claude-control-bar";
 const EXEC = "ClaudeControlBar";
 const dir = path.join(os.homedir(), ".claude", "control-bar");
-const stateDir = path.join(dir, "state.d");
+const event = process.argv[2];
+// See update.js for why one file serves both agents. Codex gets its own directory, never a
+// second shape.
+const providerFlag = process.argv.indexOf("--provider");
+const codex = providerFlag > 0 && process.argv[providerFlag + 1] === "codex";
+const stateDir = codex ? path.join(dir, "codex", "state.d") : path.join(dir, "state.d");
 // One file per session, written by hooks/statusline.py: the context percentage Claude Code
 // itself reported. It lives and dies with the session file, or context.d grows without bound.
+// Codex has none: it states the context in its own rollout, so nothing has to be captured.
 const contextDir = path.join(dir, "context.d");
-const event = process.argv[2];
+const sessionDirs = codex ? [stateDir] : [stateDir, contextDir];
 
 // 0700/0600 everywhere below, not the umask default. A session file carries the working
 // directory, the transcript path and the pid, and the home folder is group-readable by staff
@@ -32,8 +39,44 @@ const alive = (pid) => {
 };
 
 const forget = (id) => {
-  for (const d of [stateDir, contextDir]) {
+  for (const d of sessionDirs) {
     try { fs.rmSync(path.join(d, id + ".json"), { force: true }); } catch {}
+  }
+};
+
+// The rollout's first line is a session_meta record naming the surface and whether this thread
+// is the user's or a worker's. Read once, at SessionStart: neither fact changes mid-session,
+// and the per-event hook must not pay for a file open it does not need.
+//
+// `originator` is the honest source for the surface — a Codex session in the IDE and one in
+// the desktop app both report `source: "vscode"`, so the hook payload cannot tell them apart.
+// An unknown originator yields no surface rather than a guessed one: a wrong "CLI" badge on a
+// desktop session is worse than no badge.
+const CODEX_SURFACES = {
+  codex_cli_rs: "cli", codex_vscode: "ide", codex_work_desktop: "app",
+  "Codex Desktop": "app", codex_exec: "exec",
+};
+
+const codexMeta = (transcript) => {
+  if (!transcript) return { surface: "", worker: false };
+  let fd;
+  try {
+    fd = fs.openSync(transcript, "r");
+    const buf = Buffer.alloc(8192);
+    const read = fs.readSync(fd, buf, 0, 8192, 0);
+    const line = buf.toString("utf8", 0, read).split("\n")[0];
+    const meta = (JSON.parse(line) || {}).payload || {};
+    return {
+      surface: CODEX_SURFACES[meta.originator] || "",
+      // Anything that is not the user's own thread is somebody's worker: `subagent` and
+      // `guardian_review` both appear in this machine's rollouts. A missing field is an older
+      // Codex that had no workers at all, so it counts as the user's.
+      worker: typeof meta.thread_source === "string" && meta.thread_source !== "user",
+    };
+  } catch {
+    return { surface: "", worker: false };
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
   }
 };
 
@@ -51,6 +94,7 @@ const reapDeadSessions = () => {
   // with. The loop above walks stateDir only, so such a file was never visited again and the
   // directory grew without bound, the exact leak the header comment promises away.
   let ctx = [];
+  if (codex) return;   // Codex writes no context files, so there are no strays to collect.
   try { ctx = fs.readdirSync(contextDir); } catch { return; }
   for (const f of ctx.filter((n) => n.endsWith(".json"))) {
     if (!fs.existsSync(path.join(stateDir, f))) {
@@ -98,12 +142,19 @@ function run() {
     // sessions opening at once both see it down, and the second one's blanket wipe took out
     // the first one's file before the app had ever read it. Liveness is the pid, nothing else.
     if (!running()) reapDeadSessions();
+    // A Codex worker thread gets no file of its own: it is part of the user's session, not a
+    // session of its own, and four of them at once turned one prompt into five rows. Its own
+    // SessionEnd still runs harmlessly — forget() on a file that was never written is a no-op.
+    const meta = codex ? codexMeta(transcript) : { surface: "", worker: false };
+    if (meta.worker) process.exit(0);
     // Seed an idle file: counts the session immediately, and clears any frozen state from a
     // resume (SessionStart fires on resume with no active turn).
     try {
       // started:false — a merely-opened conversation seeds this for launch + liveness but stays out of
       // the dropdown until it has real activity (update.js flips started:true on a prompt/tool).
-      writeAtomic(statePath, { state: "idle", label: "", tool: "", project: cwd ? path.basename(cwd) : "", cwd, sessionId: id, transcript, entrypoint: process.env.CLAUDE_CODE_ENTRYPOINT || "", term_program: process.env.TERM_PROGRAM || "", term_bundle: process.env.__CFBundleIdentifier || "", pid: process.ppid, started: false, startedAt: 0, ts: Math.floor(Date.now() / 1000) });
+      const seed = { state: "idle", label: "", tool: "", project: cwd ? path.basename(cwd) : "", cwd, sessionId: id, transcript, entrypoint: process.env.CLAUDE_CODE_ENTRYPOINT || "", term_program: process.env.TERM_PROGRAM || "", term_bundle: process.env.__CFBundleIdentifier || "", pid: process.ppid, started: false, startedAt: 0, ts: Math.floor(Date.now() / 1000) };
+      if (codex) { seed.provider = "codex"; seed.surface = meta.surface; }
+      writeAtomic(statePath, seed);
     } catch {}
     if (!resumed || !fs.existsSync(path.join(dir, "quit-intent"))) {
       cp.spawn("open", ["-g", "-b", BUNDLE_ID], { stdio: "ignore", detached: true }).unref();

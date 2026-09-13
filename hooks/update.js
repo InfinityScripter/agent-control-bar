@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Maps a Claude Code hook event to this session's file: ~/.claude/control-bar/state.d/<session_id>.json
-// Usage: node update.js <prompt|pre|post|notify|permreq|stop>
+// Maps an agent's hook event to this session's file: ~/.claude/control-bar/state.d/<session_id>.json
+// for Claude Code, ~/.claude/control-bar/codex/state.d/<session_id>.json for Codex CLI.
+// Usage: node update.js <prompt|pre|post|notify|permreq|stop> [--provider codex]
 
 const fs = require("fs");
 const os = require("os");
@@ -8,11 +9,17 @@ const path = require("path");
 const cp = require("child_process");
 
 const dir = path.join(os.homedir(), ".claude", "control-bar");
-const stateDir = path.join(dir, "state.d");
 // Written by the app's Quit menu item; suppresses the relaunch below so Quit sticks.
 // lifecycle.js removes it on the next SessionStart (a new session = fresh consent).
 const quitMarker = path.join(dir, "quit-intent");
 const event = process.argv[2] || "";
+// One hook file serves both agents. The alternative — a second copy for Codex — means every
+// fix to the shared 300 lines has to be made twice, and the copy that gets forgotten is the
+// one nobody notices. The provider only ever changes which directory and which transcript
+// parser is used; the state file's shape is deliberately identical.
+const providerFlag = process.argv.indexOf("--provider");
+const codex = providerFlag > 0 && process.argv[providerFlag + 1] === "codex";
+const stateDir = codex ? path.join(dir, "codex", "state.d") : path.join(dir, "state.d");
 
 const TOOL_LABELS = {
   Bash: "Running command", Edit: "Editing", Write: "Writing", MultiEdit: "Editing",
@@ -21,7 +28,55 @@ const TOOL_LABELS = {
   TodoWrite: "Planning",
 };
 
+// Codex names its tools differently, and the same activity has to read the same way whichever
+// agent is doing it — "exec" and "Bash" are both a shell. The shell family is long because
+// Codex has shipped several generations of it and old versions are still in use; `exec` and
+// `js` are the two that actually appear in this machine's rollouts, the rest come from the
+// tool registry in openai/codex. An unknown name falls through to "Using tool", as for Claude.
+const CODEX_TOOL_LABELS = {
+  exec: "Running command", shell: "Running command", shell_command: "Running command",
+  exec_command: "Running command", unified_exec: "Running command",
+  write_stdin: "Running command", js: "Running code",
+  apply_patch: "Editing", read_file: "Reading", web_search: "Searching web",
+  view_image: "Reading", update_plan: "Planning",
+  spawn_agent: "Delegating", wait_agent: "Delegating", list_agents: "Delegating",
+  followup_task: "Delegating", send_message: "Delegating", wait: "Delegating",
+};
+
 const safeId = (s) => String(s || "").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 64) || "unknown";
+
+// The first line of a Codex rollout is a session_meta record naming which surface the session
+// runs on and whether the thread is the user's or a worker's. Neither fact changes mid-session.
+// (lifecycle.js carries the same reader for SessionStart — keep the two in step. A shared third
+// file would have to be copied into ~/.claude/control-bar and added to the bundle, the installer
+// and the CI identity guard for twenty lines; the repo already keeps the hook-ownership
+// predicate in three copies for the same reason.)
+const CODEX_SURFACES = {
+  codex_cli_rs: "cli", codex_vscode: "ide", codex_work_desktop: "app",
+  "Codex Desktop": "app", codex_exec: "exec",
+};
+
+const codexRollout = (transcript) => {
+  if (!transcript) return null;
+  let fd;
+  try {
+    fd = fs.openSync(transcript, "r");
+    const buf = Buffer.alloc(8192);
+    const read = fs.readSync(fd, buf, 0, 8192, 0);
+    const meta = (JSON.parse(buf.toString("utf8", 0, read).split("\n")[0]) || {}).payload || {};
+    return {
+      // An unknown originator yields no surface rather than a guessed one: a wrong "CLI" badge
+      // on a desktop session is worse than no badge.
+      surface: CODEX_SURFACES[meta.originator] || "",
+      // A missing field is an older Codex that had no workers at all, so it counts as the user's.
+      worker: typeof meta.thread_source === "string" && meta.thread_source !== "user",
+    };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
+  }
+};
 
 // --- context window ---------------------------------------------------------
 // Claude Code hands the used-context percentage to statusLine and to nothing else, and the
@@ -131,7 +186,7 @@ function contextOf(transcript) {
     // record is nearly always within the last few lines, so 128 KB finds it; only a turn that
     // ends in a very large tool result needs the 2 MB read (one turn plus such a result).
     for (const span of [Math.min(size, 131_072), Math.min(size, 2_000_000)]) {
-      const found = usageInTail(fd, size, span, models);
+      const found = codex ? codexUsageInTail(fd, size, span) : usageInTail(fd, size, span, models);
       if (found) return found;
       if (span === size) break;
     }
@@ -143,15 +198,45 @@ function contextOf(transcript) {
   }
 }
 
-function usageInTail(fd, size, span, models) {
+function tailLines(fd, size, span) {
   const buf = Buffer.alloc(span);
   fs.readSync(fd, buf, 0, span, size - span);
   let text = buf.toString("utf8");
   // The read starts mid-line, and possibly mid-UTF-8-character; dropping the first partial
   // line discards both problems at once.
   if (size > span) text = text.slice(text.indexOf("\n") + 1);
+  return text.split("\n");
+}
 
-  const lines = text.split("\n");
+// Codex states the window in every record, so there is nothing to guess and nothing to borrow
+// from a model family: `assumed` is honestly false.
+//
+// Which of the record's two totals is the context is the whole point of this function.
+// total_token_usage accumulates every turn ever billed — measured at 25,374,147 on a 110-turn
+// session whose window is 828,400 — so reading it parks a session at 100% after a few turns.
+// last_token_usage is what occupies the window right now; on that same session it grew from
+// 60k to 323k and never passed the window.
+function codexUsageInTail(fd, size, span) {
+  const lines = tailLines(fd, size, span);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].includes('"token_count"')) continue;
+    let rec;
+    try { rec = JSON.parse(lines[i]); } catch { continue; }
+    const info = ((rec || {}).payload || {}).info || {};
+    const last = info.last_token_usage || {};
+    const window = info.model_context_window;
+    const tokens = last.total_tokens;
+    if (typeof tokens !== "number" || !(window > 0)) continue;
+    return {
+      pct: Math.max(0, Math.min(100, Math.round((tokens / window) * 100))),
+      tokens, window, model: "", assumed: false,
+    };
+  }
+  return null;
+}
+
+function usageInTail(fd, size, span, models) {
+  const lines = tailLines(fd, size, span);
   for (let i = lines.length - 1; i >= 0; i--) {
     if (!lines[i].includes('"usage"')) continue;
     let rec;
@@ -218,6 +303,22 @@ process.stdin.on("end", () => {
   let prev = {};
   try { prev = JSON.parse(fs.readFileSync(statePath, "utf8")); } catch {}
 
+  // A Codex subagent is a thread of its own: own session id, own rollout, own hook events.
+  // Left alone, one prompt of the user's showed five running sessions — the parent plus four
+  // workers — and whichever worker fired last decided what the menu bar icon said.
+  //
+  // Two nets, because only one of them is a fact. `agent_id`/`agent_type` on the payload is
+  // what Codex's hook documentation describes, and it is free to check — but it has NOT been
+  // seen on a live worker's own event here, only asserted. The rollout's `thread_source` has:
+  // `subagent` and `guardian_review` both appear in this machine's files. So the documented
+  // field is the cheap first look, and the rollout is what actually decides.
+  //
+  // Read only when this session has no file yet: one open per session, not per event. A
+  // worker has no file by definition (it never gets one), which is the one case that pays the
+  // read every time — and a worker's life is a handful of events.
+  const codexMeta = codex && !prev.provider ? codexRollout(p.transcript_path || prev.transcript) : null;
+  if (codex && (p.agent_id || p.agent_type || (codexMeta && codexMeta.worker))) return;
+
   const project = p.cwd ? path.basename(p.cwd) : prev.project || "";
   // The app reads <cwd>/.git/HEAD for the branch and disambiguates same-named projects by
   // parent folder; carried over from prev for events whose payload omits cwd.
@@ -230,7 +331,8 @@ process.stdin.on("end", () => {
       state = "thinking"; label = "Thinking…"; startedAt = ts; break;
     case "pre": {
       const t = p.tool_name || "";
-      state = "tool"; label = TOOL_LABELS[t] || "Using tool";
+      const labels = codex ? CODEX_TOOL_LABELS : TOOL_LABELS;
+      state = "tool"; label = labels[t] || "Using tool";
       if (!startedAt) startedAt = ts;
       break;
     }
@@ -289,6 +391,20 @@ process.stdin.on("end", () => {
     };
   const out = { state, label, tool: p.tool_name || "", project, cwd, sessionId: p.session_id || "", transcript, entrypoint, term_program: termProgram, term_bundle: termBundle, pid: process.ppid, started: true, startedAt, ts, ...ctx,
     ...costFromStatusLine(sid, prev), dirty: dirtyCount(cwd, event, prev) };
+  if (codex) {
+    // The app keys its session map by "<provider>:<id>" and draws the pill from this field, so
+    // an old file without it has to keep reading as Claude's — hence a field rather than a
+    // second shape. Codex names the model in every payload, so unlike Claude's it needs no
+    // transcript lookup; the surface is settled once at SessionStart and carried from there,
+    // because it takes reading the rollout's first line and never changes mid-session.
+    out.provider = "codex";
+    // Settled once and carried: from the seed file SessionStart wrote, or — for a session that
+    // was already running when the hooks were installed, which never fired SessionStart — from
+    // the rollout read above.
+    out.surface = typeof prev.surface === "string" ? prev.surface
+                  : (codexMeta ? codexMeta.surface : "");
+    out.model = p.model || prev.model || "";
+  }
   try {
     fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
     const tmp = statePath + "." + process.pid + ".tmp";

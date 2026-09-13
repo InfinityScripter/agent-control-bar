@@ -33,7 +33,9 @@ extension StatusController {
         let eff = effState(s, now: now)
         let working = isWorkingState(eff) && s.startedAt > 0
         return PanelSession(
-            id: s.id,
+            id: s.key,
+            sessionID: s.id,
+            provider: s.provider,
             name: sessionName(s),
             branch: s.branch,
             status: panelStatus(s, eff: eff),
@@ -41,7 +43,7 @@ extension StatusController {
             elapsed: working ? elapsed(max(0, (now - s.startedAt).clampedInt)) : nil,
             pct: s.pct,
             assumed: s.assumed,
-            tag: surfaceTag(s),
+            tag: SessionFormat.surfaceTag(s),
             entrypoint: s.entrypoint,
             termProgram: s.termProgram,
             termBundle: s.termBundle,
@@ -66,9 +68,28 @@ extension StatusController {
 
     // MARK: limits
 
-    /// The account's windows and one line saying how old they are — or, when there are none, why.
-    func panelLimits(now: Double) -> ([PanelLimit], String) {
-        guard let limits, !limits.isEmpty else {
+    /// Each provider's windows, grouped, plus one line saying how old the figures are — or, when
+    /// there are none at all, why.
+    ///
+    /// A provider with nothing to show is absent from the list rather than present and empty. An
+    /// empty bar reads as "you have not used this", which is not what "not installed", "not
+    /// signed in" or "last measured a week ago" mean.
+    func panelLimitGroups(now: Double) -> ([PanelLimitGroup], String) {
+        var sources: [(set: LimitsSet, windows: [NamedWindow], title: String, glyph: String)] = []
+        if let claude = limits?.set, !claude.isEmpty {
+            sources.append((claude, claude.windows, "Claude", "sparkle"))
+        }
+        if let codex = codexWindows {
+            // Only the windows that have not rolled over since Codex wrote them down. Its figures
+            // come out of a session transcript rather than a poll, so the newest one on disk can
+            // be from last week — and last week's 12% is about a window that no longer exists.
+            let live = codex.live(at: now)
+            if !live.isEmpty {
+                sources.append((codex, live, "Codex",
+                                "chevron.left.forwardslash.chevron.right"))
+            }
+        }
+        guard !sources.isEmpty else {
             // Empty means the poll has not succeeded yet: switched off in Settings, or Claude Code
             // is not signed in through the browser OAuth flow (a `setup-token` login lacks the
             // profile scope the endpoint wants). Saying so beats an empty strip, and beats
@@ -76,25 +97,44 @@ extension StatusController {
             return ([], oauthLimits ? "No data yet — is Claude Code signed in?"
                                     : "Limits are switched off in Settings")
         }
-        // Account windows first, the model's own window last: 5h and 7d are what every plan has,
-        // Fable is a slice of the week only some plans carry. A window the endpoint does not
-        // report is skipped, not zeroed — an empty bar would read as "you have not used Fable",
-        // which is not what "no such window" means.
-        let rows: [(String, String?, LimitWindow?)] = [
-            ("5 hours", nil, limits.fiveHour),
-            ("7 days", nil, limits.sevenDay),
-            ("Fable", "7d", limits.fable),
-        ]
-        let out = rows.compactMap { title, badge, window -> PanelLimit? in
-            guard let window else { return nil }
-            return PanelLimit(
-                title: title, badge: badge, used: window.used,
-                resets: window.resets.flatMap { $0 > now ? Self.until($0) : nil })
+        let groups = sources.map { entry -> PanelLimitGroup in
+            // Account windows first, the model's own window last: 5h and 7d are what every plan
+            // has, Fable is a slice of the week only some plans carry. A window the writer did not
+            // report is skipped, not zeroed — the model hands over only the windows it read.
+            let rows = entry.windows.map { window in
+                PanelLimit(title: window.title, badge: window.badge, used: window.window.used,
+                           resets: window.window.resets.flatMap { $0 > now ? Self.until($0) : nil })
+            }
+            let soonest = entry.windows.compactMap { $0.window.resets }.filter { $0 > now }.min()
+            // Picked from the windows rather than from the rows above: the rule breaks a tie on
+            // which window resets first, and a row carries its reset as "2h 10m" by then. Keys
+            // are unique within a provider, so the row it names is unambiguous.
+            let worst = LimitsSet.worst(entry.windows)
+                .flatMap { pick in entry.windows.firstIndex { $0.key == pick.key } }
+                .map { rows[$0] }
+            return PanelLimitGroup(provider: entry.set.provider, title: entry.title,
+                                   glyph: entry.glyph, limits: rows,
+                                   resets: soonest.map { Self.until($0) },
+                                   age: Self.age(of: entry.set.ts, now: now),
+                                   plan: entry.set.plan, worst: worst)
         }
-        // Short: it shares the footer with two buttons across 300pt, and "measured 4 min ago"
-        // truncated to "Limits measured 2…", which says nothing at all.
-        let age = (now - limits.ts).clampedInt / 60
-        return (out, age < 1 ? "just now" : "\(age) min ago")
+        // The oldest of them in the one shared line: it is the figure furthest from the truth, and
+        // a footer that quotes the fresher of two sources would flatter the staler one.
+        return (groups, Self.age(of: sources.map { $0.set.ts }.min() ?? 0, now: now))
+    }
+
+    /// How old a figure is, in the words the footer uses. Short: the line shares the footer with
+    /// two buttons across 300pt, and "measured 4 minutes ago" truncated to "Limits measured 2…",
+    /// which says nothing at all.
+    static func age(of ts: Double, now: Double) -> String {
+        let minutes = (now - ts).clampedInt / 60
+        if minutes < 1 { return "just now" }
+        if minutes < 60 { return "\(minutes) min ago" }
+        // Rolled up past an hour for the same reason `until` drops the minutes past a day: a
+        // Codex snapshot is allowed to be days old while its weekly window is still open, and
+        // "8640 min ago" is arithmetic in a line that has to fit beside two buttons.
+        let hours = minutes / 60
+        return hours < 24 ? "\(hours)h ago" : "\(hours / 24)d ago"
     }
 
     /// How long until a window resets. A weekly window is days away, and "76h 12m" is arithmetic
@@ -114,8 +154,31 @@ extension StatusController {
     /// panel's top edge got pushed up off the icon to make room.
     var panelContentCap: CGFloat {
         let screen = statusItem.button?.window?.screen ?? NSScreen.main
-        let available = (screen?.visibleFrame.height ?? 600) - Self.panelChromeHeight
+        let available = (screen?.visibleFrame.height ?? 600)
+            - Self.panelChromeHeight - panelStripExtra
         return max(PanelTheme.minContentHeight, available)
+    }
+
+    /// How much taller a second provider makes the strip than the one row the constant below
+    /// assumes. Without it the list is allowed to grow into space the strip has taken, and a long
+    /// session list pushes the panel's top edge up off the icon it hangs from.
+    ///
+    /// Two numbers rather than a measurement because the cap is computed before the strip is laid
+    /// out: in rows, a second header, a second row of cells and the gap between them; in the
+    /// switcher, the tabs above the one row of cells that is already counted.
+    var panelStripExtra: CGFloat {
+        guard limitProviderCount > 1 else { return 0 }
+        return limitsLayout == .rows ? 80 : 40
+    }
+
+    /// How many providers have figures right now, asked cheaply: `panelLimitGroups` builds every
+    /// row and is already called once per refresh, and the cap has no use for any of that.
+    private var limitProviderCount: Int {
+        var count = 0
+        if let limits, !limits.isEmpty { count += 1 }
+        if let codexWindows,
+           !codexWindows.live(at: Date().timeIntervalSince1970).isEmpty { count += 1 }
+        return count
     }
 
     /// The banner, the limits strip, the tabs and the footer, plus the gap under the menu bar.
@@ -127,12 +190,15 @@ extension StatusController {
 
     func panelServer(_ server: MCPServer) -> PanelServer {
         PanelServer(
-            id: server.name,
+            id: server.provider + ":" + server.name,
+            serverName: server.name,
+            provider: server.provider,
             name: mcpShortName(server.name),
             state: server.state,
             tail: serverTail(server),
             enabled: !server.disabled,
-            checking: mcp.isChecking(server.name, backendBusy: mcpChecking),
+            checking: model(of: server.provider).isChecking(server.name,
+                                                            backendBusy: mcpChecking),
             prefix: server.toolPrefix,
             tip: serverTip(server),
             tools: server.tools.map { tool in

@@ -57,17 +57,8 @@ extension StatusController {
         return s.project.isEmpty ? "session" : s.project
     }
 
-    // CLAUDE_CODE_ENTRYPOINT (+ TERM_PROGRAM) -> a short all-caps badge tag, one uniform
-    // 3-letter pill per surface. APP is the desktop app. IDE is a session living inside an
-    // editor — the Claude Code extension panel (entrypoint "claude-vscode") or the CLI in a
-    // VS Code-family integrated terminal (Cursor, Windsurf and VS Code all report
-    // TERM_PROGRAM="vscode"). CLI is a standalone terminal (Apple_Terminal, iTerm.app, …).
-    func surfaceTag(_ s: Session) -> String {
-        if s.entrypoint == "claude-desktop" { return "APP" }
-        if s.entrypoint.isEmpty { return "" }
-        if s.entrypoint == "claude-vscode" || s.termProgram == "vscode" { return "IDE" }
-        return "CLI"
-    }
+    // Moved to SessionFormat.surfaceTag: it is pure, it now has to answer for two agents, and
+    // only the model half is covered by the model checks.
 
 
 
@@ -94,7 +85,7 @@ extension StatusController {
         // from the switch doing nothing, and reported as exactly that. The icon already says
         // Claude is working and the timer says for how long.
         guard useThinkingWords else { return "" }
-        if s.state == "thinking", let w = sessionWord[s.id], !w.isEmpty { return w + "…" }
+        if s.state == "thinking", let w = sessionWord[s.key], !w.isEmpty { return w + "…" }
         if !s.label.isEmpty { return s.label }
         return s.state == "tool" ? "Working…" : "Thinking…"
     }
@@ -103,11 +94,11 @@ extension StatusController {
     // avoiding an immediate repeat, so a tool round-trip lands a different word. Held steady while the
     // session stays thinking. Computed regardless of the toggle so flipping it on shows instantly.
     func updateThinkingWord(_ s: Session) {
-        let prev = prevState[s.id] ?? ""
+        let prev = prevState[s.key] ?? ""
         guard s.state == "thinking", prev != "thinking" else { return }
         var w = thinkingWords.randomElement() ?? "Thinking"
-        if thinkingWords.count > 1 { while w == sessionWord[s.id] { w = thinkingWords.randomElement() ?? w } }
-        sessionWord[s.id] = w
+        if thinkingWords.count > 1 { while w == sessionWord[s.key] { w = thinkingWords.randomElement() ?? w } }
+        sessionWord[s.key] = w
     }
 
 

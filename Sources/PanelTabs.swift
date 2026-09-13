@@ -74,6 +74,18 @@ struct PanelSessionRow: View {
                         // "main · Running command…" with no elapsed time at all.
                         VStack(alignment: .leading, spacing: 1) {
                             HStack(spacing: 6) {
+                                // Which agent this row belongs to, as the same glyph the limits
+                                // strip uses for Codex. A glyph and not a second pill: at 300pt
+                                // a "CODEX" badge beside the "IDE" one takes the branch name off
+                                // the line below, and the row already carries two figures.
+                                // Claude rows get none — in a panel with no Codex in it there is
+                                // nothing to tell apart, and a pill on every row is just noise.
+                                if session.provider == "codex" {
+                                    Image(systemName: "chevron.left.forwardslash.chevron.right")
+                                        .font(.system(size: 9, weight: .semibold))
+                                        .foregroundStyle(.secondary)
+                                        .help("An OpenAI Codex session")
+                                }
                                 Text(session.name)
                                     .font(.system(size: 13, weight: .medium))
                                     .lineLimit(1)
@@ -405,7 +417,7 @@ struct PanelServerRow: View {
                 }
                 Toggle("", isOn: Binding(
                     get: { server.enabled },
-                    set: { store.setServer(server.id, enabled: $0) }))
+                    set: { store.setServer(server, enabled: $0) }))
                     .toggleStyle(.switch)
                     .controlSize(.mini)
                     .labelsHidden()
@@ -462,8 +474,7 @@ struct PanelToolRow: View {
             Spacer(minLength: 4)
             Toggle("", isOn: Binding(
                 get: { tool.enabled },
-                set: { store.setTool(server: server.id, tool: tool.name,
-                                     prefix: server.prefix, enabled: $0) }))
+                set: { store.setTool(server: server, tool: tool.name, enabled: $0) }))
                 .toggleStyle(.switch)
                 .controlSize(.mini)
                 .labelsHidden()

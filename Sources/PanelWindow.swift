@@ -208,10 +208,25 @@ extension StatusController {
             lines.append("[update] \(update.kind) \(update.version)"
                 + (update.stage.map { " — \($0)" } ?? ""))
         }
-        lines.append("Limits — " + snapshot.limitsNote)
-        for limit in snapshot.limits {
-            lines.append("  \(limit.title)\(limit.badge.map { " [\($0)]" } ?? "") \(limit.used)%"
-                + (limit.resets.map { "  resets in \($0)" } ?? ""))
+        // The layout the strip is in is printed too: with two providers the dump is the only
+        // place to check that the switcher is showing the one it was left on.
+        lines.append("Limits — " + snapshot.limitsNote
+            + (snapshot.limitGroups.count > 1 ? "  [\(snapshot.limitsLayout.rawValue)]" : ""))
+        // The same fallback the strip uses: a remembered pick whose provider has no figures
+        // right now shows the first group instead, and the dump has to agree with the window.
+        let showing = snapshot.limitGroups.first { $0.provider == snapshot.limitsProvider }?.provider
+            ?? snapshot.limitGroups.first?.provider
+        for group in snapshot.limitGroups {
+            let hidden = snapshot.limitGroups.count > 1
+                && snapshot.limitsLayout == .switcher
+                && group.provider != showing
+            lines.append("  \(group.tip)"
+                + (group.resets.map { "  resets in \($0)" } ?? "")
+                + (hidden ? "  [behind the switcher]" : ""))
+            for limit in group.limits {
+                lines.append("    \(limit.title)\(limit.badge.map { " [\($0)]" } ?? "") \(limit.used)%"
+                    + (limit.resets.map { "  resets in \($0)" } ?? ""))
+            }
         }
         lines.append("Sessions (\(snapshot.sessions.count))")
         for session in snapshot.sessions {

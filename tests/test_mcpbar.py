@@ -1822,5 +1822,363 @@ class SeamContract(unittest.TestCase):
         shutil.copyfile(mcpbar.STATE, os.path.join(seam_dir, "mcp.json"))
 
 
+class CodexLimits(unittest.TestCase):
+    """Лимиты Codex снимаются с rollout-файла — чужого формата, который пишет не наш код.
+
+    Каждый случай здесь — форма, на которой наивный разбор либо врал числом, либо падал.
+    """
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.saved = {k: getattr(mcpbar, k)
+                      for k in ("CODEX", "CODEX_ROLLOUTS", "CODEX_LIMITS", "CODEX_ROOT")}
+        mcpbar.CODEX = os.path.join(self._dir.name, ".codex")
+        mcpbar.CODEX_ROLLOUTS = os.path.join(mcpbar.CODEX, "sessions", "*", "*", "*", "rollout-*.jsonl")
+        mcpbar.CODEX_ROOT = os.path.join(self._dir.name, "control-bar", "codex")
+        self.root = os.path.join(self._dir.name, "control-bar")
+        mcpbar.CODEX_LIMITS = os.path.join(self.root, "codex", "limits.json")
+        self.saved["ROOT"] = mcpbar.ROOT
+        mcpbar.ROOT = self.root
+
+    def tearDown(self):
+        for key, value in self.saved.items():
+            setattr(mcpbar, key, value)
+        self._dir.cleanup()
+
+    def rollout(self, name, lines, day="11"):
+        path = os.path.join(mcpbar.CODEX, "sessions", "2026", "09", day, name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            for line in lines:
+                fh.write((line if isinstance(line, str) else json.dumps(line)) + "\n")
+        return path
+
+    @staticmethod
+    def token_count(primary, secondary=None, stamp="2026-09-11T10:00:00Z", plan=None):
+        limits = {"primary": primary}
+        if secondary is not None:
+            limits["secondary"] = secondary
+        if plan:
+            limits["plan_type"] = plan
+        return {"timestamp": stamp, "type": "event_msg",
+                "payload": {"type": "token_count", "rate_limits": limits,
+                            "info": {"total_token_usage": {"input_tokens": 10}}}}
+
+    def test_окна_снимка_становятся_фактами(self):
+        record = mcpbar.codex_limits_record({
+            "primary": {"used_percent": 12.4, "window_minutes": 300, "resets_at": 1_789_012_345},
+            "secondary": {"used_percent": 58.6, "window_minutes": 10080, "resets_at": 1_789_500_000},
+            "plan_type": "pro",
+        }, ts=1_789_000_000)
+        self.assertEqual(record["source"], "rollout")
+        self.assertEqual(record["ts"], 1_789_000_000)
+        self.assertEqual(record["plan"], "pro")
+        self.assertEqual(record["windows"], [
+            {"kind": "primary", "used_percentage": 12, "window_minutes": 300,
+             "resets_at": 1_789_012_345},
+            {"kind": "secondary", "used_percentage": 59, "window_minutes": 10080,
+             "resets_at": 1_789_500_000},
+        ])
+
+    def test_процент_целый_как_у_claude(self):
+        """Swift читает used_percentage как `as? Int`: дробь молча выключила бы окно."""
+        record = mcpbar.codex_limits_record({"primary": {"used_percent": 0.6}}, ts=1)
+        self.assertIsInstance(record["windows"][0]["used_percentage"], int)
+        self.assertEqual(record["windows"][0]["used_percentage"], 1)
+
+    def test_на_free_плане_второго_окна_нет(self):
+        """secondary_window приходит null — окно пропускается, а не рисуется нулём."""
+        record = mcpbar.codex_limits_record({"primary": {"used_percent": 3}, "secondary": None}, ts=1)
+        self.assertEqual([w["kind"] for w in record["windows"]], ["primary"])
+
+    def test_остаток_секунд_отсчитывается_от_снимка(self):
+        """Старые сборки шлют «через сколько», а не «когда». Отсчёт от `сейчас` двигал бы
+        сброс вперёд на каждый опрос — окно не сбрасывалось бы в панели никогда."""
+        record = mcpbar.codex_limits_record(
+            {"primary": {"used_percent": 5, "resets_in_seconds": 600}}, ts=1_789_000_000)
+        self.assertEqual(record["windows"][0]["resets_at"], 1_789_000_600)
+
+    def test_битое_окно_не_уносит_соседнее(self):
+        record = mcpbar.codex_limits_record({
+            "primary": {"used_percent": None},
+            "secondary": {"used_percent": 40, "window_minutes": 10080},
+        }, ts=1)
+        self.assertEqual([w["kind"] for w in record["windows"]], ["secondary"])
+
+    def test_неожиданная_форма_это_нет_данных(self):
+        self.assertIsNone(mcpbar.codex_limits_record(["primary"], ts=1))
+        self.assertIsNone(mcpbar.codex_limits_record({}, ts=1))
+        self.assertIsNone(mcpbar.codex_limits_record({"primary": "12%"}, ts=1))
+
+    def test_берётся_последняя_запись_файла(self):
+        path = self.rollout("rollout-2026-09-11T10-00-00-aaa.jsonl", [
+            {"timestamp": "2026-09-11T10:00:00Z", "type": "session_meta", "payload": {"cwd": "/x"}},
+            self.token_count({"used_percent": 10, "window_minutes": 300}),
+            "{это не json",
+            self.token_count({"used_percent": 20, "window_minutes": 300},
+                             stamp="2026-09-11T11:00:00Z"),
+        ])
+        snapshot, ts = mcpbar.codex_snapshot(path)
+        self.assertEqual(snapshot["primary"]["used_percent"], 20)
+        # Момент записи, а не время файла: панель показывает возраст цифр, и возраст
+        # недельного снимка должен читаться неделей, а не «только что».
+        self.assertEqual(ts, 1_789_124_400)   # 2026-09-11T11:00:00Z
+
+    def test_свежий_файл_побеждает_а_архив_пропускается(self):
+        old = self.rollout("rollout-2026-09-10T10-00-00-old.jsonl",
+                           [self.token_count({"used_percent": 10})], day="10")
+        new = self.rollout("rollout-2026-09-11T10-00-00-new.jsonl",
+                           [self.token_count({"used_percent": 90})])
+        os.utime(old, (1_000_000, 1_000_000))
+        os.utime(new, (2_000_000, 2_000_000))
+        # Сжатый архив рядом: распаковывать его незачем, живой файл всегда plain.
+        with open(new.replace(".jsonl", ".jsonl.zst"), "wb") as fh:
+            fh.write(b"\x28\xb5\x2f\xfd")
+        self.assertEqual(mcpbar.newest_rollout(), new)
+
+    def test_без_codex_ничего_не_пишется(self):
+        self.assertIn("~/.codex", mcpbar.fetch_codex_limits())
+        self.assertFalse(os.path.exists(mcpbar.CODEX_LIMITS))
+
+    def test_файл_пишется_только_владельцу(self):
+        """Каталог состояния общий для staff-группы: проценты лимитов аккаунта — не для всех."""
+        self.rollout("rollout-2026-09-11T10-00-00-aaa.jsonl", [
+            # Сбросы позже самой записи: снимок с окном, которое уже закрылось, Swift
+            # выбрасывает, и шов проверял бы пустоту вместо разбора.
+            self.token_count({"used_percent": 7, "window_minutes": 300, "resets_at": 1_789_124_400},
+                             {"used_percent": 42, "window_minutes": 10080,
+                              "resets_at": 1_789_700_000}, plan="pro"),
+        ])
+        mcpbar.fetch_codex_limits()
+        with open(mcpbar.CODEX_LIMITS) as fh:
+            written = json.load(fh)
+        self.assertEqual([w["used_percentage"] for w in written["windows"]], [7, 42])
+        self.assertEqual(stat.S_IMODE(os.stat(mcpbar.CODEX_LIMITS).st_mode), 0o600)
+        # И оба каталога до него: makedirs со своим mode закрывает только последний, а
+        # промежуточный ~/.claude/control-bar на свежей машине оставался бы 0755.
+        for directory in (self.root, os.path.dirname(mcpbar.CODEX_LIMITS)):
+            self.assertEqual(stat.S_IMODE(os.stat(directory).st_mode), 0o700, directory)
+
+        # Артефакт для swift-стороны шва: model-проверка парсит ровно этот файл.
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        seam_dir = os.path.join(repo, "build", "seam")
+        os.makedirs(seam_dir, exist_ok=True)
+        shutil.copyfile(mcpbar.CODEX_LIMITS, os.path.join(seam_dir, "codex-limits.json"))
+
+
+class CodexMCP(unittest.TestCase):
+    """Серверы MCP Codex читаются двумя командами самого Codex и пишутся в форме mcp.json.
+
+    Форму отдаёт чужой бинарь, а переключатели правят чужой config.toml — оба места
+    проверены на codex-cli 0.154.0 живьём. Каждый случай ниже — форма, на которой
+    наивный разбор либо терял сервер, либо показывал чужое число.
+    """
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.saved = {k: getattr(mcpbar, k) for k in ("CODEX", "CODEX_ROOT", "CODEX_MCP", "ROOT")}
+        mcpbar.CODEX = os.path.join(self._dir.name, ".codex")
+        self.root = os.path.join(self._dir.name, "control-bar")
+        mcpbar.ROOT = self.root
+        mcpbar.CODEX_ROOT = os.path.join(self.root, "codex")
+        mcpbar.CODEX_MCP = os.path.join(self.root, "codex", "mcp.json")
+        os.makedirs(mcpbar.CODEX, exist_ok=True)
+
+    def tearDown(self):
+        for key, value in self.saved.items():
+            setattr(mcpbar, key, value)
+        self._dir.cleanup()
+
+    # `codex mcp list --json` — проверено живьём: выключенные серверы в списке ЕСТЬ, в отличие
+    # от `claude mcp list`, поэтому досинтезировать их из прошлого состояния не нужно.
+    LISTED = [
+        {"name": "wiki", "enabled": True, "disabled_reason": None,
+         "transport": {"type": "stdio", "command": "/usr/local/bin/ya",
+                       "args": ["tool", "mcp", "connect"], "env": None},
+         "auth_status": "unsupported"},
+        {"name": "off-one", "enabled": False, "disabled_reason": None,
+         "transport": {"type": "stdio", "command": "/bin/echo", "args": []},
+         "auth_status": "unsupported"},
+        {"name": "needs-login", "enabled": True, "disabled_reason": None,
+         "transport": {"type": "streamable_http", "url": "https://example.test/mcp"},
+         "auth_status": "unauthorized"},
+    ]
+
+    # `mcpServerStatus/list` через app-server — тоже проверено живьём: camelCase, полные схемы
+    # инструментов, и pluginId у серверов, приехавших с плагином Codex.
+    STATUS = {
+        "wiki": {"runtimeStatus": "ready", "pluginId": None, "toolsError": None,
+                 "authStatus": "unsupported", "tools": {
+                     "Read": {"name": "Read", "description": "Read a page",
+                              "inputSchema": {"type": "object",
+                                              "properties": {"slug": {"type": "string",
+                                                                      "description": "page slug"}},
+                                              "required": ["slug"]}},
+                     "Delete": {"name": "Delete", "description": "Delete a page",
+                                "inputSchema": {"type": "object", "properties": {}}}}},
+        "off-one": {"runtimeStatus": None, "pluginId": None, "toolsError": None,
+                    "authStatus": "unsupported", "tools": {}},
+    }
+
+    def write_get(self, name, enabled_tools=None, disabled_tools=None):
+        """Ответ `codex mcp get <name> --json` — списки allow/deny живут только здесь."""
+        self.gets = getattr(self, "gets", {})
+        self.gets[name] = {"name": name, "enabled_tools": enabled_tools,
+                           "disabled_tools": disabled_tools}
+
+    def refresh(self, listed=None, status=None, list_error=None, status_error=None):
+        """Подменяем ровно те функции, что ходят в чужой бинарь; сборка карты — настоящая."""
+        self.gets = getattr(self, "gets", {})
+        patched = {
+            "codex_mcp_list": lambda: (listed if listed is not None else self.LISTED, list_error),
+            "codex_mcp_get": lambda name: self.gets.get(name, {}),
+            "codex_server_status": lambda: (
+                (status if status is not None else self.STATUS), status_error),
+        }
+        saved = {k: getattr(mcpbar, k) for k in patched}
+        for key, value in patched.items():
+            setattr(mcpbar, key, value)
+        try:
+            return mcpbar.refresh_codex_mcp()
+        finally:
+            for key, value in saved.items():
+                setattr(mcpbar, key, value)
+
+    def servers(self):
+        with open(mcpbar.CODEX_MCP) as fh:
+            data = json.load(fh)
+        return {s["name"]: s for s in data["servers"]}, data
+
+    def test_сервер_пишется_в_той_же_форме_что_у_claude(self):
+        """MCPModel читает оба файла ОДНИМ парсером — значит ключи обязаны совпадать."""
+        self.refresh()
+        servers, data = self.servers()
+        wiki = servers["wiki"]
+        self.assertEqual(wiki["state"], "ok")
+        self.assertEqual(wiki["provider"], "codex")
+        self.assertEqual(wiki["source"], "codex")
+        self.assertEqual(wiki["disabled"], False)
+        self.assertEqual(wiki["toolNames"], ["Delete", "Read"])
+        self.assertEqual(wiki["tools"], 2)
+        self.assertEqual(wiki["toolDocs"]["Read"], "Read a page")
+        self.assertEqual(wiki["toolParams"]["Read"],
+                         [{"name": "slug", "type": "string", "required": True,
+                           "description": "page slug"}])
+        self.assertEqual(wiki["deniedTools"], [])
+        # Префикс инструментов у Codex тот же mcp__<server>__<tool>, что у Claude, — значит
+        # и правило, и подпись в панели совпадают без второй ветки.
+        self.assertEqual(wiki["toolPrefix"], "wiki")
+        self.assertIn("checked_at", data)
+
+    def test_выключенный_сервер_остаётся_в_списке(self):
+        """У Codex он приходит из `mcp list` сам — но обязан читаться как off, а не как рабочий."""
+        self.refresh()
+        servers, _ = self.servers()
+        self.assertEqual(servers["off-one"]["state"], "off")
+        self.assertEqual(servers["off-one"]["disabled"], True)
+
+    def test_сломанный_сервер_говорит_почему(self):
+        """Текст ошибки от самого сервера — единственное, что объясняет красную строку.
+
+        Тройное условие на этом месте его теряло: тернарник в питоне связывается слабее `or`,
+        и проверка ключа перевода съедала ветку с настоящим сообщением. Подсказка у сломанного
+        сервера оставалась пустой — то есть пустой ровно там, где нужна причина.
+        """
+        self.refresh(status={"wiki": {"runtimeStatus": "error", "tools": {},
+                                      "toolsError": "spawn ya ENOENT", "pluginId": None}})
+        servers, _ = self.servers()
+        self.assertEqual(servers["wiki"]["state"], "failed")
+        self.assertEqual(servers["wiki"]["status"], "spawn ya ENOENT")
+        # А у выключенного и живого сервера подсказка не выдумывается.
+        self.assertEqual(servers["off-one"]["status"], "disabled")
+        self.assertEqual(mcpbar.codex_status_text("x", "ok", {}), "")
+
+    def test_у_выключенного_сервера_число_инструментов_неизвестно(self):
+        """app-server не поднимал его, значит пустой набор — это «не знаем», а не «их нет»."""
+        self.refresh()
+        servers, _ = self.servers()
+        self.assertIsNone(servers["off-one"]["tools"])
+        self.assertEqual(servers["off-one"]["toolNames"], [])
+
+    def test_сервер_без_авторизации_просит_логин_а_не_показывает_ноль(self):
+        """Иначе OAuth-сервер читается как «сломан» и человек лезет искать несуществующий сбой."""
+        self.refresh()
+        servers, _ = self.servers()
+        self.assertEqual(servers["needs-login"]["state"], "auth")
+        self.assertIn("codex mcp login", servers["needs-login"]["status"])
+
+    def test_запрещённый_инструмент_читается_выключенным(self):
+        """disabled_tools — это deny-список Codex; панель рисует по нему снятый переключатель."""
+        self.write_get("wiki", disabled_tools=["Delete"])
+        self.refresh()
+        servers, _ = self.servers()
+        self.assertEqual(servers["wiki"]["deniedTools"], ["Delete"])
+
+    def test_allow_список_запрещает_всё_остальное(self):
+        """enabled_tools — это allow-список: инструмента нет в нём, значит он выключен."""
+        self.write_get("wiki", enabled_tools=["Read"])
+        self.refresh()
+        servers, _ = self.servers()
+        self.assertEqual(servers["wiki"]["deniedTools"], ["Delete"])
+
+    def test_app_server_молчит_но_серверы_всё_равно_видны(self):
+        """Поднять app-server — секунды и запуск всех серверов; отказ не должен опустошать вкладку."""
+        self.refresh(status={}, status_error="app-server timed out")
+        servers, data = self.servers()
+        self.assertEqual(sorted(servers), ["needs-login", "off-one", "wiki"])
+        self.assertIsNone(servers["wiki"]["tools"], "число инструментов неизвестно, а не ноль")
+        self.assertEqual(servers["wiki"]["toolNames"], [])
+        self.assertEqual(data["error"], "app-server timed out")
+
+    def test_неожиданная_форма_не_уносит_соседей(self):
+        """Одна испорченная запись в чужом JSON не должна прятать остальные серверы."""
+        self.refresh(listed=[{"name": "fine", "enabled": True,
+                              "transport": {"type": "stdio", "command": "/bin/echo"}},
+                             {"nope": True}, "строка вместо объекта", None,
+                             {"name": "", "enabled": True}])
+        servers, _ = self.servers()
+        self.assertEqual(list(servers), ["fine"])
+
+    def test_нет_codex_ничего_не_пишем(self):
+        """На машине без Codex файл не должен появляться вовсе — иначе вкладка покажет пустую группу."""
+        shutil.rmtree(mcpbar.CODEX)
+        message = self.refresh()
+        self.assertFalse(os.path.exists(mcpbar.CODEX_MCP))
+        self.assertIn("codex", message.lower())
+
+    def test_файл_пишется_только_владельцу(self):
+        """Имена серверов и команды их запуска — не для чужих учёток на той же машине."""
+        self.refresh()
+        self.assertEqual(stat.S_IMODE(os.stat(mcpbar.CODEX_MCP).st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(os.stat(mcpbar.CODEX_ROOT).st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(os.stat(mcpbar.ROOT).st_mode), 0o700)
+
+    def test_ключ_записи_у_плагинного_сервера_другой(self):
+        """Сервер из плагина Codex живёт в своей таблице; запись по общему пути его не выключит."""
+        self.assertEqual(mcpbar.codex_key_path("wiki", None, "enabled"),
+                         "mcp_servers.wiki.enabled")
+        self.assertEqual(mcpbar.codex_key_path("cua_repl", "openai-bundled", "disabled_tools"),
+                         "plugins.openai-bundled.mcp_servers.cua_repl.disabled_tools")
+
+    def test_переключение_инструмента_считает_новый_deny_список(self):
+        """Пишем весь массив целиком, поэтому он должен строиться из текущего, а не с нуля."""
+        self.assertEqual(mcpbar.codex_deny_next(["Delete"], "Read", True), ["Delete", "Read"])
+        self.assertEqual(mcpbar.codex_deny_next(["Delete", "Read"], "Read", False), ["Delete"])
+        # Повторное выключение уже выключенного — не повод удвоить запись в чужом конфиге.
+        self.assertEqual(mcpbar.codex_deny_next(["Read"], "Read", True), ["Read"])
+        self.assertIsNone(mcpbar.codex_deny_next(["Read"], "Read", True, only_changes=True),
+                          "ничего не изменилось — значит и писать нечего")
+
+    def test_карта_серверов_переезжает_в_шов_для_swift(self):
+        """Тот же шов, что у лимитов: swift разбирает файл, который написал настоящий refresh."""
+        self.write_get("wiki", disabled_tools=["Delete"])
+        self.refresh()
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        seam_dir = os.path.join(repo, "build", "seam")
+        os.makedirs(seam_dir, exist_ok=True)
+        shutil.copyfile(mcpbar.CODEX_MCP, os.path.join(seam_dir, "codex-mcp.json"))
+
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

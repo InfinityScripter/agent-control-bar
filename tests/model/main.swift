@@ -375,6 +375,60 @@ if !FileManager.default.fileExists(atPath: sessionSeamPath) {
     check(false, "session seam fixture unreadable")
 }
 
+// MARK: Codex sessions — a second agent in the same list, told apart by one field
+
+// An old state file has no provider at all and must keep reading as Claude's: the app keys its
+// session map by "<provider>:<id>", and a nil-ish provider there would key every pre-upgrade
+// session under ":<id>" and reap it from a directory that does not exist.
+let claudeShaped = Session(json: ["state": "thinking", "pid": 4242], id: "old")
+check(claudeShaped.provider == "claude", "a file without a provider is Claude's")
+check(claudeShaped.surface.isEmpty, "and carries no surface")
+
+let codexSession = Session(json: [
+    "state": "tool", "label": "Running command", "provider": "codex", "surface": "ide",
+    "model": "gpt-5.6-sol", "pid": 777, "ts": nowTs, "started": true,
+    "pct": 21, "tokens": 41_420, "window": 200_000, "assumed": false,
+], id: "c1")
+check(codexSession.provider == "codex", "the provider crosses over")
+check(codexSession.surface == "ide", "so does the surface")
+check(codexSession.key == "codex:c1" && claudeShaped.key == "claude:old",
+      "the map key carries the provider, so two agents' ids cannot collide: "
+      + "\(codexSession.key) / \(claudeShaped.key)")
+// The states are the same vocabulary for both agents, or every consumer of isWorkingState,
+// priority(of:) and the icon renderer would need a second branch.
+check(isWorkingState(codexSession.state) && isActiveState(codexSession.state),
+      "a Codex session works and is active by the same words as Claude's")
+
+// The badge. Codex's surface is a fact from its own rollout, Claude's is guessed from an
+// entrypoint — so they are two paths to one pill, and an unknown Codex surface shows nothing
+// rather than a wrong "CLI".
+check(SessionFormat.surfaceTag(codexSession) == "IDE", "the Codex surface becomes its badge")
+check(SessionFormat.surfaceTag(Session(json: ["provider": "codex", "surface": "exec"], id: "x")) == "EXEC",
+      "a non-interactive codex exec run says so")
+check(SessionFormat.surfaceTag(Session(json: ["provider": "codex", "surface": ""], id: "x")).isEmpty,
+      "an unnamed surface gets no badge instead of a guessed one")
+check(SessionFormat.surfaceTag(Session(json: ["entrypoint": "claude-desktop"], id: "x")) == "APP",
+      "Claude's own badges are untouched")
+
+// The js→swift seam for Codex, written by the real update.js during the node suite.
+let codexSessionSeamPath = FileManager.default.currentDirectoryPath + "/build/seam/codex-session.json"
+if !FileManager.default.fileExists(atPath: codexSessionSeamPath) {
+    check(false, "codex seam fixture missing at \(codexSessionSeamPath) — run the node suite first "
+        + "(node --test tests/*.test.js), it writes build/seam/codex-session.json")
+} else if let data = FileManager.default.contents(atPath: codexSessionSeamPath),
+          let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+    let parsed = Session(json: raw, id: raw["sessionId"] as? String ?? "?")
+    check(parsed.provider == "codex", "the provider the hook wrote survives the js→swift trip")
+    check(parsed.surface == "ide", "the surface read from the rollout crosses over")
+    check(parsed.label == "Editing", "a Codex tool name arrives as a word a person can read")
+    check(parsed.pct == 21 && parsed.window == 200_000,
+          "the context Codex itself reported crosses over: \(parsed.pct.map(String.init) ?? "nil")")
+    check(!parsed.assumed, "and is not marked a guess, because Codex states the window")
+    check(parsed.model == "gpt-5.6-sol", "the model crosses over from the payload")
+} else {
+    check(false, "codex seam fixture unreadable")
+}
+
 try? FileManager.default.removeItem(atPath: sessionsDir)
 
 // The python→swift seam. Everything above parses a fixture written BY HAND — the same schema
@@ -1167,6 +1221,173 @@ check(AnalyticsPing.due(now: 10 * day, lastAttempt: 9 * day, noticedAt: 1), "and
 check(!AnalyticsPing.configured || AnalyticsPing.endpoint.hasPrefix("https://"),
       "a configured endpoint is https or it is nothing")
 check(["arm64", "x86_64", "other"].contains(AnalyticsPing.arch), "arch is one of three words")
+
+// MARK: LimitsSet — one shape for two providers, and one place that decides "this is stale"
+
+// Claude's three windows, named once in the model rather than in the panel: the strip, the text
+// dump and the tooltip all read these words, and three spellings of "5 hours" drift.
+let claudeSet = Limits(json: [
+    "ts": 1_785_000_000.0, "source": "oauth",
+    "five_hour": ["used_percentage": 42, "resets_at": 1_785_003_600.0] as [String: Any],
+    "seven_day": ["used_percentage": 71] as [String: Any],
+    "seven_day_fable": ["used_percentage": 17] as [String: Any],
+])!.set
+check(claudeSet.provider == "claude", "the Claude file lands in the shared shape")
+check(claudeSet.windows.map { $0.title } == ["5 hours", "7 days", "Fable"],
+      "account windows first, the model's own window last: \(claudeSet.windows.map { $0.title })")
+check(claudeSet.windows.last?.badge == "7d", "only Fable carries a badge")
+check(claudeSet.windows.first?.badge == nil, "and the account's own windows do not")
+// A polled file is rewritten every few minutes, so a window whose reset has just passed is
+// corrected almost at once. Dropping it here would blink the whole strip on every rollover.
+check(!claudeSet.isSnapshot, "a polled source is not a snapshot")
+check(claudeSet.live(at: 9_999_999_999).count == 3,
+      "a polled source keeps its windows however old the reset looks")
+
+let codexJSON: [String: Any] = [
+    "ts": 1_789_000_000.0, "source": "rollout", "plan": "pro",
+    "windows": [
+        ["kind": "primary", "used_percentage": 12, "window_minutes": 300,
+         "resets_at": 1_789_010_000.0] as [String: Any],
+        ["kind": "secondary", "used_percentage": 58, "window_minutes": 10080,
+         "resets_at": 1_789_500_000.0] as [String: Any],
+    ] as [[String: Any]],
+]
+let codexSet = LimitsSet(codex: codexJSON)
+check(codexSet?.provider == "codex", "codex/limits.json lands in the same shape")
+check(codexSet?.plan == "pro", "the plan survives, for the tooltip that explains the windows")
+check(codexSet?.windows.map { $0.title } == ["5 hours", "7 days"],
+      "windows are named from their own length: \(codexSet?.windows.map { $0.title } ?? [])")
+check(codexSet?.isSnapshot == true, "a rollout record is a snapshot and can go stale")
+check(codexSet?.live(at: 1_789_005_000).count == 2, "both windows are live while both are open")
+check(codexSet?.live(at: 1_789_100_000).map { $0.key } == ["secondary"],
+      "a window that has rolled over since the snapshot is gone, not redrawn with last week's %")
+check(codexSet?.live(at: 1_790_000_000).isEmpty == true,
+      "and a snapshot older than every window it carries shows nothing at all")
+
+// No reset stamp at all: the window's own length is what dates the figure. Without this rule a
+// Codex build that stopped sending resets_at would either vanish or lie forever.
+let undated = LimitsSet(codex: [
+    "ts": 1_789_000_000.0, "source": "rollout",
+    "windows": [["kind": "primary", "used_percentage": 30, "window_minutes": 300] as [String: Any]]
+        as [[String: Any]],
+])
+check(undated?.live(at: 1_789_000_000 + 299 * 60).count == 1, "inside its own window it still counts")
+check(undated?.live(at: 1_789_000_000 + 301 * 60).isEmpty == true, "past its own length it does not")
+let unmeasurable = LimitsSet(codex: [
+    "ts": 1_789_000_000.0, "source": "rollout",
+    "windows": [["kind": "primary", "used_percentage": 30] as [String: Any]] as [[String: Any]],
+])
+check(unmeasurable?.live(at: 1_789_000_060).isEmpty == true,
+      "a snapshot with neither a reset nor a length cannot be dated, so it is not shown")
+
+check(LimitsSet(codex: ["ts": 1.0, "source": "rollout"]) == nil, "a file with no windows is no data")
+check(LimitsSet(codex: ["windows": [["kind": "primary"] as [String: Any]] as [[String: Any]]]) == nil,
+      "a window with no percentage is no window")
+
+// The names come from the duration, because which pair a Codex plan carries is not fixed.
+check(LimitsSet.title(minutes: 300, kind: "primary") == "5 hours", "300 minutes is 5 hours")
+check(LimitsSet.title(minutes: 10080, kind: "secondary") == "7 days", "10080 minutes is 7 days")
+check(LimitsSet.title(minutes: 1440, kind: "secondary") == "1 day", "and 1440 is one day, not 1 days")
+check(LimitsSet.title(minutes: 60, kind: "primary") == "1 hour", "one hour, singular")
+check(LimitsSet.title(minutes: 45, kind: "primary") == "45 min", "under an hour stays in minutes")
+check(LimitsSet.title(minutes: 90, kind: "primary") == "1h 30m", "and an odd length is spelled out")
+check(LimitsSet.title(minutes: nil, kind: "secondary") == "Weekly", "no length: Codex's own word")
+check(LimitsSet.title(minutes: nil, kind: "primary") == "Session", "and for the shorter window")
+
+// The icon labels every bar it draws, so a window it cannot label is a bar it does not draw.
+check(NamedWindow(key: "p", title: "5 hours", badge: nil, minutes: 300,
+                  window: LimitWindow(json: ["used_percentage": 1])!).shortTitle == "5h",
+      "the icon's label for a five-hour window")
+check(NamedWindow(key: "s", title: "7 days", badge: nil, minutes: 10080,
+                  window: LimitWindow(json: ["used_percentage": 1])!).shortTitle == "7d",
+      "and for a weekly one")
+check(NamedWindow(key: "s", title: "Weekly", badge: nil, minutes: nil,
+                  window: LimitWindow(json: ["used_percentage": 1])!).shortTitle == nil,
+      "a window of unknown length has no honest short label")
+// Two characters wide: 90 minutes drawn as "1h" is a wrong label rather than a rounded one.
+check(NamedWindow(key: "p", title: "1h 30m", badge: nil, minutes: 90,
+                  window: LimitWindow(json: ["used_percentage": 1])!).shortTitle == nil,
+      "and neither does one that is not a whole number of hours")
+check(NamedWindow(key: "p", title: "45 min", badge: nil, minutes: 45,
+                  window: LimitWindow(json: ["used_percentage": 1])!).shortTitle == "45m",
+      "under an hour it fits as minutes")
+
+// What a one-line summary of a provider says: the window that runs out first.
+check(LimitsSet.worst(claudeSet.windows)?.title == "7 days",
+      "the fullest window is the one a summary quotes")
+check(LimitsSet.worst([]) == nil, "and with no windows there is nothing to quote")
+
+// VoiceOver reads the icon's labels aloud; "5h" out loud is "five aitch".
+check(Gauge.spoken("5h") == "5 hour" && Gauge.spoken("7d") == "7 day", "short labels are spelled out")
+check(Gauge.spoken("90m") == "90 minute", "including ones Claude never has")
+check(Gauge.spoken("wk") == "wk", "and a label with no number is read as it is, not mislabelled")
+check(Gauge(fiveHour: 0.1, sevenDay: 0.2, labels: ("1d", "30d")).rows.map { $0.0 } == ["1d", "30d"],
+      "the bars carry whichever labels they were given")
+
+// The python→swift seam for the Codex file: written by the real fetch_codex_limits() during the
+// python suite, parsed here. The hand-written fixtures above pin the same schema twice
+// independently, which is exactly how a coordinated rename passes both suites while the strip
+// empties. Run the python suite first — CI does.
+let codexSeamPath = FileManager.default.currentDirectoryPath + "/build/seam/codex-limits.json"
+if !FileManager.default.fileExists(atPath: codexSeamPath) {
+    check(false, "codex seam fixture missing at \(codexSeamPath) — run the python suite first "
+        + "(/usr/bin/python3 -m unittest discover -s tests), it writes build/seam/codex-limits.json")
+} else if let data = FileManager.default.contents(atPath: codexSeamPath),
+          let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let seamSet = LimitsSet(codex: raw) {
+    check(seamSet.provider == "codex", "the file the real reader wrote parses as Codex")
+    check(seamSet.plan == "pro", "the plan crosses the python→swift border")
+    check(seamSet.windows.map { $0.window.used } == [7, 42], "both percentages arrive as Ints")
+    check(seamSet.windows.map { $0.title } == ["5 hours", "7 days"],
+          "and are named from the durations the writer put in the file")
+    // The fixture's snapshot is stamped 2026-09-11T10:00Z with its 5-hour window resetting at
+    // 11:00Z: live an hour before that, half gone an hour after.
+    check(seamSet.live(at: 1_789_121_000).count == 2, "both windows read as live inside them")
+    check(seamSet.live(at: 1_789_200_000).map { $0.key } == ["secondary"],
+          "and the short window drops out once its reset has passed")
+} else {
+    check(false, "codex seam fixture unreadable")
+}
+
+// MARK: Codex MCP — a second agent's servers in the same tab
+
+// The whole point of writing codex/mcp.json in mcp.json's shape: one parser, no second
+// reader to drift. If this breaks, the Codex group in the MCP tab silently empties.
+let codexMCPSeam = FileManager.default.currentDirectoryPath + "/build/seam/codex-mcp.json"
+if !FileManager.default.fileExists(atPath: codexMCPSeam) {
+    check(false, "codex mcp seam fixture missing at \(codexMCPSeam) — run the python suite "
+        + "first (/usr/bin/python3 -m unittest discover -s tests), it writes "
+        + "build/seam/codex-mcp.json")
+} else {
+    let codexServers = MCPModel(path: codexMCPSeam)
+    check(codexServers.reloadIfChanged(), "the codex/mcp.json the real refresh wrote parses")
+    let wiki = codexServers.servers.first { $0.name == "wiki" }
+    check(wiki != nil, "a Codex server survives the python→swift trip")
+    check(wiki?.provider == "codex",
+          "it knows which agent it belongs to, so a switch cannot be routed to the wrong one")
+    check(wiki?.source == "codex", "and lands in the Codex group: \(wiki?.source ?? "nil")")
+    check(wiki?.tools.count == 2, "its tool list arrives whole")
+    check(wiki?.tools.first { $0.name == "Delete" }?.enabled == false,
+          "a tool Codex's own deny list forbids reads as switched off here")
+    check(wiki?.tools.first { $0.name == "Read" }?.params.first?.required == true,
+          "tool parameters survive the border, not just the names")
+    check(codexServers.servers.first { $0.name == "off-one" }?.disabled == true,
+          "a server disabled in config.toml arrives disabled")
+    check(codexServers.servers.first { $0.name == "needs-login" }?.state == "auth",
+          "and one waiting for OAuth says so instead of reading as broken")
+}
+
+// An old Claude server file has no provider field at all and must keep reading as Claude's —
+// the switch routing is a string comparison, and "" would route nowhere.
+let claudeServer = MCPModel.parse(server: ["name": "wiki", "state": "ok"])
+check(claudeServer.provider == "claude", "a server without a provider is Claude's")
+check(claudeServer.plugin.isEmpty, "and carries no plugin id")
+
+// Both agents' groups in one table, in the order the tab draws them. Codex's two are separate
+// because the user changes them in different places: one in config.toml, one in the plugin.
+check(mcpGroups.map(\.key) == ["user", "claude.ai", "plugin", "project", "codex", "codex-plugin"],
+      "the group table carries both agents: \(mcpGroups.map(\.key))")
+
 
 print(failures == 0 ? "\nall model checks passed" : "\n\(failures) failed")
 exit(failures == 0 ? 0 : 1)

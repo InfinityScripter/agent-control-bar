@@ -37,12 +37,19 @@ enum RunningProcesses {
     }
 
     static func exists(named name: String) -> Bool {
+        existsAny(of: [name])
+    }
+
+    /// Is any of these process names running? One walk of the table for all of them: with two
+    /// agents to look for, asking twice doubles a scan of every pid on the machine for an answer
+    /// a single pass gives.
+    static func existsAny(of names: Set<String>) -> Bool {
         var buffer = [CChar](repeating: 0, count: 256)
         for pid in allPids() {
-            // Fails with EPERM for processes belonging to other users; a Claude Code session is
+            // Fails with EPERM for processes belonging to other users; an agent session is
             // always this user's, so there is nothing to recover there.
             guard proc_name(pid, &buffer, UInt32(buffer.count)) > 0 else { continue }
-            if String(cString: buffer) == name { return true }
+            if names.contains(String(cString: buffer)) { return true }
         }
         return false
     }

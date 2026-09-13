@@ -7,6 +7,52 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.15.0] - 2026-09-13
+
+### Added
+- **Codex sessions in the Sessions tab.** A running OpenAI Codex session now appears beside the
+  Claude ones, with the same things in the row: what it is doing right now (*Running command*,
+  *Editing*, *Reading*), how long the turn has been going, how full its context window is, and an
+  amber dot with the "needs you" sound when it is waiting for your permission. Clicking the row
+  brings its terminal to the front, as for a Claude session. The badge says which surface it runs
+  on — `CLI`, `IDE`, `APP` or `EXEC` for a non-interactive `codex exec` run — read from Codex's
+  own session file rather than guessed, and a `</>` glyph marks the row as Codex's.
+  Two details worth knowing:
+  - The context percentage comes from the figure Codex itself records, so the window size is
+    exact rather than inferred from the model name — no `~` in front of the number.
+  - A Codex **subagent** never becomes a row of its own. Codex runs workers as full sessions with
+    their own ids and hooks; left alone, one prompt showed five running sessions.
+- **Codex's MCP servers in the MCP tab**, in their own two groups — *Codex · config.toml* and
+  *Codex · plugins*, because those are the two places you would go to change them. The switches
+  work the same way: a server switch and one per tool, written into Codex's own `config.toml`
+  **by Codex itself** (through its app-server), so comments, formatting and other tools' tables
+  survive untouched. A server waiting for OAuth says `codex mcp login` instead of reading as
+  broken, and the tab's own counts cover both agents. Off switch in Settings → General →
+  *Codex MCP servers*: asking Codex for the tool names starts each configured server, the way
+  Codex itself does, and someone with a slow server may not want that on a timer.
+  **Codex will ask you once to trust the hooks** it now finds in `~/.codex/hooks.json` — that
+  screen is Codex's own, and this app does not forge the approval. Until you confirm it, Codex
+  sessions stay invisible.
+- **Codex limits beside Claude's.** The strip can now show OpenAI Codex's own windows — its
+  5-hour one and its weekly one — next to the Claude figures. Nothing is asked for and nothing
+  is sent: Codex writes how much of its limits is gone into its own session file as it works,
+  and the app reads the newest one. No token, no request. A snapshot older than the window it
+  measures is dropped rather than drawn, so a Codex that has been quiet for a week disappears
+  from the strip instead of quoting last week's percentage, and a provider with no figures is
+  absent rather than shown empty. Off switch in Settings → General → *Codex limits*.
+- **A choice of layout for two providers**, in Settings → Appearance → *Limits strip*. *Two rows*
+  (the default) stacks both providers, each under its own name, plan and next reset. *Switcher*
+  gives one provider the full width and puts the other behind a tab — and every tab carries a
+  hairline bar of its provider's fullest window, so the side you are not looking at still says
+  whether it is about to run out. With one provider the strip is a single row either way, which
+  is what a Claude-only install has always seen.
+
+### Changed
+- **The bars beside the menu bar icon fall back to Codex** when Claude has no figures at all —
+  not signed in, or the poll switched off — and they are labelled with the lengths of the
+  windows they draw rather than a hardcoded 5h/7d. With Claude figures present nothing changes:
+  the icon is still Claude's.
+
 ## [0.14.0] - 2026-09-10
 
 ### Added
@@ -1102,6 +1148,7 @@ reports on Claude Code — it switches parts of it off.
 - Signed and notarized DMG so it opens without a Gatekeeper warning.
 - Claude Code plugin marketplace manifest for the plugin install path.
 
+[0.15.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.15.0
 [0.14.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.14.0
 [0.13.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.13.0
 [0.12.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.12.0
