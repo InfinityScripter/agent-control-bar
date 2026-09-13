@@ -16,6 +16,7 @@ MCP-картину ведёт этот скрипт (mcp.json), рисует в�
     limits           спросить лимиты аккаунта у эндпоинта и переписать limits.json
     codex-limits     снять лимиты Codex со свежего rollout и переписать codex/limits.json
     codex-mcp        серверы MCP Codex: refresh | toggle-server | toggle-tool
+    codex-hooks      спросить Codex, каким нашим хукам он не доверяет
     doctor           проверить окружение и показать, что откуда берётся
 """
 
@@ -173,8 +174,11 @@ STRINGS = {
     "codex.login": ("run {cmd}", "выполни {cmd}"),
     "codex.unknown": ("no Codex server named {name} — refresh first",
                       "сервера Codex с именем {name} нет — сначала refresh"),
+    "codex.hooks": ("hooks Codex has not been told to trust: {n}",
+                    "хуков без доверия Codex: {n}"),
     "doc.codex": ("codex rollout", "rollout codex"),
     "doc.codexmcp": ("codex mcp servers", "серверы mcp codex"),
+    "doc.codexhooks": ("codex hooks untrusted", "хуки codex без доверия"),
 }
 
 
@@ -1496,6 +1500,22 @@ CODEX_ROOT = os.path.join(ROOT, "codex")
 CODEX_LIMITS = os.path.join(CODEX_ROOT, "limits.json")
 
 
+def secure_codex_root():
+    """Оба каталога под codex/*.json — руками и до записи.
+
+    `os.makedirs(..., mode=)` ставит права только последнему каталогу пути, промежуточные
+    рождаются с umask: на свежей машине, где первой командой оказался `codex-limits`, сам
+    ~/.claude/control-bar остался бы 0755 — открытым всей группе staff вместе с процентами
+    лимитов аккаунта. Общая на трёх писателей: правило «оба каталога 0700» держалось на
+    дисциплине копирования, и четвёртый писатель легко обошёлся бы одним makedirs.
+    """
+    for directory in (ROOT, CODEX_ROOT):
+        try:
+            os.makedirs(directory, mode=SECURE_DIR, exist_ok=True)
+        except OSError:
+            pass
+
+
 def newest_rollout(pattern=None):
     """Самый свежий rollout по времени правки, или None.
 
@@ -1537,7 +1557,28 @@ def codex_window(block, kind, base):
     return record
 
 
-def codex_limits_record(snapshot, ts=None, now=None):
+def codex_reserve_model(model):
+    """Резервная ли это модель — та, на которую Codex уходит, когда обычный лимит кончился.
+
+    Модель, а не поле снимка, — и это проверено, а не выбрано: 13 сентября 2026 на
+    codex-cli 0.154.0 в снимке rollout ОБА пула приходят под одним и тем же
+    `limit_id: "codex"`, а соседнее `limit_name`, которое и было бы именем пула, всегда
+    приходит пустым. Имя пула Codex сообщает только своему интерфейсу — `hooks/list`-сосед
+    `account/rateLimits/read` отдаёт резервный пул как `base_model_inference` с
+    `limitName: "gpt-reserve"`, — но это уже сетевой запрос под аккаунтом человека, а
+    лимиты здесь читаются с диска и ничего никуда не шлют. Так что различает пулы модель
+    хода: резервный тратит только `gpt-reserve`. Совпадение по префиксу — соседние slug'и
+    того же семейства должны читаться так же, а вот `gpt-5.6-luna` сюда не входит
+    намеренно: это обычная модель, доступная и без всякого резерва.
+
+    Цена выбора названа прямо: переименуют slug — пометка молча пропадёт, и окно снова
+    подпишется своей длиной. Поэтому пул, названный в файле, здесь был бы лучше, и если
+    Codex когда-нибудь начнёт присылать `limit_name`, читать надо его.
+    """
+    return isinstance(model, str) and model.startswith("gpt-reserve")
+
+
+def codex_limits_record(snapshot, ts=None, now=None, model=None):
     """rate_limits из rollout → codex/limits.json.
 
     Наружу идут факты, а не подписи: процент, длительность окна в минутах и момент
@@ -1547,6 +1588,10 @@ def codex_limits_record(snapshot, ts=None, now=None):
     `ts` — время самой записи, а не время записи файла: снимок может быть недельной
     давности, и панель обязана показывать возраст цифр честно, иначе «12% за 5 часов»
     из прошлой среды читается как сегодняшнее.
+
+    `model` — модель того хода, к которому относится снимок: от неё зависит, какой пул
+    лимитов он измеряет, и панель обязана сказать это словом, а не показать резервные
+    проценты как обычные.
     """
     if not isinstance(snapshot, dict):
         return None
@@ -1563,24 +1608,48 @@ def codex_limits_record(snapshot, ts=None, now=None):
     plan = snapshot.get("plan_type")
     if isinstance(plan, str) and plan.strip():
         record["plan"] = plan.strip()
+    if codex_reserve_model(model):
+        record["reserve"] = True
     return record
 
 
+def turn_model(lines):
+    """Модель ближайшего хода в строках rollout, идущих ОТ снимка к началу файла.
+
+    Первая встреченная запись `turn_context` и есть тот ход, к которому снимок относится, —
+    искать дальше нечего: следующая описывает уже другой ход, а сессия меняет модель прямо
+    посреди работы. Так проход и заканчивается на ней, а не дочитывает хвост до начала.
+    """
+    for raw in lines:
+        if b'"turn_context"' not in raw:
+            continue
+        record = read_json_line(raw)
+        payload = record.get("payload") if isinstance(record, dict) else None
+        model = payload.get("model") if isinstance(payload, dict) else None
+        return model if isinstance(model, str) and model else None
+    return None
+
+
 def codex_snapshot(path=None):
-    """Хвост свежего rollout → (rate_limits, время записи) последнего token_count.
+    """Хвост свежего rollout → (rate_limits, время записи, модель) последнего token_count.
 
     Ищем с конца: в файле таких записей столько же, сколько ответов модели, и нужна
     последняя. Форма строки — {"timestamp", "type", "payload"}; payload с запасом
     разбирается и как плоская запись, если Codex однажды перестанет её вкладывать.
+
+    Модель берётся из ближайшей записи `turn_context` ПЕРЕД снимком, а не из первой строки
+    файла: сессия переезжает на резервную модель прямо посреди работы, когда обычный лимит
+    кончился, и от того, какая модель шла последней, зависит, какой пул лимитов измерен.
     """
     path = path or newest_rollout()
     if not path:
-        return None, None
+        return None, None, None
     try:
         lines = tail_lines(path)
     except OSError:
-        return None, None
-    for raw in reversed(lines):
+        return None, None, None
+    rest = list(reversed(lines))
+    for at, raw in enumerate(rest):
         if b'"rate_limits"' not in raw:
             continue
         record = read_json_line(raw)
@@ -1591,29 +1660,21 @@ def codex_snapshot(path=None):
             payload = record
         snapshot = payload.get("rate_limits")
         if isinstance(snapshot, dict):
-            return snapshot, parse_reset(record.get("timestamp"))
-    return None, None
+            return snapshot, parse_reset(record.get("timestamp")), turn_model(rest[at + 1:])
+    return None, None, None
 
 
 def fetch_codex_limits():
     """Один проход: свежий rollout → codex/limits.json. Молчалив при любом сбое."""
     if not os.path.isdir(CODEX):
         return t("codex.absent")
-    snapshot, ts = codex_snapshot()
+    snapshot, ts, model = codex_snapshot()
     if not snapshot:
         return t("codex.nosnapshot")
-    record = codex_limits_record(snapshot, ts=ts)
+    record = codex_limits_record(snapshot, ts=ts, model=model)
     if not record:
         return t("codex.empty")
-    # Оба каталога — руками и до записи. `os.makedirs(..., mode=)` ставит права только
-    # последнему каталогу пути, промежуточные рождаются с umask: на свежей машине, где
-    # `codex-limits` оказался первой командой, сам ~/.claude/control-bar остался бы 0755 —
-    # открытым всей группе staff вместе с процентами лимитов аккаунта.
-    for directory in (ROOT, CODEX_ROOT):
-        try:
-            os.makedirs(directory, mode=SECURE_DIR, exist_ok=True)
-        except OSError:
-            pass
+    secure_codex_root()
     write_json(CODEX_LIMITS, record)
     windows = ", ".join(f"{w['kind']} {w['used_percentage']}%" for w in record["windows"])
     return t("codex.updated", w=windows)
@@ -1674,23 +1735,26 @@ def codex_mcp_get(name):
     return data if isinstance(data, dict) else {}
 
 
-def codex_server_status():
-    """Живой статус и списки инструментов от `codex app-server`, или ({}, ошибка).
+def codex_rpc(method, params=None, timeout=30):
+    """Один вызов метода `codex app-server` по stdio → (result, ошибка строкой).
 
-    JSON-RPC по stdio: initialize → mcpServerStatus/list → выходим. Поля ответа в
-    camelCase (`runtimeStatus`, `toolsError`, `authStatus`, `pluginId`) — проверено на
-    codex-cli 0.154.0; snake_case из плана там не встречается.
+    JSON-RPC: initialize → нужный метод → выходим. Поля ответов в camelCase — проверено
+    на codex-cli 0.154.0; snake_case там не встречается.
+
+    Три вызывающих на три разных метода: статус серверов, запись настроек и список хуков.
+    Разбор ответа у каждого свой, а поднять процесс, дождаться СВОЕГО id среди чужих
+    уведомлений и погасить процесс — общее, и в трёх копиях расходилось бы построчно.
     """
     import subprocess, threading, queue
     binary = find_codex()
     if not binary:
-        return {}, t("codex.nobinary")
+        return None, t("codex.nobinary")
     try:
         proc = subprocess.Popen([binary, "app-server"], stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                 text=True, bufsize=1)
     except OSError as exc:
-        return {}, str(exc)[:200]
+        return None, str(exc)[:200]
     lines = queue.Queue()
     threading.Thread(target=lambda: [lines.put(line) for line in proc.stdout],
                      daemon=True).start()
@@ -1699,11 +1763,11 @@ def codex_server_status():
                          "params": {"clientInfo": {"name": "claude-control-bar",
                                                    "title": "Claude Control Bar",
                                                    "version": "1"}}},
-                        {"jsonrpc": "2.0", "id": 2, "method": "mcpServerStatus/list",
-                         "params": {}}):
+                        {"jsonrpc": "2.0", "id": 2, "method": method,
+                         "params": params or {}}):
             proc.stdin.write(json.dumps(request) + "\n")
             proc.stdin.flush()
-        deadline = time.time() + CODEX_APP_SERVER_TIMEOUT
+        deadline = time.time() + timeout
         while time.time() < deadline:
             try:
                 line = lines.get(timeout=max(0.1, deadline - time.time()))
@@ -1715,15 +1779,11 @@ def codex_server_status():
             if not isinstance(reply, dict) or reply.get("id") != 2:
                 continue
             if reply.get("error"):
-                return {}, str(reply["error"].get("message", ""))[:200]
-            rows = (reply.get("result") or {}).get("data")
-            if not isinstance(rows, list):
-                return {}, t("codex.badreply")
-            return {row.get("name"): row for row in rows
-                    if isinstance(row, dict) and row.get("name")}, None
-        return {}, t("codex.timeout")
+                return None, str(reply["error"].get("message", ""))[:200]
+            return reply.get("result"), None
+        return None, t("codex.timeout")
     except OSError as exc:
-        return {}, str(exc)[:200]
+        return None, str(exc)[:200]
     finally:
         # Та же лестница, что в ask_server_for_tools: закрыть stdin, попросить, добить.
         try:
@@ -1739,6 +1799,22 @@ def codex_server_status():
                 proc.wait(2)
             except Exception:
                 pass
+
+
+def codex_server_status():
+    """Живой статус и списки инструментов от `codex app-server`, или ({}, ошибка).
+
+    Таймаут здесь свой и щедрый: этот метод поднимает КАЖДЫЙ настроенный сервер, чтобы
+    спросить у него инструменты.
+    """
+    result, error = codex_rpc("mcpServerStatus/list", timeout=CODEX_APP_SERVER_TIMEOUT)
+    if error:
+        return {}, error
+    rows = (result or {}).get("data")
+    if not isinstance(rows, list):
+        return {}, t("codex.badreply")
+    return {row.get("name"): row for row in rows
+            if isinstance(row, dict) and row.get("name")}, None
 
 
 def codex_state(entry, status):
@@ -1861,11 +1937,7 @@ def refresh_codex_mcp():
     # Список серверов дешёвый, статус — дорогой. Если app-server не ответил, серверы всё
     # равно записываются: вкладка со списком без счётчиков полезнее пустой вкладки.
     statuses, status_error = codex_server_status()
-    for directory in (ROOT, CODEX_ROOT):
-        try:
-            os.makedirs(directory, mode=SECURE_DIR, exist_ok=True)
-        except OSError:
-            pass
+    secure_codex_root()
     record = codex_mcp_record(entries, statuses, error=list_error or status_error)
     write_json(CODEX_MCP, record)
     return t("codex.servers", n=len(record["servers"]))
@@ -1905,59 +1977,10 @@ def codex_config_write(edits):
     живьём на codex-cli 0.154.0: `edits` со `keyPath`, `value` и ОБЯЗАТЕЛЬНЫМ
     `mergeStrategy` (snake_case из плана отвергается с "missing field `mergeStrategy`").
     """
-    import subprocess, threading, queue
-    binary = find_codex()
-    if not binary:
-        return t("codex.nobinary")
-    try:
-        proc = subprocess.Popen([binary, "app-server"], stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                text=True, bufsize=1)
-    except OSError as exc:
-        return str(exc)[:200]
-    lines = queue.Queue()
-    threading.Thread(target=lambda: [lines.put(line) for line in proc.stdout],
-                     daemon=True).start()
-    try:
-        for request in ({"jsonrpc": "2.0", "id": 1, "method": "initialize",
-                         "params": {"clientInfo": {"name": "claude-control-bar",
-                                                   "title": "Claude Control Bar",
-                                                   "version": "1"}}},
-                        {"jsonrpc": "2.0", "id": 2, "method": "config/batchWrite",
-                         "params": {"edits": [
-                             {"keyPath": key, "value": value, "mergeStrategy": "upsert"}
-                             for key, value in edits]}}):
-            proc.stdin.write(json.dumps(request) + "\n")
-            proc.stdin.flush()
-        deadline = time.time() + 30
-        while time.time() < deadline:
-            try:
-                line = lines.get(timeout=max(0.1, deadline - time.time()))
-            except Exception:
-                break
-            reply = read_json_line(line)
-            if not isinstance(reply, dict) or reply.get("id") != 2:
-                continue
-            if reply.get("error"):
-                return str(reply["error"].get("message", ""))[:200]
-            return ""
-        return t("codex.timeout")
-    except OSError as exc:
-        return str(exc)[:200]
-    finally:
-        try:
-            proc.stdin.close()
-        except Exception:
-            pass
-        try:
-            proc.terminate()
-            proc.wait(2)
-        except Exception:
-            try:
-                proc.kill()
-                proc.wait(2)
-            except Exception:
-                pass
+    _, error = codex_rpc("config/batchWrite", {"edits": [
+        {"keyPath": key, "value": value, "mergeStrategy": "upsert"}
+        for key, value in edits]})
+    return error or ""
 
 
 def codex_server_of(name):
@@ -1994,6 +2017,92 @@ def toggle_codex_tool(server, tool, turn_off):
     if error:
         raise Refused(error)
     return True
+
+
+# ──────────────────────────────────────────────────────────── доверие к хукам Codex
+
+# Codex запускает только те хуки, которым человек однажды дал доверие: их хеши он держит
+# в своём config.toml, а неодобренный хук молча пропускает. Наш и есть тот хук, который
+# пишет файл сессии, — значит без доверия вкладка Sessions пуста, и пустота ничем не
+# отличается от «Codex просто не запущен». Отсюда этот файл: панели нужно знать разницу,
+# чтобы сказать её словом.
+CODEX_HOOKS = os.path.join(CODEX_ROOT, "hooks.json")
+# Наши хуки в чужом файле узнаются по пути скрипта, ровно как их ставит hooks/install.js.
+OUR_HOOK_SCRIPTS = ("update.js", "lifecycle.js")
+
+
+def our_hook_command(command):
+    """Наш ли это хук — четвёртая копия pointsAt() из install.js/uninstall.js/bootstrap.py.
+
+    Копия, а не импорт: bootstrap.py уезжает в хуки Claude Code, а этот скрипт — в Resources
+    приложения, и общего места у них на диске нет. Держать все четыре в согласии обязательно,
+    и обе формы записи здесь не для красоты: голое имя якорится справа, иначе "update.js"
+    совпадёт с соседским "update.js.bak", а в доме с апострофом install.js пишет ТОЛЬКО
+    экранированную форму — без неё счёт молча даёт ноль, то есть подсказка не покажется
+    ровно у того, у кого путь непростой.
+    """
+    if not isinstance(command, str):
+        return False
+    for script in (os.path.join(ROOT, name) for name in OUR_HOOK_SCRIPTS):
+        at = command.find(script)
+        while at != -1:
+            if command[at + len(script):at + len(script) + 1] in ("", " ", "'", '"'):
+                return True
+            at = command.find(script, at + 1)
+        if "'" + script.replace("'", "'\\''") + "'" in command:
+            return True
+    return False
+
+
+def codex_hooks_list():
+    """Хуки, как их видит сам Codex, или ([], ошибка).
+
+    Спрашиваем Codex, а не читаем его config.toml: доверие в нём хранится ключами вида
+    `hooks.json:pre_tool_use:1:0` и хешем команды — внутренние детали чужого формата, и
+    повторять их разбор значит тихо разойтись с ним при первом же изменении.
+    """
+    result, error = codex_rpc("hooks/list")
+    if error:
+        return [], error
+    rows = (result or {}).get("data")
+    if not isinstance(rows, list):
+        return [], t("codex.badreply")
+    return rows, None
+
+
+def codex_untrusted_ours(groups):
+    """Сколько НАШИХ включённых хуков Codex считает неодобренными.
+
+    Только свои: чужой неодобренный хук — сознательный выбор человека, и подсказка про
+    наши из-за него была бы враньём. Только включённые: выключенный не запустится и с
+    доверием, так что он не объясняет пустую вкладку.
+    """
+    count = 0
+    for group in groups or []:
+        hooks = group.get("hooks") if isinstance(group, dict) else None
+        for hook in hooks if isinstance(hooks, list) else []:
+            if not isinstance(hook, dict) or hook.get("enabled") is False:
+                continue
+            if not our_hook_command(hook.get("command")):
+                continue
+            if hook.get("trustStatus") == "untrusted":
+                count += 1
+    return count
+
+
+def fetch_codex_hooks():
+    """Один проход: спросить Codex о доверии к хукам → переписать codex/hooks.json."""
+    if not os.path.isdir(CODEX):
+        return t("codex.absent")
+    groups, error = codex_hooks_list()
+    # Отказ app-server — это «не знаю», а не «всё одобрено». Ноль поверх честного числа
+    # убрал бы подсказку ровно в тот момент, когда она нужна: Codex занят и не ответил.
+    if error:
+        return error
+    secure_codex_root()
+    untrusted = codex_untrusted_ours(groups)
+    write_json(CODEX_HOOKS, {"ts": int(time.time()), "untrusted": untrusted})
+    return t("codex.hooks", n=untrusted)
 
 
 # ──────────────────────────────────────────────────────────── контекстное окно
@@ -2461,6 +2570,9 @@ def doctor():
         (t("doc.codex"), newest_rollout() or t("doc.nofile")),
         (t("doc.codexmcp"), str(len((read_json(CODEX_MCP, {}) or {}).get("servers") or []))
          if os.path.exists(CODEX_MCP) else t("doc.nofile")),
+        (t("doc.codexhooks"),
+         str((read_json(CODEX_HOOKS, {}) or {}).get("untrusted", 0))
+         if os.path.exists(CODEX_HOOKS) else t("doc.nofile")),
         (t("lang"), LANG),
     ]
     width = max(len(name) for name, _ in checks) + 2
@@ -2499,6 +2611,8 @@ def main(argv):
         print(fetch_limits())
     elif command == "codex-limits":
         print(fetch_codex_limits())
+    elif command == "codex-hooks":
+        print(fetch_codex_hooks())
     elif command == "codex-mcp":
         # Своё слово после команды, как у statusline: три действия над одним файлом, и
         # отдельные команды верхнего уровня для них читались бы как отдельные подсистемы.

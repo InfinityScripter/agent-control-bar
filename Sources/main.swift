@@ -26,6 +26,11 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// out of the newest rollout file that Codex itself wrote. Its own mtime gate below, because
     /// the two files are rewritten by two separate commands on the same timer.
     var codexWindows: LimitsSet?
+    /// How many of this app's own hooks Codex has not been told to trust, read from
+    /// codex/hooks.json. An untrusted hook is one Codex skips, and every one of ours writes the
+    /// session file — so a count above zero means Codex is writing down less than it would, and
+    /// with the whole set unapproved it writes down nothing at all.
+    var codexHooksUntrusted = 0
     var mcpBusy = false
     var recheckTimer: Timer?
     /// How often the MCP picture is rebuilt from scratch in the background. Measured at ~34s a
@@ -100,6 +105,9 @@ final class StatusController: NSObject, NSWindowDelegate {
     var lastNotifiedChangeAt: Date?     // dedupe: notifyMCPChange runs on every reload, the change lives 45 s
     var limitsMTime: Date?              // limits.json parse gate; nil forces a re-read (see loadLimits)
     var codexLimitsMTime: Date?         // the same gate for codex/limits.json
+    var codexHooksMTime: Date?          // and for codex/hooks.json
+    /// The mtimes the last hook-trust question was asked against; see askCodexAboutHooks().
+    var codexTrustInputs: String?
     /// Where Codex keeps the session files its limit figures are read out of. Owned by Codex,
     /// never written here.
     let codexSessionsDir = (NSHomeDirectory() as NSString).appendingPathComponent(".codex/sessions")
@@ -630,6 +638,13 @@ final class StatusController: NSObject, NSWindowDelegate {
         if codexServers, FileManager.default.fileExists(atPath: codexHome) {
             runQuietCommand("codex-mcp", "refresh")
         }
+        // Asked on the same occasions, and not gated on either Codex switch: this one explains an
+        // empty Sessions tab, which is not a thing either switch turns off. It is gated on its own
+        // INPUT instead, and that gate is not an optimisation: refreshes also run 2.5 s after every
+        // server or tool switch, so without it a handful of clicks in the MCP tab would spawn a
+        // `codex app-server` each — for an answer that can only change when a human has answered a
+        // trust prompt, which is exactly what rewrites one of the two files below.
+        if askCodexAboutHooks() { runQuietCommand("codex-hooks") }
         runBackend(["refresh"]) { [weak self] in
             guard let self else { return }
             self.refreshQueued = false
@@ -782,7 +797,59 @@ final class StatusController: NSObject, NSWindowDelegate {
         limits = Limits(json: root)
     }
 
-    /// codex/limits.json, on the same stat-per-tick gate as the Claude file above.
+    /// Whether it is worth spawning `codex app-server` to ask which hooks it trusts.
+    ///
+    /// Yes on the first refresh of a run, yes whenever Codex has rewritten either file the answer
+    /// depends on — its hook list, and the config where the approved hashes live — and yes while
+    /// our own answer file is missing, so a deleted one is re-made rather than waited for. No the
+    /// rest of the time: nothing else can change the answer, and the question costs a process.
+    func askCodexAboutHooks() -> Bool {
+        guard FileManager.default.fileExists(atPath: codexHome) else { return false }
+        let answered = (root as NSString).appendingPathComponent("codex/hooks.json")
+        guard FileManager.default.fileExists(atPath: answered) else { return true }
+        let stamps = ["hooks.json", "config.toml"].map { name -> String in
+            let path = (codexHome as NSString).appendingPathComponent(name)
+            let date = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate])
+                as? Date
+            return date.map { String($0.timeIntervalSince1970) } ?? "-"
+        }.joined(separator: "|")
+        if stamps == codexTrustInputs { return false }
+        codexTrustInputs = stamps
+        return true
+    }
+
+    /// What a look at one of the codex/*.json state files found. Three outcomes, because the
+    /// three mean three different things to a reader: no file at all is an answer (the figures
+    /// go, rather than standing until a restart), an unchanged mtime is a stat and no parse, and
+    /// a file that is there but unreadable is a half-written rewrite — for the few milliseconds
+    /// that lasts, the previous parse is the better of the two things to show, so it reads as
+    /// unchanged rather than as missing.
+    enum CodexStateFile {
+        case missing
+        case unchanged
+        case changed([String: Any])
+    }
+
+    /// Both Codex files are read on the same stat-per-tick gate as the Claude one above: at 2.5 Hz
+    /// for the app's whole life, against files another process rewrites every few minutes. Writes
+    /// are atomic renames, so a changed mtime always means a whole new file.
+    func codexStateFile(at name: String, gate: inout Date?) -> CodexStateFile {
+        let path = (root as NSString).appendingPathComponent(name)
+        let stamp = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate])
+            as? Date
+        guard let stamp else {
+            gate = nil
+            return .missing
+        }
+        if stamp == gate { return .unchanged }
+        guard let data = FileManager.default.contents(atPath: path),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return .unchanged }
+        gate = stamp
+        return .changed(object)
+    }
+
+    /// codex/limits.json.
     ///
     /// Off has to mean the figures go away rather than stop moving, exactly as it does for the
     /// Anthropic poll: the file survives the switch, so the switch is what decides.
@@ -791,23 +858,25 @@ final class StatusController: NSObject, NSWindowDelegate {
             codexWindows = nil
             return
         }
-        let path = (root as NSString).appendingPathComponent("codex/limits.json")
-        let stamp = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate])
-            as? Date
-        // No file at all is an answer: the figures go, rather than standing until a restart.
-        // A file that is there but unreadable is a half-written rewrite, and the previous parse
-        // is the better of the two things to show for the few milliseconds that lasts.
-        guard let stamp else {
-            codexWindows = nil
-            codexLimitsMTime = nil
-            return
+        switch codexStateFile(at: "codex/limits.json", gate: &codexLimitsMTime) {
+        case .missing: codexWindows = nil
+        case .unchanged: break
+        case .changed(let object): codexWindows = LimitsSet(codex: object)
         }
-        if stamp == codexLimitsMTime { return }
-        guard let data = FileManager.default.contents(atPath: path),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return }
-        codexLimitsMTime = stamp
-        codexWindows = LimitsSet(codex: object)
+    }
+
+    /// codex/hooks.json — how many of our hooks Codex is skipping for want of trust.
+    ///
+    /// No file means no answer rather than "all approved": the count is only ever written after
+    /// Codex itself has been asked, and a machine where the command has not run yet must not be
+    /// told its hooks are fine.
+    func loadCodexHooks() {
+        switch codexStateFile(at: "codex/hooks.json", gate: &codexHooksMTime) {
+        case .missing: codexHooksUntrusted = 0
+        case .unchanged: break
+        case .changed(let object):
+            codexHooksUntrusted = (object["untrusted"] as? NSNumber)?.intValue ?? 0
+        }
     }
 
     /// A server falling over is worth interrupting for; a tool count moving is not — that is
@@ -914,6 +983,7 @@ final class StatusController: NSObject, NSWindowDelegate {
         if codexServers { codexMCP.reloadIfChanged() }
         loadLimits()
         loadCodexLimits()
+        loadCodexHooks()
         evaluate()
         // The panel is a live window, not a menu frozen at open time: the per-session clocks, the
         // limit figures and the server states all move under it. The store publishes only when

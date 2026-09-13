@@ -234,9 +234,17 @@ extension StatusController {
             // the point of this dump is to say what the row says.
             lines.append("  \(session.name) · \(session.subtitle)"
                 + (session.pct.map { "  ctx \(session.assumed ? "~" : "")\($0)%" } ?? "")
-                + (session.tag.isEmpty ? "" : "  " + session.tag))
+                + (session.tag.isEmpty ? "" : "  " + session.tag)
+                // Where a click on this row would land, when it is the agent's own deep link
+                // rather than "raise the terminal". Printed because it is the one thing about a
+                // row that cannot be seen by looking at it — and the dump exists for exactly the
+                // checks that clicking cannot make.
+                + (session.threadURL.map { "  → \($0.absoluteString)" } ?? ""))
         }
         if snapshot.offerOpenClaude { lines.append("  Open Claude") }
+        if snapshot.codexHooksBlocked {
+            lines.append("  Approve Codex's hooks to see its sessions")
+        }
         lines.append("MCP — \(snapshot.mcp.summary) · \(snapshot.mcp.toolsLine)")
         if let change = snapshot.mcp.change { lines.append("  changed: \(change)") }
         for group in snapshot.mcp.groups {

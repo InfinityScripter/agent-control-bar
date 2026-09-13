@@ -106,6 +106,31 @@ struct PanelCard<Content: View>: View {
     }
 }
 
+/// The amber one-line notice: something outside this app is holding a feature back, and the line
+/// says which. One shape for both of them, because two hand-built copies of the same amber pill
+/// drift apart at the first change of radius or tint — and an inconsistent warning reads as a
+/// different KIND of warning. Whether the line is clickable is the caller's business: one opens
+/// System Settings, the other has nowhere to go, since Codex asks for hook trust on its own screen.
+struct PanelNotice: View {
+    let glyph: String
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: glyph).font(.system(size: 10))
+            Text(text)
+                .font(.system(size: 11))
+                .lineLimit(1)
+        }
+        .foregroundStyle(Color(nsColor: .systemOrange))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(Color(nsColor: .systemOrange).opacity(0.12)))
+    }
+}
+
 /// The small uppercase caption above a card. Trailing content is the right-hand accessory —
 /// a count, a timestamp, the two icon buttons over the MCP list.
 struct PanelSectionTitle<Trailing: View>: View {

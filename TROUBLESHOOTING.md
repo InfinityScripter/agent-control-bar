@@ -47,7 +47,12 @@ the sessions appear from that moment. Two things follow from it:
   `~/.codex/hooks.json` unused. `codex mcp list` still works, so Codex's MCP servers show up in
   the panel either way; only its sessions depend on the hooks.
 
-Check what the app sees with `/usr/bin/python3 "/Applications/Claude Control Bar.app/Contents/Resources/scripts/mcpbar.py" doctor` — it prints the newest Codex session file it found and how many Codex MCP servers it knows about.
+The panel says so itself: while Codex is skipping hooks of ours AND no Codex session is known,
+the Sessions tab carries the line *Codex sessions hidden — approve its hooks* instead of simply
+showing nothing. An empty tab and an unapproved hook look identical otherwise, which is what
+sent people looking for a fault that was not there.
+
+Check what the app sees with `/usr/bin/python3 "/Applications/Claude Control Bar.app/Contents/Resources/scripts/mcpbar.py" doctor` — it prints the newest Codex session file it found, how many Codex MCP servers it knows about, and how many of our hooks Codex has not been told to trust.
 
 **Seeing 2 icons?** The desktop app shows its own menu bar icon (the quick-screenshot one). To avoid two icons sitting side by side, open Claude's **Settings → General** and turn that built-in menu bar item off.
 

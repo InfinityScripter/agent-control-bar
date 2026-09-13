@@ -403,6 +403,38 @@ check(isWorkingState(codexSession.state) && isActiveState(codexSession.state),
 // entrypoint — so they are two paths to one pill, and an unknown Codex surface shows nothing
 // rather than a wrong "CLI".
 check(SessionFormat.surfaceTag(codexSession) == "IDE", "the Codex surface becomes its badge")
+
+// Where a click on a Codex row lands. Its desktop app registers codex:// and spells one thread
+// as codex://threads/<id>, so a desktop session can open the CONVERSATION rather than just the
+// window — the same depth a Claude desktop row already gets.
+let codexDesktop = Session(json: ["provider": "codex", "surface": "app"], id: "t-1")
+check(SessionFormat.codexThreadURL(codexDesktop)?.absoluteString == "codex://threads/t-1",
+      "a desktop Codex session opens its own thread: "
+        + "\(SessionFormat.codexThreadURL(codexDesktop)?.absoluteString ?? "nil")")
+// A terminal session is where the user left it — the deep link would drag them into a different
+// app to read a conversation they are already looking at.
+let codexCLI = Session(json: ["provider": "codex", "surface": "cli",
+                              "term_bundle": "com.googlecode.iterm2"], id: "t-2")
+check(SessionFormat.codexThreadURL(codexCLI) == nil, "a terminal Codex session keeps its terminal")
+// Nothing known about where it runs. Tempting to call it a desktop session — it often is — but
+// this build answers "unknown" for any originator it has not been taught, and a terminal session
+// whose host left no trace would then be dragged into the desktop app to read what is already on
+// screen in front of the user. Unknown stays unknown; the ordinary rules take the click.
+let codexUnknown = Session(json: ["provider": "codex"], id: "t-3")
+check(SessionFormat.codexThreadURL(codexUnknown) == nil,
+      "an unplaceable Codex session is not assumed to be a desktop one")
+check(SessionFormat.codexThreadURL(
+        Session(json: ["provider": "codex", "surface": "app"], id: "")) == nil,
+      "no id, no link — there is no thread to name")
+check(SessionFormat.codexThreadURL(
+        Session(json: ["provider": "claude", "surface": "app"], id: "t-4")) == nil,
+      "and a Claude session never goes to Codex")
+// An id is a path component: one with a slash in it would otherwise address a different route
+// of the app entirely.
+check(SessionFormat.codexThreadURL(
+        Session(json: ["provider": "codex", "surface": "app"], id: "a/b?x"))?
+        .absoluteString == "codex://threads/a%2Fb%3Fx",
+      "an odd id is escaped rather than taken as a path")
 check(SessionFormat.surfaceTag(Session(json: ["provider": "codex", "surface": "exec"], id: "x")) == "EXEC",
       "a non-interactive codex exec run says so")
 check(SessionFormat.surfaceTag(Session(json: ["provider": "codex", "surface": ""], id: "x")).isEmpty,
@@ -1264,6 +1296,26 @@ check(codexSet?.live(at: 1_789_100_000).map { $0.key } == ["secondary"],
 check(codexSet?.live(at: 1_790_000_000).isEmpty == true,
       "and a snapshot older than every window it carries shows nothing at all")
 
+// The reserve pool: when the ordinary limit runs out, Codex moves the session onto its reserve
+// model, and from then on the snapshot in the rollout measures a DIFFERENT pool. Unlabelled, its
+// 13% reads as the ordinary weekly figure — while the five-hour window it replaced sits at 100%
+// and is nowhere on screen. The badge is what stops the strip telling that lie.
+let reserveSet = LimitsSet(codex: [
+    "ts": 1_789_000_000.0, "source": "rollout", "plan": "plus", "reserve": true,
+    "windows": [["kind": "primary", "used_percentage": 13, "window_minutes": 10080,
+                 "resets_at": 1_789_500_000.0] as [String: Any]] as [[String: Any]],
+])
+check(reserveSet?.windows.first?.title == "Reserve",
+      "a reserve window is named for the pool, not for its length: "
+        + "\(reserveSet?.windows.first?.title ?? "nil")")
+check(reserveSet?.windows.first?.badge == "7d",
+      "and its length moves into the badge, the way Fable's weekly slice is already drawn")
+check(reserveSet?.windows.first?.minutes == 10080,
+      "the duration itself survives, because it is what dates the snapshot")
+check(reserveSet?.live(at: 1_789_100_000).count == 1, "and the window is still dated by its reset")
+// Without the flag nothing changes for anyone who never hit the reserve.
+check(codexSet?.windows.first?.badge == nil, "an ordinary window carries no badge")
+
 // No reset stamp at all: the window's own length is what dates the figure. Without this rule a
 // Codex build that stopped sending resets_at would either vanish or lie forever.
 let undated = LimitsSet(codex: [
@@ -1347,6 +1399,23 @@ if !FileManager.default.fileExists(atPath: codexSeamPath) {
           "and the short window drops out once its reset has passed")
 } else {
     check(false, "codex seam fixture unreadable")
+}
+
+// The same seam for a reserve record: written by the real fetch_codex_limits() from a rollout
+// whose last turn ran on the reserve model.
+let reserveSeamPath = FileManager.default.currentDirectoryPath
+    + "/build/seam/codex-limits-reserve.json"
+if !FileManager.default.fileExists(atPath: reserveSeamPath) {
+    check(false, "codex reserve seam fixture missing at \(reserveSeamPath) — run the python "
+        + "suite first (/usr/bin/python3 -m unittest discover -s tests)")
+} else if let data = FileManager.default.contents(atPath: reserveSeamPath),
+          let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let seamSet = LimitsSet(codex: raw) {
+    check(seamSet.windows.first?.title == "Reserve",
+          "the reserve flag the real writer put in the file reaches the strip's wording")
+    check(seamSet.windows.first?.badge == "7d", "and its badge says how long the window is")
+} else {
+    check(false, "codex reserve seam fixture unreadable")
 }
 
 // MARK: Codex MCP — a second agent's servers in the same tab

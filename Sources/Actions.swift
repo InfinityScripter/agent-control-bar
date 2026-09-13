@@ -58,7 +58,21 @@ extension StatusController {
     // fallback for a conversation this machine has no record of.
     // CLI session: bring its terminal APP to the front (zero permission). Targeting the exact
     // window/tab needs a one-time Automation grant, deferred to the opt-in build (issue #19).
-    func openSession(_ id: String, entrypoint: String, termProgram: String, termBundle: String) {
+    func openSession(_ id: String, threadURL: URL?, entrypoint: String,
+                     termProgram: String, termBundle: String) {
+        // Codex's own deep link, when the model half decided this session is one to follow there
+        // (SessionFormat.codexThreadURL says which). `open -b` pins the receiving app rather than
+        // letting LaunchServices pick among whatever else claims `codex://` — the same precaution
+        // the editor branch below takes, and for the same reason.
+        //
+        // The app has to actually be installed, checked here rather than left to `open` — a
+        // failed `open` reports into a stderr nobody reads, and because this branch returns, a
+        // click that quietly went nowhere would have replaced one that used to raise a terminal.
+        if let threadURL, NSWorkspace.shared
+            .urlForApplication(withBundleIdentifier: Self.codexBundleID) != nil {
+            openTool(["-b", Self.codexBundleID, threadURL.absoluteString])
+            return
+        }
         if entrypoint == "claude-desktop" {
             guard let local = DesktopSessions.sessionID(forCLI: id),
                   let url = DesktopSessions.focusURL(sessionID: local)
@@ -73,10 +87,7 @@ extension StatusController {
         // VS Code "vscode" — so no fork catalog; `open -b` pins the receiving app in case two
         // forks claim one scheme. An editor without the handler still comes to the front.
         if entrypoint == "claude-vscode", !termBundle.isEmpty, let scheme = urlScheme(ofBundle: termBundle) {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-            p.arguments = ["-b", termBundle, "\(scheme)://anthropic.claude-code/open?session=\(id)"]
-            try? p.run()
+            openTool(["-b", termBundle, "\(scheme)://anthropic.claude-code/open?session=\(id)"])
             return
         }
         // The hooks record __CFBundleIdentifier, which names the exact hosting app — the
@@ -84,10 +95,7 @@ extension StatusController {
         // (so the click opened the wrong editor), and the IDE extension panel sets no
         // TERM_PROGRAM at all (so the click did nothing). `open -b` takes the id verbatim.
         if !termBundle.isEmpty {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-            p.arguments = ["-b", termBundle]
-            try? p.run()
+            openTool(["-b", termBundle])
             return
         }
         // Map TERM_PROGRAM to a name `open -a` understands; most terminals match verbatim.
@@ -100,9 +108,19 @@ extension StatusController {
         case "":               return  // unknown surface, nothing to focus
         default:               app = termProgram  // Ghostty, WezTerm, Tabby, Hyper, kitty, …
         }
+        openTool(["-a", app])
+    }
+
+    /// The bundle id of Codex's desktop app, which is what registers the `codex://` scheme.
+    static let codexBundleID = "com.openai.codex"
+
+    /// One spelling of "hand this to /usr/bin/open" for the four branches above. They differed
+    /// only in their arguments, and four copies of a five-line launch is four places to forget
+    /// when the launch itself ever needs to change.
+    private func openTool(_ arguments: [String]) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        p.arguments = ["-a", app]
+        p.arguments = arguments
         try? p.run()
     }
 

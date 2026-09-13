@@ -28,7 +28,24 @@ struct PanelSessionsTab: View {
                     }
                 }
             }
+            if store.snapshot.codexHooksBlocked { codexHooksNote }
         }
+    }
+
+    /// Codex runs only the hooks a human has approved, and the hook it is skipping is the one that
+    /// writes a session file. Without this line the tab is simply empty of Codex — which reads as
+    /// "Codex is not running", and sends the reader looking for a fault in the wrong place
+    /// entirely. The approval lives in Codex's own screen, so there is nothing here to click.
+    ///
+    /// Worded as the thing to DO, not as "sessions are hidden": someone who has not started Codex
+    /// today has no sessions to hide, and a line claiming otherwise would be its own small lie.
+    private var codexHooksNote: some View {
+        PanelNotice(glyph: "exclamationmark.triangle",
+                    text: "Approve Codex's hooks to see its sessions")
+        .padding(.top, 8)
+        .help("Codex runs only the hooks it has been told to trust, and this app's are still "
+              + "untrusted — so it writes down no session at all. Start Codex in a terminal and "
+              + "approve them once, and its sessions appear here.")
     }
 
     @ViewBuilder
