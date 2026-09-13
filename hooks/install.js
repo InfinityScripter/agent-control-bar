@@ -25,22 +25,8 @@ const ownerPath = path.join(sbDir, "owner.json");
 // lease is reclaimed the moment the plugin directory is gone from disk — a fact, not a timeout.
 const readJSON = (file) => { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; } };
 const owner = readJSON(ownerPath);
-if (owner && owner.channel === "plugin" && owner.pluginRoot && fs.existsSync(owner.pluginRoot)) {
-  console.log("Plugin channel owns the hooks (" + owner.pluginRoot + ") — nothing to install.");
-  process.exit(0);
-}
+const pluginOwns = !!(owner && owner.channel === "plugin" && owner.pluginRoot && fs.existsSync(owner.pluginRoot));
 
-// Retire the old 0.0.2 background watcher LaunchAgent on upgrade (0.0.3+ self-quits).
-const OLD_AGENT_LABEL = "com.local.claudestatusbar.watcher";
-const oldAgentPlist = path.join(home, "Library", "LaunchAgents", OLD_AGENT_LABEL + ".plist");
-try { cp.execSync(`launchctl bootout gui/${process.getuid()}/${OLD_AGENT_LABEL}`, { stdio: "ignore" }); } catch {}
-if (fs.existsSync(oldAgentPlist)) { fs.rmSync(oldAgentPlist); console.log("Removed old desktop watcher LaunchAgent."); }
-
-fs.mkdirSync(sbDir, { recursive: true, mode: 0o700 });
-fs.rmSync(path.join(sbDir, "watcher.sh"), { force: true });
-// Retire pre-multi-session artifacts (single global state + empty liveness markers).
-fs.rmSync(path.join(sbDir, "state.json"), { force: true });
-fs.rmSync(path.join(sbDir, "sessions.d"), { recursive: true, force: true });
 // Write-then-rename, not copyFileSync: these two files are EXECUTED by hooks that fire in
 // parallel with this installer (it runs on every app launch, including the self-heal relaunch
 // mid-session), and copyFileSync truncates the destination in place — node parsing a
@@ -48,6 +34,11 @@ fs.rmSync(path.join(sbDir, "sessions.d"), { recursive: true, force: true });
 // whole files, and the mode is set at the temp file's creation, which also closes the old
 // copy-then-chmod window. Owner-only because these are hook scripts Claude Code runs as this
 // user; PRIVACY.md calls them trusted local code for exactly that reason.
+//
+// Done before the lease check below, unlike the hook registration: the lease decides WHOSE
+// hook entries Claude Code runs, and both channels' Codex entries point at these two copies,
+// so they have to be on disk whoever won.
+fs.mkdirSync(sbDir, { recursive: true, mode: 0o700 });
 for (const [src, dest] of [["update.js", updateDest], ["lifecycle.js", lifecycleDest]]) {
   const tmp = `${dest}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, fs.readFileSync(path.join(__dirname, src)), { mode: 0o600 });
@@ -74,10 +65,105 @@ const pointsAt = (command, script) => {
   return command.includes(shellQuote(script));
 };
 const isOurs = (command) => ownScripts.some((script) => pointsAt(command, script));
+// Per-hook, not per-entry: a foreign hook sharing an entry object with ours has to survive the
+// filter. Used for both agents' files, which is why it takes the array rather than reaching
+// for a global.
+const stripOurs = (arr) =>
+  (arr || [])
+    .map((entry) => ({
+      ...entry,
+      hooks: (entry.hooks || []).filter((h) => !isOurs(h.command || "")),
+    }))
+    .filter((entry) => (entry.hooks || []).length > 0);
 const cmd = (evt) =>
   `PATH="/opt/homebrew/bin:/usr/local/bin\${PATH:+:$PATH}" node ${shellQuote(updateDest)} ${evt}`;
 const life = (evt) =>
   `PATH="/opt/homebrew/bin:/usr/local/bin\${PATH:+:$PATH}" node ${shellQuote(lifecycleDest)} ${evt}`;
+
+// --- Codex CLI --------------------------------------------------------------------------
+// Codex has a hook system of its own, almost mirroring Claude Code's: the same JSON shape in
+// ~/.codex/hooks.json, the same events bar two — there is no Notification (the permission
+// signal is PermissionRequest) and there is an Interrupt (Esc arrives as an event instead of
+// being inferred from a transcript marker).
+//
+// Installed for BOTH channels, unlike Claude's: ~/.codex/hooks.json is the only place Codex
+// looks, so the plugin channel standing down here would leave every plugin user's Codex
+// sessions invisible. Nothing else about Codex is touched — in particular not config.toml,
+// where the hook TRUST lives. Codex shows the user a review screen for hooks it has not seen
+// before and records the approval itself; forging that hash would be defeating a safety
+// mechanism, so instead the user confirms once, and the README says so.
+const codexHome = path.join(home, ".codex");
+const codexHooksPath = path.join(codexHome, "hooks.json");
+// Codex kills SessionEnd and Interrupt after one second (three at most) — our end hook only
+// deletes a file, which is why it can honestly promise that. Ten seconds for the rest covers a
+// cold node start on a busy machine without ever holding a tool call for long.
+const codexEvents = [
+  ["UserPromptSubmit", cmd("prompt"), 10],
+  ["PreToolUse", cmd("pre"), 10],
+  ["PostToolUse", cmd("post"), 10],
+  ["PermissionRequest", cmd("permreq"), 10],
+  ["Stop", cmd("stop"), 10],
+  ["Interrupt", cmd("stop"), 3],
+  ["SessionStart", life("start"), 10],
+  ["SessionEnd", life("end"), 3],
+];
+
+const installCodexHooks = () => {
+  if (!fs.existsSync(codexHome)) return;       // no Codex here, nothing to hook into
+  let file = { hooks: {} };
+  if (fs.existsSync(codexHooksPath)) {
+    file = readJSON(codexHooksPath);
+    // Said out loud and left alone, exactly as for settings.json: rewriting it from {} would
+    // take the user's own Codex hooks with it, and Claude's install must still proceed.
+    if (!file || typeof file !== "object" || Array.isArray(file)) {
+      console.error("~/.codex/hooks.json does not parse — Codex hooks not installed.");
+      return;
+    }
+  }
+  if (!file.hooks || typeof file.hooks !== "object" || Array.isArray(file.hooks)) file.hooks = {};
+  const before = JSON.stringify(file, null, 2) + "\n";
+
+  for (const [evt, command, timeout] of codexEvents) {
+    const kept = stripOurs(file.hooks[evt]);
+    kept.push({ hooks: [{ type: "command", command: command + " --provider codex", timeout }] });
+    file.hooks[evt] = kept;
+  }
+
+  const next = JSON.stringify(file, null, 2) + "\n";
+  // Changing a hook's command makes Codex ask for trust again, so an unchanged file must not be
+  // rewritten at all — this installer runs on every app launch.
+  if (next === before) return;
+  try {
+    fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+    const tmp = `${codexHooksPath}.${process.pid}.tmp`;
+    let mode;
+    try { mode = fs.statSync(codexHooksPath).mode; } catch {}
+    fs.writeFileSync(tmp, next, mode === undefined ? undefined : { mode });
+    fs.renameSync(tmp, codexHooksPath);
+    console.log("Installed Codex hooks into", codexHooksPath);
+    console.log("Codex will ask you to trust them once, on its next start.");
+  } catch (err) {
+    console.error("could not write " + codexHooksPath + ":", err.message);
+  }
+};
+
+installCodexHooks();
+
+if (pluginOwns) {
+  console.log("Plugin channel owns the hooks (" + owner.pluginRoot + ") — nothing to install.");
+  process.exit(0);
+}
+
+// Retire the old 0.0.2 background watcher LaunchAgent on upgrade (0.0.3+ self-quits).
+const OLD_AGENT_LABEL = "com.local.claudestatusbar.watcher";
+const oldAgentPlist = path.join(home, "Library", "LaunchAgents", OLD_AGENT_LABEL + ".plist");
+try { cp.execSync(`launchctl bootout gui/${process.getuid()}/${OLD_AGENT_LABEL}`, { stdio: "ignore" }); } catch {}
+if (fs.existsSync(oldAgentPlist)) { fs.rmSync(oldAgentPlist); console.log("Removed old desktop watcher LaunchAgent."); }
+
+fs.rmSync(path.join(sbDir, "watcher.sh"), { force: true });
+// Retire pre-multi-session artifacts (single global state + empty liveness markers).
+fs.rmSync(path.join(sbDir, "state.json"), { force: true });
+fs.rmSync(path.join(sbDir, "sessions.d"), { recursive: true, force: true });
 
 // A fingerprint of the file as we found it. Compared again just before the rename, because
 // settings.json is shared: Claude Code writes it, the user edits it, and a plain read-modify-write
@@ -155,14 +241,6 @@ if (fs.existsSync(settingsPath)) {
 // otherwise read as a difference on every single launch.
 const before = JSON.stringify(settings, null, 2) + "\n";
 settings.hooks = settings.hooks || {};
-
-const stripOurs = (arr) =>
-  (arr || [])
-    .map((entry) => ({
-      ...entry,
-      hooks: (entry.hooks || []).filter((h) => !isOurs(h.command || "")),
-    }))
-    .filter((entry) => (entry.hooks || []).length > 0);
 
 const addUnmatched = (evt, command) => {
   settings.hooks[evt] = stripOurs(settings.hooks[evt]);

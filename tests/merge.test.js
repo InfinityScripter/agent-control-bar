@@ -648,6 +648,209 @@ test("stop and permreq events map to their states, an unknown event writes nothi
   assert.ok(!fs.existsSync(path.join(stateDir(home), "s2.json")));
 });
 
+// --- Codex CLI sessions ----------------------------------------------------------------
+// The same two hooks serve both agents, told apart by `--provider codex`. Codex's own facts
+// are verified against codex-cli 0.154.0 on a live machine (docs/codex-support-plan.md §0):
+// the hook payload carries session_id/cwd/transcript_path/model, process.ppid IS the codex
+// process, and the transcript is a rollout JSONL whose session_meta names the surface.
+
+const codexStateDir = (home) => path.join(home, ".claude", "control-bar", "codex", "state.d");
+
+// One rollout file: the session_meta line every rollout opens with, plus whatever follows.
+const rollout = (home, lines = [], meta = {}) => {
+  const file = path.join(home, "rollout.jsonl");
+  fs.writeFileSync(file, [
+    JSON.stringify({ timestamp: "2026-09-13T12:24:52.382Z", type: "session_meta", payload: {
+      session_id: "c1", cwd: home, originator: "codex_cli_rs", thread_source: "user",
+      cli_version: "0.154.0", ...meta } }),
+    ...lines,
+  ].join("\n"));
+  return file;
+};
+
+// A token_count record carries two blocks, and only one of them is the context. Measured on a
+// real 110-turn session: total_token_usage reached 25,374,147 against a window of 828,400 — it
+// accumulates every turn ever billed, so reading it would park every session at 100% after a
+// few turns. last_token_usage is what currently occupies the window, and it grew 60k → 323k
+// over that session without once passing the window. The cumulative block here is deliberately
+// 30x the window so a future reader that grabs the wrong one fails this test instead of shipping.
+const tokenCount = (used, window) => JSON.stringify({
+  timestamp: "2026-09-13T12:24:55.912Z", type: "event_msg", payload: { type: "token_count",
+    info: {
+      total_token_usage: { input_tokens: window * 29, cached_input_tokens: 0,
+        cache_write_input_tokens: 0, output_tokens: window, reasoning_output_tokens: 0,
+        total_tokens: window * 30 },
+      last_token_usage: { input_tokens: used - 400, cached_input_tokens: used - 1000,
+        cache_write_input_tokens: 0, output_tokens: 300, reasoning_output_tokens: 100,
+        total_tokens: used },
+      model_context_window: window } } });
+
+test("a codex event writes into codex's own state directory, never into Claude's", () => {
+  // Two agents, one file layout, separate directories: the Claude contract has two writers
+  // already and a Codex session landing in state.d would be reaped by Claude's own rules.
+  const home = sandbox();
+  run(updatePath, home, ["pre", "--provider", "codex"], JSON.stringify({
+    session_id: "c1", cwd: home, tool_name: "exec", model: "gpt-5.6-sol",
+  }));
+
+  const state = JSON.parse(fs.readFileSync(path.join(codexStateDir(home), "c1.json"), "utf8"));
+  assert.equal(state.provider, "codex");
+  assert.equal(state.state, "tool");
+  // `exec` is Codex's shell tool — the label has to read like Claude's "Running command",
+  // or the same activity gets two different words depending on the agent.
+  assert.equal(state.label, "Running command");
+  assert.deepEqual(fs.readdirSync(stateDir(home)), [], "Claude's directory stays empty");
+});
+
+test("codex context is measured from the rollout with the window codex itself reports", () => {
+  // Claude's window has to be guessed from the model name; Codex states it in every
+  // token_count record, so the figure is exact and `assumed` is honestly false.
+  const home = sandbox();
+  const transcript = rollout(home, [tokenCount(41_420, 200_000)]);
+
+  run(updatePath, home, ["prompt", "--provider", "codex"],
+      JSON.stringify({ session_id: "c1", cwd: home, transcript_path: transcript }));
+
+  const state = JSON.parse(fs.readFileSync(path.join(codexStateDir(home), "c1.json"), "utf8"));
+  assert.equal(state.tokens, 41_420);
+  assert.equal(state.window, 200_000);
+  assert.equal(state.pct, 21);
+  assert.equal(state.assumed, false);
+});
+
+test("the newest token count wins, and a rollout without one keeps the last known figure", () => {
+  const home = sandbox();
+  const transcript = rollout(home, [tokenCount(10_000, 200_000), tokenCount(60_000, 200_000)]);
+  const payload = JSON.stringify({ session_id: "c1", cwd: home, transcript_path: transcript });
+  run(updatePath, home, ["prompt", "--provider", "codex"], payload);
+  let state = JSON.parse(fs.readFileSync(path.join(codexStateDir(home), "c1.json"), "utf8"));
+  assert.equal(state.pct, 30, "the last record in the file is the current one");
+
+  // A compaction rewrites the rollout; a read landing mid-rewrite finds no token_count. A
+  // momentarily missing number would blank the context bar and read as "context freed".
+  fs.writeFileSync(transcript, "");
+  run(updatePath, home, ["post", "--provider", "codex"], payload);
+  state = JSON.parse(fs.readFileSync(path.join(codexStateDir(home), "c1.json"), "utf8"));
+  assert.equal(state.pct, 30);
+});
+
+test("a codex subagent never becomes a row of its own", () => {
+  // Codex spawns subagents as full threads with their own session id, rollout and hooks. One
+  // prompt of the user's showed five running sessions before this: the parent and four workers.
+  const home = sandbox();
+  const worker = rollout(home, [], { thread_source: "subagent", agent_nickname: "Parfit" });
+
+  run(lifecyclePath, home, ["start", "--provider", "codex"],
+      JSON.stringify({ session_id: "w1", cwd: home, transcript_path: worker, source: "startup" }));
+  run(updatePath, home, ["pre", "--provider", "codex"], JSON.stringify({
+    session_id: "w1", cwd: home, transcript_path: worker, tool_name: "exec", agent_id: "a1",
+  }));
+
+  assert.ok(!fs.existsSync(codexStateDir(home)) || fs.readdirSync(codexStateDir(home)).length === 0,
+    "a worker thread writes no state file at all");
+});
+
+test("a codex worker is turned away by its rollout, not only by a field on the payload", () => {
+  // The payload's agent_id is what Codex's hook docs describe, but it has never been SEEN on a
+  // live worker event — only asserted. The rollout's thread_source has been. So a worker whose
+  // events carry no agent_id at all (the case that would otherwise slip through, and the case
+  // nothing else in this suite covers) must still be turned away.
+  const home = sandbox();
+  const worker = rollout(home, [], { thread_source: "guardian_review" });
+
+  run(updatePath, home, ["pre", "--provider", "codex"], JSON.stringify({
+    session_id: "w2", cwd: home, transcript_path: worker, tool_name: "exec",
+  }));
+
+  assert.ok(!fs.existsSync(path.join(codexStateDir(home), "w2.json")),
+    "no agent_id on the payload, and it is still not a session of its own");
+});
+
+test("a codex session already running when the hooks arrived still gets its surface", () => {
+  // It never fired SessionStart, so nothing seeded the surface — the badge would stay blank for
+  // the rest of its life. The first event reads the rollout once and settles it.
+  const home = sandbox();
+  const transcript = rollout(home, [], { originator: "codex_exec" });
+
+  run(updatePath, home, ["prompt", "--provider", "codex"],
+      JSON.stringify({ session_id: "late", cwd: home, transcript_path: transcript }));
+
+  const state = JSON.parse(fs.readFileSync(path.join(codexStateDir(home), "late.json"), "utf8"));
+  assert.equal(state.surface, "exec");
+});
+
+test("the codex surface comes from the rollout's own originator", () => {
+  const home = sandbox();
+  const cases = [["codex_cli_rs", "cli"], ["codex_vscode", "ide"], ["Codex Desktop", "app"],
+                 ["codex_exec", "exec"], ["something-new", ""]];
+  for (const [originator, surface] of cases) {
+    const transcript = rollout(home, [], { originator });
+    run(lifecyclePath, home, ["start", "--provider", "codex"], JSON.stringify({
+      session_id: "s-" + surface, cwd: home, transcript_path: transcript, source: "startup",
+    }));
+    const state = JSON.parse(
+      fs.readFileSync(path.join(codexStateDir(home), "s-" + surface + ".json"), "utf8"));
+    assert.equal(state.surface, surface, originator + " is a " + (surface || "nameless") + " surface");
+  }
+});
+
+test("a codex session start reaps its own dead sessions and leaves Claude's alone", () => {
+  const home = sandbox();
+  fs.mkdirSync(codexStateDir(home), { recursive: true });
+  fs.writeFileSync(path.join(codexStateDir(home), "dead.json"),
+    JSON.stringify({ sessionId: "dead", pid: 999999, ts: 1 }));
+  fs.writeFileSync(path.join(stateDir(home), "claude.json"),
+    JSON.stringify({ sessionId: "claude", pid: 999999, ts: 1 }));
+
+  run(lifecyclePath, home, ["start", "--provider", "codex"],
+      JSON.stringify({ session_id: "c1", cwd: home, source: "startup" }));
+
+  assert.deepEqual(fs.readdirSync(codexStateDir(home)).sort(), ["c1.json"]);
+  // Claude's dead file is Claude's own business: SessionEnd for Codex has a one-second budget,
+  // and walking a second directory on somebody else's behalf is how that budget gets blown.
+  assert.deepEqual(fs.readdirSync(stateDir(home)), ["claude.json"]);
+});
+
+test("ending a codex session removes only its own file", () => {
+  const home = sandbox();
+  run(updatePath, home, ["prompt", "--provider", "codex"],
+      JSON.stringify({ session_id: "c1", cwd: home }));
+  run(updatePath, home, ["prompt", "--provider", "codex"],
+      JSON.stringify({ session_id: "c2", cwd: home }));
+
+  run(lifecyclePath, home, ["end", "--provider", "codex"], JSON.stringify({ session_id: "c1" }));
+
+  assert.deepEqual(fs.readdirSync(codexStateDir(home)).sort(), ["c2.json"]);
+});
+
+test("the codex state file carries exactly the keys the swift reader parses", () => {
+  const home = sandbox();
+  const transcript = rollout(home, [tokenCount(41_420, 200_000)], { originator: "codex_vscode" });
+  run(lifecyclePath, home, ["start", "--provider", "codex"], JSON.stringify({
+    session_id: "pin3", cwd: home, transcript_path: transcript, source: "startup" }));
+  run(updatePath, home, ["pre", "--provider", "codex"], JSON.stringify({
+    session_id: "pin3", cwd: home, transcript_path: transcript, tool_name: "apply_patch",
+    model: "gpt-5.6-sol",
+  }));
+
+  const state = JSON.parse(fs.readFileSync(path.join(codexStateDir(home), "pin3.json"), "utf8"));
+  assert.deepEqual(Object.keys(state).sort(), [
+    "assumed", "cost", "cwd", "dirty", "duration", "entrypoint", "label", "linesAdded",
+    "linesRemoved", "model", "pct", "pid", "project", "provider", "sessionId", "started",
+    "startedAt", "state", "surface", "term_bundle", "term_program", "tokens", "tool",
+    "transcript", "ts", "window",
+  ]);
+  assert.equal(state.surface, "ide", "the surface survives the events that follow the start");
+  assert.equal(state.model, "gpt-5.6-sol", "the model comes from the payload, not from a guess");
+
+  // The reader's half: the swift model checks parse THIS file with the real Session
+  // initializer. Its own fixture, so the Claude seam keeps its independent pin.
+  const seamDir = path.resolve(__dirname, "..", "build", "seam");
+  fs.mkdirSync(seamDir, { recursive: true });
+  fs.copyFileSync(path.join(codexStateDir(home), "pin3.json"),
+                  path.join(seamDir, "codex-session.json"));
+});
+
 test("the app channel records its lease in owner.json", () => {
   // The lease is what keeps the two install channels from stacking hooks; every other test
   // seeds it by hand, so nothing had pinned that install.js actually writes it.
