@@ -7,6 +7,47 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.16.0] - 2026-09-13
+
+### Added
+- **Codex's reserve pool is named instead of passed off as the ordinary one.** Once the ordinary
+  limit is gone Codex moves the session onto its reserve model, and from that turn on the figure
+  it writes down measures the RESERVE allowance — while the five-hour window it replaced sits at
+  100% and is nowhere on screen. The strip was drawing that reserve figure under the ordinary
+  window's name: the number was real and the label was a lie. The window now says `Reserve` and
+  carries its length in the badge — the shape Fable's weekly slice already uses, which is the
+  same statement: this measures one model's allowance, not the account's. Nothing in Codex's file
+  distinguishes the two pools (`limit_id` arrives as "codex" for both, `limit_name` is always
+  null), so what identifies the pool is the model of the turn the snapshot belongs to.
+- **One amber line when Codex's hooks are still unapproved.** Codex runs only hooks a human has
+  approved on its own screen, and every hook of ours writes the session file — so with the set
+  unapproved nothing gets written, which is indistinguishable from "Codex is not running". The
+  Sessions tab now carries *Approve Codex's hooks to see its sessions*, asked of Codex itself
+  rather than guessed from its config, and shown only while no Codex session is known at all — a
+  session merely resting past the hide-idle age does not get the wrong cause pinned on it.
+  `mcpbar.py doctor` prints the count.
+
+### Changed
+- **Clicking a Codex desktop row opens that conversation**, not just the app. Codex registers the
+  `codex://` scheme and spells one thread as `codex://threads/<id>`, which is the depth a Claude
+  desktop row already had — the app is normally frontmost anyway, so raising it looked like the
+  click did nothing. A terminal session is still raised where you put it, and a surface this build
+  does not recognise is not assumed to be a desktop one.
+
+### Fixed
+- **Codex rows never got their surface badge, and Codex's own subagents appeared as rows of their
+  own.** The hooks read the first line of the rollout to learn both facts, with an 8 KB buffer —
+  and every one of the 303 rollouts on the machine this was found on opens with more than that:
+  median 19 KB, largest 70 KB, all of it workspace roots and git information. `JSON.parse` got
+  half an object, the catch swallowed it, and the answer was always "unknown surface, not a
+  worker". So no session from 0.15.0 ever carried a `CLI`/`IDE`/`APP` badge, and the promise that
+  a Codex worker never becomes a row of its own could not hold — one prompt could still show
+  several rows. The ceiling is half a megabyte now, and a line that still does not fit yields no
+  answer rather than a truncated one handed to the parser. Codex 0.154 also renamed the
+  terminal's originator to `codex-tui`, which was in no version of the table; both spellings are
+  mapped, so terminal sessions are told apart from desktop ones again — which is what the click
+  above keys on.
+
 ## [0.15.0] - 2026-09-13
 
 ### Added
@@ -1148,6 +1189,7 @@ reports on Claude Code — it switches parts of it off.
 - Signed and notarized DMG so it opens without a Gatekeeper warning.
 - Claude Code plugin marketplace manifest for the plugin install path.
 
+[0.16.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.16.0
 [0.15.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.15.0
 [0.14.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.14.0
 [0.13.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.13.0
