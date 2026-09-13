@@ -15,6 +15,7 @@ MCP-картину ведёт этот скрипт (mcp.json), рисует в�
     statusline       перехват лимитов: --install / --uninstall / без флага — статус
     limits           спросить лимиты аккаунта у эндпоинта и переписать limits.json
     codex-limits     снять лимиты Codex со свежего rollout и переписать codex/limits.json
+    codex-mcp        серверы MCP Codex: refresh | toggle-server | toggle-tool
     doctor           проверить окружение и показать, что откуда берётся
 """
 
@@ -162,7 +163,18 @@ STRINGS = {
     "codex.empty": ("the snapshot carried no limit windows",
                     "снимок без единого окна лимитов"),
     "codex.updated": ("updated: {w}", "обновлено: {w}"),
+    "codex.nobinary": ("codex not found on PATH", "не нашла codex в PATH"),
+    "codex.timeout": ("codex did not answer in time", "codex не ответил вовремя"),
+    "codex.badreply": ("codex replied in a shape this build does not know",
+                       "codex ответил в форме, которую эта сборка не знает"),
+    "codex.noservers": ("no MCP servers in the Codex config",
+                        "в конфиге Codex нет MCP-серверов"),
+    "codex.servers": ("updated: {n} Codex MCP server", "обновлено: серверов MCP Codex — {n}"),
+    "codex.login": ("run {cmd}", "выполни {cmd}"),
+    "codex.unknown": ("no Codex server named {name} — refresh first",
+                      "сервера Codex с именем {name} нет — сначала refresh"),
     "doc.codex": ("codex rollout", "rollout codex"),
+    "doc.codexmcp": ("codex mcp servers", "серверы mcp codex"),
 }
 
 
@@ -1607,6 +1619,383 @@ def fetch_codex_limits():
     return t("codex.updated", w=windows)
 
 
+# ──────────────────────────────────────────────────────────── MCP-серверы Codex
+
+# Читаем через сам Codex, а не его config.toml: системный /usr/bin/python3 на macOS — 3.9,
+# tomllib в нём нет, а разбирать TOML руками ради чужого файла со слоями (config.toml
+# пользователя, проектный, таблицы плагинов) — ровно та ошибка, которой этот скрипт избегает
+# для settings.json. `codex mcp list --json` уже сводит слои в один ответ.
+CODEX_MCP = os.path.join(CODEX_ROOT, "mcp.json")
+# Сколько ждём app-server. Он поднимает КАЖДЫЙ сервер пользователя, чтобы спросить у них
+# список инструментов, поэтому это секунды, а не миллисекунды — но зато Codex сам разбирается
+# с транспортом и авторизацией, чего своим stdio-опросом мы не умеем.
+CODEX_APP_SERVER_TIMEOUT = 60
+
+
+def find_codex():
+    """Путь к бинарю `codex`, или "" — тем же перебором, что find_claude()."""
+    for path in ("/opt/homebrew/bin/codex", "/usr/local/bin/codex",
+                 os.path.join(HOME, ".local", "bin", "codex")):
+        if os.path.exists(path):
+            return path
+    return shutil.which("codex") or ""
+
+
+def codex_json(args, timeout=30):
+    """`codex <args> --json` → разобранный ответ, или (None, ошибка строкой)."""
+    import subprocess
+    binary = find_codex()
+    if not binary:
+        return None, t("codex.nobinary")
+    try:
+        done = subprocess.run([binary] + args + ["--json"], capture_output=True,
+                              text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None, t("codex.timeout")
+    except OSError as exc:
+        return None, str(exc)[:200]
+    if done.returncode != 0:
+        return None, (done.stderr or done.stdout or "").strip()[:200]
+    try:
+        return json.loads(done.stdout), None
+    except ValueError:
+        return None, t("codex.badreply")
+
+
+def codex_mcp_list():
+    """Все серверы Codex, включая выключенные, или ([], ошибка)."""
+    data, error = codex_json(["mcp", "list"])
+    return (data if isinstance(data, list) else []), error
+
+
+def codex_mcp_get(name):
+    """Один сервер целиком: только здесь есть enabled_tools / disabled_tools."""
+    data, _ = codex_json(["mcp", "get", name])
+    return data if isinstance(data, dict) else {}
+
+
+def codex_server_status():
+    """Живой статус и списки инструментов от `codex app-server`, или ({}, ошибка).
+
+    JSON-RPC по stdio: initialize → mcpServerStatus/list → выходим. Поля ответа в
+    camelCase (`runtimeStatus`, `toolsError`, `authStatus`, `pluginId`) — проверено на
+    codex-cli 0.154.0; snake_case из плана там не встречается.
+    """
+    import subprocess, threading, queue
+    binary = find_codex()
+    if not binary:
+        return {}, t("codex.nobinary")
+    try:
+        proc = subprocess.Popen([binary, "app-server"], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                text=True, bufsize=1)
+    except OSError as exc:
+        return {}, str(exc)[:200]
+    lines = queue.Queue()
+    threading.Thread(target=lambda: [lines.put(line) for line in proc.stdout],
+                     daemon=True).start()
+    try:
+        for request in ({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                         "params": {"clientInfo": {"name": "claude-control-bar",
+                                                   "title": "Claude Control Bar",
+                                                   "version": "1"}}},
+                        {"jsonrpc": "2.0", "id": 2, "method": "mcpServerStatus/list",
+                         "params": {}}):
+            proc.stdin.write(json.dumps(request) + "\n")
+            proc.stdin.flush()
+        deadline = time.time() + CODEX_APP_SERVER_TIMEOUT
+        while time.time() < deadline:
+            try:
+                line = lines.get(timeout=max(0.1, deadline - time.time()))
+            except Exception:
+                break
+            reply = read_json_line(line)
+            # Между ответами приходят уведомления (remoteControl/status/changed и прочие);
+            # ждём именно свой id, а не первую строку, похожую на ответ.
+            if not isinstance(reply, dict) or reply.get("id") != 2:
+                continue
+            if reply.get("error"):
+                return {}, str(reply["error"].get("message", ""))[:200]
+            rows = (reply.get("result") or {}).get("data")
+            if not isinstance(rows, list):
+                return {}, t("codex.badreply")
+            return {row.get("name"): row for row in rows
+                    if isinstance(row, dict) and row.get("name")}, None
+        return {}, t("codex.timeout")
+    except OSError as exc:
+        return {}, str(exc)[:200]
+    finally:
+        # Та же лестница, что в ask_server_for_tools: закрыть stdin, попросить, добить.
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            proc.terminate()
+            proc.wait(2)
+        except Exception:
+            try:
+                proc.kill()
+                proc.wait(2)
+            except Exception:
+                pass
+
+
+def codex_state(entry, status):
+    """Строка состояния для панели: те же слова, что у серверов Claude.
+
+    `auth` идёт ПЕРЕД проверкой инструментов: сервер за OAuth без логина инструментов не
+    отдаёт, и без этой ветки он читался бы как сломанный — человек шёл бы искать сбой,
+    которого нет, вместо одной команды `codex mcp login`.
+    """
+    if not entry.get("enabled", True):
+        return "off"
+    if (entry.get("auth_status") or (status or {}).get("authStatus")) == "unauthorized":
+        return "auth"
+    if not status:
+        return "unknown"          # app-server не спрашивали или не ответил
+    if status.get("toolsError"):
+        return "failed"
+    runtime = status.get("runtimeStatus")
+    if isinstance(runtime, str) and runtime not in ("ready", "running", "ok"):
+        return "failed"
+    return "ok"
+
+
+def codex_denied(tools, get):
+    """Какие инструменты Codex не отдаст модели, по обоим его спискам.
+
+    allow-список сужает, deny-список вычитает, и применяются они в этом порядке — то есть
+    инструмента нет в enabled_tools, значит он уже запрещён, независимо от disabled_tools.
+    """
+    allowed = get.get("enabled_tools")
+    denied = set(get.get("disabled_tools") or [])
+    if isinstance(allowed, list):
+        denied |= {name for name in tools if name not in allowed}
+    return sorted(denied)
+
+
+def codex_status_text(name, state, status):
+    """Строка под курсором: что именно не так с этим сервером, если что-то не так.
+
+    Отдельной функцией, а не тройным условием в словаре: одно такое выражение уже потеряло
+    здесь `toolsError` целиком. Питоновский тернарник связывается слабее `or`, и проверка
+    «есть ли ключ перевода для server.<state>» проглатывала ветку с настоящим текстом ошибки —
+    сломанный сервер показывал пустую подсказку, то есть ровно то место, где человеку нужна
+    причина, оставалось пустым.
+    """
+    if state == "auth":
+        return t("codex.login", cmd="codex mcp login " + name)
+    # Текст от самого сервера важнее любой нашей формулировки — он и есть причина.
+    failure = status.get("toolsError")
+    if isinstance(failure, str) and failure.strip():
+        return failure.strip()[:200]
+    return t("server." + state) if ("server." + state) in STRINGS else ""
+
+
+def codex_server_record(entry, status, get):
+    """Одна запись сервера в форме mcp.json, или None для неожиданной формы."""
+    if not isinstance(entry, dict):
+        return None
+    name = entry.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    status = status if isinstance(status, dict) else {}
+    get = get if isinstance(get, dict) else {}
+    raw_tools = status.get("tools")
+    tools = sorted(raw_tools) if isinstance(raw_tools, dict) else []
+    described = [describe_tool(raw_tools[key]) for key in tools] if tools else []
+    described = [tool for tool in described if tool]
+    transport = entry.get("transport") if isinstance(entry.get("transport"), dict) else {}
+    state = codex_state(entry, status)
+    return {
+        "name": name,
+        # Чем сервер поднимается — то же место, что у Claude занимает target строки списка.
+        "target": transport.get("url") or transport.get("command") or "",
+        "status": codex_status_text(name, state, status),
+        "state": state,
+        # Своя группа во вкладке MCP: серверы из плагина Codex человек правит не там, где
+        # свои, и смешивать их в одну группу значит обещать переключатель, который уедет
+        # в чужую таблицу конфига.
+        "source": "codex-plugin" if status.get("pluginId") else "codex",
+        "provider": "codex",
+        "plugin": status.get("pluginId") or "",
+        "disabled": state == "off",
+        # None, а не 0: «не знаем» и «инструментов нет» — разные вещи, и ноль на месте первого
+        # читается как пустой сервер. Про выключенный сервер мы не знаем ничего: app-server
+        # отдаёт по нему пустой набор, потому что не поднимал его, а не потому что он пустой.
+        "tools": len(tools) if status and state != "off" else None,
+        "toolNames": tools,
+        # Codex зовёт инструменты MCP тем же mcp__<server>__<tool>, что Claude, — значит и
+        # подпись в панели, и правило совпадают без второй ветки.
+        "toolPrefix": name,
+        "toolDocs": {tool["name"]: tool["description"] for tool in described},
+        "toolParams": {tool["name"]: tool["params"] for tool in described},
+        "deniedTools": codex_denied(tools, get),
+    }
+
+
+def codex_mcp_record(entries, statuses, error=None):
+    """Вся карта серверов Codex в форме mcp.json."""
+    servers = []
+    for entry in entries:
+        name = entry.get("name") if isinstance(entry, dict) else None
+        record = codex_server_record(entry, (statuses or {}).get(name),
+                                     codex_mcp_get(name) if name else {})
+        if record:
+            servers.append(record)
+    data = {"checked_at": time.time(),
+            "servers": sorted(servers, key=lambda s: s["name"].lower())}
+    if error:
+        data["error"] = error
+    return data
+
+
+def refresh_codex_mcp():
+    """Один проход: спросить Codex о серверах → переписать codex/mcp.json."""
+    if not os.path.isdir(CODEX):
+        return t("codex.absent")
+    entries, list_error = codex_mcp_list()
+    if not entries:
+        return list_error or t("codex.noservers")
+    # Список серверов дешёвый, статус — дорогой. Если app-server не ответил, серверы всё
+    # равно записываются: вкладка со списком без счётчиков полезнее пустой вкладки.
+    statuses, status_error = codex_server_status()
+    for directory in (ROOT, CODEX_ROOT):
+        try:
+            os.makedirs(directory, mode=SECURE_DIR, exist_ok=True)
+        except OSError:
+            pass
+    record = codex_mcp_record(entries, statuses, error=list_error or status_error)
+    write_json(CODEX_MCP, record)
+    return t("codex.servers", n=len(record["servers"]))
+
+
+def codex_key_path(name, plugin, field):
+    """Путь к настройке сервера в config.toml — у плагинного сервера он свой.
+
+    Сервер, приехавший с плагином Codex, объявлен в манифесте плагина, а переопределения
+    для него живут в [plugins.<id>.mcp_servers.<name>]. Запись по общему пути создала бы
+    ВТОРОЙ, пустой сервер с тем же именем вместо того, чтобы выключить существующий.
+    """
+    if plugin:
+        return f"plugins.{plugin}.mcp_servers.{name}.{field}"
+    return f"mcp_servers.{name}.{field}"
+
+
+def codex_deny_next(current, tool, turn_off, only_changes=False):
+    """Новый deny-список после щелчка по одному инструменту.
+
+    Пишется он целиком (config/batchWrite заменяет значение), поэтому строится из текущего,
+    а не с нуля. `only_changes` возвращает None, когда список не изменился: писать чужой
+    конфиг ради того же значения — лишний повод для вопроса о доверии и лишняя правка файла.
+    """
+    kept = [name for name in (current or []) if isinstance(name, str)]
+    after = sorted(set(kept) | {tool}) if turn_off else [n for n in kept if n != tool]
+    if only_changes and sorted(kept) == sorted(after):
+        return None
+    return after
+
+
+def codex_config_write(edits):
+    """Записать настройки в config.toml через сам Codex, или вернуть ошибку строкой.
+
+    Чужой TOML правит его владелец: app-server сохраняет комментарии, чужие таблицы и
+    форматирование — ровно то, чего ручной писатель не удержит. Форма запроса проверена
+    живьём на codex-cli 0.154.0: `edits` со `keyPath`, `value` и ОБЯЗАТЕЛЬНЫМ
+    `mergeStrategy` (snake_case из плана отвергается с "missing field `mergeStrategy`").
+    """
+    import subprocess, threading, queue
+    binary = find_codex()
+    if not binary:
+        return t("codex.nobinary")
+    try:
+        proc = subprocess.Popen([binary, "app-server"], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                text=True, bufsize=1)
+    except OSError as exc:
+        return str(exc)[:200]
+    lines = queue.Queue()
+    threading.Thread(target=lambda: [lines.put(line) for line in proc.stdout],
+                     daemon=True).start()
+    try:
+        for request in ({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                         "params": {"clientInfo": {"name": "claude-control-bar",
+                                                   "title": "Claude Control Bar",
+                                                   "version": "1"}}},
+                        {"jsonrpc": "2.0", "id": 2, "method": "config/batchWrite",
+                         "params": {"edits": [
+                             {"keyPath": key, "value": value, "mergeStrategy": "upsert"}
+                             for key, value in edits]}}):
+            proc.stdin.write(json.dumps(request) + "\n")
+            proc.stdin.flush()
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            try:
+                line = lines.get(timeout=max(0.1, deadline - time.time()))
+            except Exception:
+                break
+            reply = read_json_line(line)
+            if not isinstance(reply, dict) or reply.get("id") != 2:
+                continue
+            if reply.get("error"):
+                return str(reply["error"].get("message", ""))[:200]
+            return ""
+        return t("codex.timeout")
+    except OSError as exc:
+        return str(exc)[:200]
+    finally:
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            proc.terminate()
+            proc.wait(2)
+        except Exception:
+            try:
+                proc.kill()
+                proc.wait(2)
+            except Exception:
+                pass
+
+
+def codex_server_of(name):
+    """Запись сервера из codex/mcp.json — нужна за именем плагина при записи."""
+    for server in (read_json(CODEX_MCP, {}) or {}).get("servers") or []:
+        if isinstance(server, dict) and server.get("name") == name:
+            return server
+    return {}
+
+
+def toggle_codex_server(name, turn_off):
+    """Выключить/включить сервер Codex целиком."""
+    known = codex_server_of(name)
+    if not known:
+        raise Refused(t("codex.unknown", name=name))
+    error = codex_config_write([(codex_key_path(name, known.get("plugin"), "enabled"),
+                                 not turn_off)])
+    if error:
+        raise Refused(error)
+    return True
+
+
+def toggle_codex_tool(server, tool, turn_off):
+    """Убрать/вернуть один инструмент сервера Codex."""
+    known = codex_server_of(server)
+    if not known:
+        raise Refused(t("codex.unknown", name=server))
+    current = codex_mcp_get(server).get("disabled_tools") or []
+    after = codex_deny_next(current, tool, turn_off, only_changes=True)
+    if after is None:
+        return False
+    error = codex_config_write([(codex_key_path(server, known.get("plugin"),
+                                                "disabled_tools"), after)])
+    if error:
+        raise Refused(error)
+    return True
+
+
 # ──────────────────────────────────────────────────────────── контекстное окно
 
 WINDOW_CACHE = os.path.join(ROOT, "model-windows.json")
@@ -2070,6 +2459,8 @@ def doctor():
         (t("doc.rules"), str(len(denied_tools()))),
         (t("doc.windows"), str(len(model_windows()))),
         (t("doc.codex"), newest_rollout() or t("doc.nofile")),
+        (t("doc.codexmcp"), str(len((read_json(CODEX_MCP, {}) or {}).get("servers") or []))
+         if os.path.exists(CODEX_MCP) else t("doc.nofile")),
         (t("lang"), LANG),
     ]
     width = max(len(name) for name, _ in checks) + 2
@@ -2108,6 +2499,44 @@ def main(argv):
         print(fetch_limits())
     elif command == "codex-limits":
         print(fetch_codex_limits())
+    elif command == "codex-mcp":
+        # Своё слово после команды, как у statusline: три действия над одним файлом, и
+        # отдельные команды верхнего уровня для них читались бы как отдельные подсистемы.
+        verb = rest[0] if rest else ""
+        target = next((a for a in rest[1:] if not a.startswith("--")), "")
+        turn_off = "--off" in rest
+        if verb == "refresh":
+            print(refresh_codex_mcp())
+        elif verb == "toggle-server":
+            if not target:
+                print(__doc__)
+                return 1
+            try:
+                changed = toggle_codex_server(target, turn_off)
+            except Refused as exc:
+                print(f"refused: {exc}", file=sys.stderr)
+                return 2
+            # Перечитываем у Codex, а не правим свой файл руками: состояние сервера после
+            # записи — его ответ, не наша догадка.
+            refresh_codex_mcp()
+            print("changed" if changed else "unchanged")
+        elif verb == "toggle-tool":
+            server = flag_value(rest, "--server")
+            tool = flag_value(rest, "--tool")
+            if not server or not tool:
+                print(__doc__)
+                return 1
+            try:
+                changed = toggle_codex_tool(server, tool, turn_off)
+            except Refused as exc:
+                print(f"refused: {exc}", file=sys.stderr)
+                return 2
+            if changed:
+                refresh_codex_mcp()
+            print("changed" if changed else "unchanged")
+        else:
+            print(__doc__)
+            return 1
     elif command == "statusline":
         if "--install" in rest:
             print(statusline_install())

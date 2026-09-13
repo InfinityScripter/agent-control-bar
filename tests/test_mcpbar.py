@@ -1966,5 +1966,219 @@ class CodexLimits(unittest.TestCase):
         shutil.copyfile(mcpbar.CODEX_LIMITS, os.path.join(seam_dir, "codex-limits.json"))
 
 
+class CodexMCP(unittest.TestCase):
+    """Серверы MCP Codex читаются двумя командами самого Codex и пишутся в форме mcp.json.
+
+    Форму отдаёт чужой бинарь, а переключатели правят чужой config.toml — оба места
+    проверены на codex-cli 0.154.0 живьём. Каждый случай ниже — форма, на которой
+    наивный разбор либо терял сервер, либо показывал чужое число.
+    """
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.saved = {k: getattr(mcpbar, k) for k in ("CODEX", "CODEX_ROOT", "CODEX_MCP", "ROOT")}
+        mcpbar.CODEX = os.path.join(self._dir.name, ".codex")
+        self.root = os.path.join(self._dir.name, "control-bar")
+        mcpbar.ROOT = self.root
+        mcpbar.CODEX_ROOT = os.path.join(self.root, "codex")
+        mcpbar.CODEX_MCP = os.path.join(self.root, "codex", "mcp.json")
+        os.makedirs(mcpbar.CODEX, exist_ok=True)
+
+    def tearDown(self):
+        for key, value in self.saved.items():
+            setattr(mcpbar, key, value)
+        self._dir.cleanup()
+
+    # `codex mcp list --json` — проверено живьём: выключенные серверы в списке ЕСТЬ, в отличие
+    # от `claude mcp list`, поэтому досинтезировать их из прошлого состояния не нужно.
+    LISTED = [
+        {"name": "wiki", "enabled": True, "disabled_reason": None,
+         "transport": {"type": "stdio", "command": "/usr/local/bin/ya",
+                       "args": ["tool", "mcp", "connect"], "env": None},
+         "auth_status": "unsupported"},
+        {"name": "off-one", "enabled": False, "disabled_reason": None,
+         "transport": {"type": "stdio", "command": "/bin/echo", "args": []},
+         "auth_status": "unsupported"},
+        {"name": "needs-login", "enabled": True, "disabled_reason": None,
+         "transport": {"type": "streamable_http", "url": "https://example.test/mcp"},
+         "auth_status": "unauthorized"},
+    ]
+
+    # `mcpServerStatus/list` через app-server — тоже проверено живьём: camelCase, полные схемы
+    # инструментов, и pluginId у серверов, приехавших с плагином Codex.
+    STATUS = {
+        "wiki": {"runtimeStatus": "ready", "pluginId": None, "toolsError": None,
+                 "authStatus": "unsupported", "tools": {
+                     "Read": {"name": "Read", "description": "Read a page",
+                              "inputSchema": {"type": "object",
+                                              "properties": {"slug": {"type": "string",
+                                                                      "description": "page slug"}},
+                                              "required": ["slug"]}},
+                     "Delete": {"name": "Delete", "description": "Delete a page",
+                                "inputSchema": {"type": "object", "properties": {}}}}},
+        "off-one": {"runtimeStatus": None, "pluginId": None, "toolsError": None,
+                    "authStatus": "unsupported", "tools": {}},
+    }
+
+    def write_get(self, name, enabled_tools=None, disabled_tools=None):
+        """Ответ `codex mcp get <name> --json` — списки allow/deny живут только здесь."""
+        self.gets = getattr(self, "gets", {})
+        self.gets[name] = {"name": name, "enabled_tools": enabled_tools,
+                           "disabled_tools": disabled_tools}
+
+    def refresh(self, listed=None, status=None, list_error=None, status_error=None):
+        """Подменяем ровно те функции, что ходят в чужой бинарь; сборка карты — настоящая."""
+        self.gets = getattr(self, "gets", {})
+        patched = {
+            "codex_mcp_list": lambda: (listed if listed is not None else self.LISTED, list_error),
+            "codex_mcp_get": lambda name: self.gets.get(name, {}),
+            "codex_server_status": lambda: (
+                (status if status is not None else self.STATUS), status_error),
+        }
+        saved = {k: getattr(mcpbar, k) for k in patched}
+        for key, value in patched.items():
+            setattr(mcpbar, key, value)
+        try:
+            return mcpbar.refresh_codex_mcp()
+        finally:
+            for key, value in saved.items():
+                setattr(mcpbar, key, value)
+
+    def servers(self):
+        with open(mcpbar.CODEX_MCP) as fh:
+            data = json.load(fh)
+        return {s["name"]: s for s in data["servers"]}, data
+
+    def test_сервер_пишется_в_той_же_форме_что_у_claude(self):
+        """MCPModel читает оба файла ОДНИМ парсером — значит ключи обязаны совпадать."""
+        self.refresh()
+        servers, data = self.servers()
+        wiki = servers["wiki"]
+        self.assertEqual(wiki["state"], "ok")
+        self.assertEqual(wiki["provider"], "codex")
+        self.assertEqual(wiki["source"], "codex")
+        self.assertEqual(wiki["disabled"], False)
+        self.assertEqual(wiki["toolNames"], ["Delete", "Read"])
+        self.assertEqual(wiki["tools"], 2)
+        self.assertEqual(wiki["toolDocs"]["Read"], "Read a page")
+        self.assertEqual(wiki["toolParams"]["Read"],
+                         [{"name": "slug", "type": "string", "required": True,
+                           "description": "page slug"}])
+        self.assertEqual(wiki["deniedTools"], [])
+        # Префикс инструментов у Codex тот же mcp__<server>__<tool>, что у Claude, — значит
+        # и правило, и подпись в панели совпадают без второй ветки.
+        self.assertEqual(wiki["toolPrefix"], "wiki")
+        self.assertIn("checked_at", data)
+
+    def test_выключенный_сервер_остаётся_в_списке(self):
+        """У Codex он приходит из `mcp list` сам — но обязан читаться как off, а не как рабочий."""
+        self.refresh()
+        servers, _ = self.servers()
+        self.assertEqual(servers["off-one"]["state"], "off")
+        self.assertEqual(servers["off-one"]["disabled"], True)
+
+    def test_сломанный_сервер_говорит_почему(self):
+        """Текст ошибки от самого сервера — единственное, что объясняет красную строку.
+
+        Тройное условие на этом месте его теряло: тернарник в питоне связывается слабее `or`,
+        и проверка ключа перевода съедала ветку с настоящим сообщением. Подсказка у сломанного
+        сервера оставалась пустой — то есть пустой ровно там, где нужна причина.
+        """
+        self.refresh(status={"wiki": {"runtimeStatus": "error", "tools": {},
+                                      "toolsError": "spawn ya ENOENT", "pluginId": None}})
+        servers, _ = self.servers()
+        self.assertEqual(servers["wiki"]["state"], "failed")
+        self.assertEqual(servers["wiki"]["status"], "spawn ya ENOENT")
+        # А у выключенного и живого сервера подсказка не выдумывается.
+        self.assertEqual(servers["off-one"]["status"], "disabled")
+        self.assertEqual(mcpbar.codex_status_text("x", "ok", {}), "")
+
+    def test_у_выключенного_сервера_число_инструментов_неизвестно(self):
+        """app-server не поднимал его, значит пустой набор — это «не знаем», а не «их нет»."""
+        self.refresh()
+        servers, _ = self.servers()
+        self.assertIsNone(servers["off-one"]["tools"])
+        self.assertEqual(servers["off-one"]["toolNames"], [])
+
+    def test_сервер_без_авторизации_просит_логин_а_не_показывает_ноль(self):
+        """Иначе OAuth-сервер читается как «сломан» и человек лезет искать несуществующий сбой."""
+        self.refresh()
+        servers, _ = self.servers()
+        self.assertEqual(servers["needs-login"]["state"], "auth")
+        self.assertIn("codex mcp login", servers["needs-login"]["status"])
+
+    def test_запрещённый_инструмент_читается_выключенным(self):
+        """disabled_tools — это deny-список Codex; панель рисует по нему снятый переключатель."""
+        self.write_get("wiki", disabled_tools=["Delete"])
+        self.refresh()
+        servers, _ = self.servers()
+        self.assertEqual(servers["wiki"]["deniedTools"], ["Delete"])
+
+    def test_allow_список_запрещает_всё_остальное(self):
+        """enabled_tools — это allow-список: инструмента нет в нём, значит он выключен."""
+        self.write_get("wiki", enabled_tools=["Read"])
+        self.refresh()
+        servers, _ = self.servers()
+        self.assertEqual(servers["wiki"]["deniedTools"], ["Delete"])
+
+    def test_app_server_молчит_но_серверы_всё_равно_видны(self):
+        """Поднять app-server — секунды и запуск всех серверов; отказ не должен опустошать вкладку."""
+        self.refresh(status={}, status_error="app-server timed out")
+        servers, data = self.servers()
+        self.assertEqual(sorted(servers), ["needs-login", "off-one", "wiki"])
+        self.assertIsNone(servers["wiki"]["tools"], "число инструментов неизвестно, а не ноль")
+        self.assertEqual(servers["wiki"]["toolNames"], [])
+        self.assertEqual(data["error"], "app-server timed out")
+
+    def test_неожиданная_форма_не_уносит_соседей(self):
+        """Одна испорченная запись в чужом JSON не должна прятать остальные серверы."""
+        self.refresh(listed=[{"name": "fine", "enabled": True,
+                              "transport": {"type": "stdio", "command": "/bin/echo"}},
+                             {"nope": True}, "строка вместо объекта", None,
+                             {"name": "", "enabled": True}])
+        servers, _ = self.servers()
+        self.assertEqual(list(servers), ["fine"])
+
+    def test_нет_codex_ничего_не_пишем(self):
+        """На машине без Codex файл не должен появляться вовсе — иначе вкладка покажет пустую группу."""
+        shutil.rmtree(mcpbar.CODEX)
+        message = self.refresh()
+        self.assertFalse(os.path.exists(mcpbar.CODEX_MCP))
+        self.assertIn("codex", message.lower())
+
+    def test_файл_пишется_только_владельцу(self):
+        """Имена серверов и команды их запуска — не для чужих учёток на той же машине."""
+        self.refresh()
+        self.assertEqual(stat.S_IMODE(os.stat(mcpbar.CODEX_MCP).st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(os.stat(mcpbar.CODEX_ROOT).st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(os.stat(mcpbar.ROOT).st_mode), 0o700)
+
+    def test_ключ_записи_у_плагинного_сервера_другой(self):
+        """Сервер из плагина Codex живёт в своей таблице; запись по общему пути его не выключит."""
+        self.assertEqual(mcpbar.codex_key_path("wiki", None, "enabled"),
+                         "mcp_servers.wiki.enabled")
+        self.assertEqual(mcpbar.codex_key_path("cua_repl", "openai-bundled", "disabled_tools"),
+                         "plugins.openai-bundled.mcp_servers.cua_repl.disabled_tools")
+
+    def test_переключение_инструмента_считает_новый_deny_список(self):
+        """Пишем весь массив целиком, поэтому он должен строиться из текущего, а не с нуля."""
+        self.assertEqual(mcpbar.codex_deny_next(["Delete"], "Read", True), ["Delete", "Read"])
+        self.assertEqual(mcpbar.codex_deny_next(["Delete", "Read"], "Read", False), ["Delete"])
+        # Повторное выключение уже выключенного — не повод удвоить запись в чужом конфиге.
+        self.assertEqual(mcpbar.codex_deny_next(["Read"], "Read", True), ["Read"])
+        self.assertIsNone(mcpbar.codex_deny_next(["Read"], "Read", True, only_changes=True),
+                          "ничего не изменилось — значит и писать нечего")
+
+    def test_карта_серверов_переезжает_в_шов_для_swift(self):
+        """Тот же шов, что у лимитов: swift разбирает файл, который написал настоящий refresh."""
+        self.write_get("wiki", disabled_tools=["Delete"])
+        self.refresh()
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        seam_dir = os.path.join(repo, "build", "seam")
+        os.makedirs(seam_dir, exist_ok=True)
+        shutil.copyfile(mcpbar.CODEX_MCP, os.path.join(seam_dir, "codex-mcp.json"))
+
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
