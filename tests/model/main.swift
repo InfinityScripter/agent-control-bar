@@ -1269,11 +1269,18 @@ check(claudeSet.windows.map { $0.title } == ["5 hours", "7 days", "Fable"],
       "account windows first, the model's own window last: \(claudeSet.windows.map { $0.title })")
 check(claudeSet.windows.last?.badge == "7d", "only Fable carries a badge")
 check(claudeSet.windows.first?.badge == nil, "and the account's own windows do not")
-// A polled file is rewritten every few minutes, so a window whose reset has just passed is
-// corrected almost at once. Dropping it here would blink the whole strip on every rollover.
 check(!claudeSet.isSnapshot, "a polled source is not a snapshot")
-check(claudeSet.live(at: 9_999_999_999).count == 3,
-      "a polled source keeps its windows however old the reset looks")
+// The one rule this whole type exists for. A percentage measured before a reset is about a
+// window that no longer exists, and the reset stamp sits in the same record — so the figure is
+// not redrawn as if it were current. It reads as empty, which is what a reset means: the
+// window rolled over and nothing has been measured against the new one yet.
+check(claudeSet.drawable(at: 1_785_000_060).map { $0.window.used } == [42, 71, 17],
+      "inside their windows the figures read as measured")
+check(claudeSet.drawable(at: 9_999_999_999).map { $0.window.used } == [0, 0, 0],
+      "and once every window has rolled over they read as empty, not as the old figures: "
+        + "\(claudeSet.drawable(at: 9_999_999_999).map { $0.window.used })")
+check(claudeSet.drawable(at: 9_999_999_999).count == 3,
+      "the rows stay — a provider whose windows just reset has not stopped having windows")
 
 let codexJSON: [String: Any] = [
     "ts": 1_789_000_000.0, "source": "rollout", "plan": "pro",
@@ -1290,20 +1297,24 @@ check(codexSet?.plan == "pro", "the plan survives, for the tooltip that explains
 check(codexSet?.windows.map { $0.title } == ["5 hours", "7 days"],
       "windows are named from their own length: \(codexSet?.windows.map { $0.title } ?? [])")
 check(codexSet?.isSnapshot == true, "a rollout record is a snapshot and can go stale")
-check(codexSet?.live(at: 1_789_005_000).count == 2, "both windows are live while both are open")
-check(codexSet?.live(at: 1_789_100_000).map { $0.key } == ["secondary"],
-      "a window that has rolled over since the snapshot is gone, not redrawn with last week's %")
-check(codexSet?.live(at: 1_790_000_000).isEmpty == true,
-      "and a snapshot older than every window it carries shows nothing at all")
+check(codexSet?.drawable(at: 1_789_005_000).map { $0.window.used } == [12, 58],
+      "both windows read as measured while both are open")
+check(codexSet?.drawable(at: 1_789_100_000).map { $0.window.used } == [0, 58],
+      "a window that has rolled over since the snapshot reads as empty, not as last week's %")
+check(codexSet?.drawable(at: 1_789_100_000).first?.window.resets == nil,
+      "and it quotes no reset time: when the next window opens is not known until it is used")
+check(codexSet?.drawable(at: 1_790_000_000).map { $0.window.used } == [0, 0],
+      "a snapshot older than every window it carries is an account that has spent nothing since")
 
 // The reserve pool: when the ordinary limit runs out, Codex moves the session onto its reserve
 // model, and from then on the snapshot in the rollout measures a DIFFERENT pool. Unlabelled, its
 // 13% reads as the ordinary weekly figure — while the five-hour window it replaced sits at 100%
 // and is nowhere on screen. The badge is what stops the strip telling that lie.
 let reserveSet = LimitsSet(codex: [
-    "ts": 1_789_000_000.0, "source": "rollout", "plan": "plus", "reserve": true,
-    "windows": [["kind": "primary", "used_percentage": 13, "window_minutes": 10080,
-                 "resets_at": 1_789_500_000.0] as [String: Any]] as [[String: Any]],
+    "ts": 1_789_000_000.0, "source": "rollout", "plan": "plus",
+    "windows": [["kind": "primary", "pool": "reserve", "used_percentage": 13,
+                 "window_minutes": 10080, "resets_at": 1_789_500_000.0] as [String: Any]]
+        as [[String: Any]],
 ])
 check(reserveSet?.windows.first?.title == "Reserve",
       "a reserve window is named for the pool, not for its length: "
@@ -1312,9 +1323,49 @@ check(reserveSet?.windows.first?.badge == "7d",
       "and its length moves into the badge, the way Fable's weekly slice is already drawn")
 check(reserveSet?.windows.first?.minutes == 10080,
       "the duration itself survives, because it is what dates the snapshot")
-check(reserveSet?.live(at: 1_789_100_000).count == 1, "and the window is still dated by its reset")
-// Without the flag nothing changes for anyone who never hit the reserve.
+check(reserveSet?.drawable(at: 1_789_100_000).count == 1, "and the window is still dated by its reset")
+// Without the mark nothing changes for anyone who never hit the reserve.
 check(codexSet?.windows.first?.badge == nil, "an ordinary window carries no badge")
+
+// Both pools in one record. This is the shape the writer keeps once a session has moved onto the
+// reserve: Codex's reserve snapshot carries ONLY the reserve pool, so the ordinary windows are
+// the last ones measured before the move, and they have to survive beside it. Otherwise the
+// panel loses the five-hour window entirely — including the fact that its reset has passed and
+// the ordinary pool is available again, which is exactly the state it used to get stuck in.
+let bothPools = LimitsSet(codex: [
+    "ts": 1_789_000_000.0, "source": "rollout", "plan": "plus",
+    "windows": [
+        ["kind": "primary", "pool": "codex", "ts": 1_789_000_000.0, "used_percentage": 97,
+         "window_minutes": 300, "resets_at": 1_789_018_681.0] as [String: Any],
+        ["kind": "secondary", "pool": "codex", "ts": 1_789_000_000.0, "used_percentage": 15,
+         "window_minutes": 10080, "resets_at": 1_789_605_481.0] as [String: Any],
+        ["kind": "primary", "pool": "reserve", "ts": 1_789_018_588.0, "used_percentage": 29,
+         "window_minutes": 10080, "resets_at": 1_789_616_476.0] as [String: Any],
+    ] as [[String: Any]],
+])
+check(bothPools?.windows.map { $0.title } == ["5 hours", "7 days", "Reserve"],
+      "the ordinary pair keeps its own names beside the reserve row: "
+        + "\(bothPools?.windows.map { $0.title } ?? [])")
+check(Set(bothPools?.windows.map { $0.key } ?? []).count == 3,
+      "and the keys stay distinct — the reserve window arrives under kind \"primary\" too, "
+        + "so the row a summary names would otherwise be ambiguous")
+// An hour after the five-hour window reset, with no newer Codex turn to measure: the ordinary
+// session window is free again, and the reserve pool is still two thirds full.
+check(bothPools?.drawable(at: 1_789_022_000).map { $0.window.used } == [0, 15, 29],
+      "the reset session window reads empty while the others keep their figures: "
+        + "\(bothPools?.drawable(at: 1_789_022_000).map { $0.window.used } ?? [])")
+check(LimitsSet.worst(bothPools?.drawable(at: 1_789_022_000) ?? [])?.title == "Reserve",
+      "and the one-line summary now quotes the pool that is actually running out")
+
+// The file the previous version wrote: the pool was a mark on the whole record. Read as it was
+// meant, so the first tick after an update does not relabel a reserve figure as an ordinary one.
+let legacyReserve = LimitsSet(codex: [
+    "ts": 1_789_000_000.0, "source": "rollout", "reserve": true,
+    "windows": [["kind": "primary", "used_percentage": 13, "window_minutes": 10080,
+                 "resets_at": 1_789_500_000.0] as [String: Any]] as [[String: Any]],
+])
+check(legacyReserve?.windows.first?.title == "Reserve",
+      "a record from the previous version still names its pool")
 
 // No reset stamp at all: the window's own length is what dates the figure. Without this rule a
 // Codex build that stopped sending resets_at would either vanish or lie forever.
@@ -1323,14 +1374,16 @@ let undated = LimitsSet(codex: [
     "windows": [["kind": "primary", "used_percentage": 30, "window_minutes": 300] as [String: Any]]
         as [[String: Any]],
 ])
-check(undated?.live(at: 1_789_000_000 + 299 * 60).count == 1, "inside its own window it still counts")
-check(undated?.live(at: 1_789_000_000 + 301 * 60).isEmpty == true, "past its own length it does not")
+check(undated?.drawable(at: 1_789_000_000 + 299 * 60).map { $0.window.used } == [30],
+      "inside its own window the figure still counts")
+check(undated?.drawable(at: 1_789_000_000 + 301 * 60).map { $0.window.used } == [0],
+      "past its own length the window has ended, so it reads empty like any other rollover")
 let unmeasurable = LimitsSet(codex: [
     "ts": 1_789_000_000.0, "source": "rollout",
     "windows": [["kind": "primary", "used_percentage": 30] as [String: Any]] as [[String: Any]],
 ])
-check(unmeasurable?.live(at: 1_789_000_060).isEmpty == true,
-      "a snapshot with neither a reset nor a length cannot be dated, so it is not shown")
+check(unmeasurable?.drawable(at: 1_789_000_060).isEmpty == true,
+      "a snapshot with neither a reset nor a length cannot be dated at all, so it is not shown")
 
 check(LimitsSet(codex: ["ts": 1.0, "source": "rollout"]) == nil, "a file with no windows is no data")
 check(LimitsSet(codex: ["windows": [["kind": "primary"] as [String: Any]] as [[String: Any]]]) == nil,
@@ -1364,6 +1417,32 @@ check(NamedWindow(key: "p", title: "45 min", badge: nil, minutes: 45,
                   window: LimitWindow(json: ["used_percentage": 1])!).shortTitle == "45m",
       "under an hour it fits as minutes")
 
+// When to stop waiting for the five-minute timer and ask again. Drawing a rolled-over window
+// empty is honest but it is not an answer: the real figure is one request away, and on the timer
+// alone the bars sat wrong for up to five minutes after every single reset.
+let rolling = Limits(json: [
+    "ts": 1_785_000_000.0, "source": "oauth",
+    "five_hour": ["used_percentage": 42, "resets_at": 1_785_003_600.0] as [String: Any],
+    "seven_day": ["used_percentage": 71, "resets_at": 1_785_007_200.0] as [String: Any],
+])!.set
+check(rolling.rolledOver(since: 0, at: 1_785_003_000) == nil,
+      "while every window is still open there is nothing to ask about")
+check(rolling.rolledOver(since: 0, at: 1_785_003_601) == 1_785_003_600,
+      "a reset that has just passed is what brings the next reading forward")
+check(rolling.rolledOver(since: 1_785_003_600, at: 1_785_003_601) == nil,
+      "and having asked once, the same rollover does not ask again — not even on the next tick")
+check(rolling.rolledOver(since: 1_785_003_600, at: 1_785_007_300) == 1_785_007_200,
+      "the next window's own rollover still counts")
+check(rolling.rolledOver(since: 0, at: 1_785_007_300) == 1_785_007_200,
+      "two at once ask once, for the later of them")
+// A fresh answer carries resets in the future, so this falls quiet by itself. The guard that
+// makes it so is the one below: a reset older than the measurement is the previous window's,
+// already accounted for by the very figures being read.
+check(Limits(json: ["ts": 1_785_000_000.0, "source": "oauth",
+                    "five_hour": ["used_percentage": 4, "resets_at": 1_784_000_000.0] as [String: Any]])!
+        .set.rolledOver(since: 0, at: 1_785_000_001) == nil,
+      "a reset older than the figures themselves is not a rollover they have outlived")
+
 // What a one-line summary of a provider says: the window that runs out first.
 check(LimitsSet.worst(claudeSet.windows)?.title == "7 days",
       "the fullest window is the one a summary quotes")
@@ -1394,9 +1473,10 @@ if !FileManager.default.fileExists(atPath: codexSeamPath) {
           "and are named from the durations the writer put in the file")
     // The fixture's snapshot is stamped 2026-09-11T10:00Z with its 5-hour window resetting at
     // 11:00Z: live an hour before that, half gone an hour after.
-    check(seamSet.live(at: 1_789_121_000).count == 2, "both windows read as live inside them")
-    check(seamSet.live(at: 1_789_200_000).map { $0.key } == ["secondary"],
-          "and the short window drops out once its reset has passed")
+    check(seamSet.drawable(at: 1_789_121_000).map { $0.window.used } == [7, 42],
+          "both windows read as measured inside them")
+    check(seamSet.drawable(at: 1_789_200_000).map { $0.window.used } == [0, 42],
+          "and the short window reads empty once its reset has passed")
 } else {
     check(false, "codex seam fixture unreadable")
 }
@@ -1416,6 +1496,29 @@ if !FileManager.default.fileExists(atPath: reserveSeamPath) {
     check(seamSet.windows.first?.badge == "7d", "and its badge says how long the window is")
 } else {
     check(false, "codex reserve seam fixture unreadable")
+}
+
+// And the seam for the shape that only exists because the writer remembers: an ordinary turn
+// followed by a reserve turn, so the file carries both pools at once. Written by the real
+// fetch_codex_limits() twice over, the way the poll does it.
+let poolsSeamPath = FileManager.default.currentDirectoryPath + "/build/seam/codex-limits-pools.json"
+if !FileManager.default.fileExists(atPath: poolsSeamPath) {
+    check(false, "codex pools seam fixture missing at \(poolsSeamPath) — run the python "
+        + "suite first (/usr/bin/python3 -m unittest discover -s tests)")
+} else if let data = FileManager.default.contents(atPath: poolsSeamPath),
+          let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let seamSet = LimitsSet(codex: raw) {
+    check(seamSet.windows.map { $0.title } == ["5 hours", "7 days", "Reserve"],
+          "the ordinary windows the reserve snapshot did not carry are still named: "
+            + "\(seamSet.windows.map { $0.title })")
+    check(seamSet.windows.map { $0.window.used } == [97, 15, 29],
+          "with the figures each pool was last measured at")
+    // The fixture's five-hour window resets at 2026-09-11T11:00Z; an hour later the ordinary
+    // session pool is free again and only the reserve figure is worth reading.
+    check(seamSet.drawable(at: 1_789_128_000).map { $0.window.used } == [0, 15, 29],
+          "and once the session window resets it reads empty rather than disappearing")
+} else {
+    check(false, "codex pools seam fixture unreadable")
 }
 
 // MARK: Codex MCP — a second agent's servers in the same tab

@@ -1516,14 +1516,20 @@ def secure_codex_root():
             pass
 
 
-def newest_rollout(pattern=None):
-    """Самый свежий rollout по времени правки, или None.
+def rollouts_by_age(pattern=None):
+    """Файлы сессий Codex от свежего к старому.
 
     Только .jsonl: старые ходы Codex ужимает в .jsonl.zst, а распаковывать архив ради
     цифр, которые всё равно протухли, незачем — живой файл всегда несжатый.
     """
     files = [path for path in glob.glob(pattern or CODEX_ROLLOUTS) if path.endswith(".jsonl")]
-    return max(files, key=mtime) if files else None
+    return sorted(files, key=mtime, reverse=True)
+
+
+def newest_rollout(pattern=None):
+    """Самый свежий rollout по времени правки, или None."""
+    files = rollouts_by_age(pattern)
+    return files[0] if files else None
 
 
 def codex_window(block, kind, base):
@@ -1557,8 +1563,10 @@ def codex_window(block, kind, base):
     return record
 
 
-def codex_reserve_model(model):
-    """Резервная ли это модель — та, на которую Codex уходит, когда обычный лимит кончился.
+def codex_pool(model):
+    """Какой пул лимитов мерил ход этой модели: обычный ("codex") или резервный ("reserve").
+
+    Резервный — тот, на который Codex уходит, когда обычный лимит кончился.
 
     Модель, а не поле снимка, — и это проверено, а не выбрано: 13 сентября 2026 на
     codex-cli 0.154.0 в снимке rollout ОБА пула приходят под одним и тем же
@@ -1575,7 +1583,15 @@ def codex_reserve_model(model):
     подпишется своей длиной. Поэтому пул, названный в файле, здесь был бы лучше, и если
     Codex когда-нибудь начнёт присылать `limit_name`, читать надо его.
     """
-    return isinstance(model, str) and model.startswith("gpt-reserve")
+    return "reserve" if isinstance(model, str) and model.startswith("gpt-reserve") else "codex"
+
+
+# Окна снимка и их порядок — одним списком, из которого считается и ранг для сортировки.
+# Порядок нужен дважды: так окна читаются из снимка и так они ложатся в файл, где к ним
+# добавляется резервное. Двумя списками эти два места разъезжались бы молча — строки панели
+# просто начали бы меняться местами от опроса к опросу.
+CODEX_WINDOW_KINDS = ("primary", "secondary")
+CODEX_WINDOW_ORDER = {kind: at for at, kind in enumerate(CODEX_WINDOW_KINDS)}
 
 
 def codex_limits_record(snapshot, ts=None, now=None, model=None):
@@ -1591,16 +1607,20 @@ def codex_limits_record(snapshot, ts=None, now=None, model=None):
 
     `model` — модель того хода, к которому относится снимок: от неё зависит, какой пул
     лимитов он измеряет, и панель обязана сказать это словом, а не показать резервные
-    проценты как обычные.
+    проценты как обычные. Пул стоит на каждом окне, а не на всей записи: записи живут дольше
+    одного снимка (см. merge_codex_limits), и в одной сходятся окна обоих пулов.
     """
     if not isinstance(snapshot, dict):
         return None
     stamp = int(ts if isinstance(ts, (int, float)) and not isinstance(ts, bool)
                 else (now if now is not None else time.time()))
+    pool = codex_pool(model)
     windows = []
-    for kind in ("primary", "secondary"):
+    for kind in CODEX_WINDOW_KINDS:
         window = codex_window(snapshot.get(kind), kind, base=stamp)
         if window:
+            window["pool"] = pool
+            window["ts"] = stamp
             windows.append(window)
     if not windows:
         return None
@@ -1608,8 +1628,77 @@ def codex_limits_record(snapshot, ts=None, now=None, model=None):
     plan = snapshot.get("plan_type")
     if isinstance(plan, str) and plan.strip():
         record["plan"] = plan.strip()
-    if codex_reserve_model(model):
-        record["reserve"] = True
+    return record
+
+
+def codex_known_windows(record):
+    """Окна записи с проставленными пулом и моментом замера, включая файл прошлой версии.
+
+    До этой версии пул был пометкой на всей записи (`reserve: true`), а момент замера — один
+    на файл. Такой файл читается как есть: иначе первый же опрос после обновления выбросил бы
+    последнее, что мы знали об обычных окнах, — ровно то, чего эта память и не допускает.
+    """
+    if not isinstance(record, dict) or not isinstance(record.get("windows"), list):
+        return []
+    fallback_pool = "reserve" if record.get("reserve") is True else "codex"
+    fallback_ts = record.get("ts")
+    known = []
+    for window in record["windows"]:
+        if not isinstance(window, dict):
+            continue
+        used, kind = window.get("used_percentage"), window.get("kind")
+        if not isinstance(used, int) or isinstance(used, bool) or not isinstance(kind, str) or not kind:
+            continue
+        window = dict(window)
+        if window.get("pool") not in ("codex", "reserve"):
+            window["pool"] = fallback_pool
+        if not isinstance(window.get("ts"), (int, float)) or isinstance(window.get("ts"), bool):
+            window["ts"] = fallback_ts
+        known.append(window)
+    return known
+
+
+def merge_codex_limits(previous, fresh):
+    """Свежий снимок поверх последнего известного замера ПО КАЖДОМУ ПУЛУ.
+
+    Уйдя на резерв, Codex присылает снимок только резервного пула: `primary` меряет резерв,
+    `secondary` приходит пустым. Записывать такой снимок поверх прежнего значило бы стереть и
+    сами обычные окна — а вместе с ними знание о том, что у пятичасового окна есть срок и он
+    уже прошёл. Именно это и видел пользователь: панель застревала на резервной шкале и не
+    возвращалась к обычным, потому что возвращаться было не к чему.
+
+    Поэтому окна живут дольше снимка, который их принёс, и ключ у них парный — пул и kind:
+    резервное окно тоже приходит под kind "primary" и обязано лежать отдельно от обычного.
+
+    Возраст записи — самый СТАРЫЙ из замеров: подпись «measured N min ago» одна на всю
+    группу, и свежесть резервного окна ничего не говорит про обычное, снятое утром.
+    """
+    def measured(window):
+        stamp = window.get("ts")
+        return stamp if isinstance(stamp, (int, float)) and not isinstance(stamp, bool) else 0
+
+    windows = {}
+    for window in codex_known_windows(previous) + codex_known_windows(fresh):
+        key = (window["pool"], window["kind"])
+        # Побеждает более поздний замер, а не более поздний аргумент: снимки приезжают из
+        # разных файлов сессий, и снимок из позавчерашней сессии не должен лечь поверх
+        # сегодняшнего только потому, что его прочитали вторым.
+        if key not in windows or measured(window) >= measured(windows[key]):
+            windows[key] = window
+    if not windows:
+        return fresh
+    record = dict(fresh)
+    record["windows"] = sorted(windows.values(),
+                               key=lambda w: (w["pool"] != "codex",
+                                              CODEX_WINDOW_ORDER.get(w["kind"], 2), w["kind"]))
+    stamps = [w["ts"] for w in record["windows"]
+              if isinstance(w["ts"], (int, float)) and not isinstance(w["ts"], bool)]
+    if stamps:
+        record["ts"] = min(stamps)
+    # План приходит не в каждом снимке: резервные записи Codex шлют его так же исправно, а
+    # вот минимальные — нет, и терять подписку из-за одного бедного снимка незачем.
+    if not record.get("plan") and isinstance(previous, dict) and previous.get("plan"):
+        record["plan"] = previous["plan"]
     return record
 
 
@@ -1630,50 +1719,103 @@ def turn_model(lines):
     return None
 
 
-def codex_snapshot(path=None):
-    """Хвост свежего rollout → (rate_limits, время записи, модель) последнего token_count.
+def codex_file_snapshots(path):
+    """Хвост одного файла сессии → новейший снимок КАЖДОГО пула: {пул: (снимок, время, модель)}.
 
-    Ищем с конца: в файле таких записей столько же, сколько ответов модели, и нужна
-    последняя. Форма строки — {"timestamp", "type", "payload"}; payload с запасом
-    разбирается и как плоская запись, если Codex однажды перестанет её вкладывать.
+    Форма строки — {"timestamp", "type", "payload"}; payload с запасом разбирается и как
+    плоская запись, если Codex однажды перестанет её вкладывать.
 
-    Модель берётся из ближайшей записи `turn_context` ПЕРЕД снимком, а не из первой строки
-    файла: сессия переезжает на резервную модель прямо посреди работы, когда обычный лимит
-    кончился, и от того, какая модель шла последней, зависит, какой пул лимитов измерен.
+    Пул снимка — это модель ближайшей записи `turn_context` ПЕРЕД ним: сессия переезжает на
+    резервную модель прямо посреди работы, когда обычный лимит кончился. Идём с конца файла,
+    и там эта запись встречается ПОСЛЕ снимка — поэтому снимки копятся, пока не встретится
+    turn_context, и достаются ей все разом. Одним проходом, а не поиском модели для каждого
+    снимка по отдельности: в хвосте их десятки, и каждый такой поиск шёл бы до начала файла.
     """
-    path = path or newest_rollout()
-    if not path:
-        return None, None, None
     try:
         lines = tail_lines(path)
     except OSError:
-        return None, None, None
-    rest = list(reversed(lines))
-    for at, raw in enumerate(rest):
-        if b'"rate_limits"' not in raw:
-            continue
-        record = read_json_line(raw)
-        if not isinstance(record, dict):
-            continue
-        payload = record.get("payload")
-        if not isinstance(payload, dict):
-            payload = record
-        snapshot = payload.get("rate_limits")
-        if isinstance(snapshot, dict):
-            return snapshot, parse_reset(record.get("timestamp")), turn_model(rest[at + 1:])
-    return None, None, None
+        return {}
+    found, pending, dated = {}, [], False
+    for raw in reversed(lines):
+        if b'"rate_limits"' in raw:
+            record = read_json_line(raw)
+            if not isinstance(record, dict):
+                continue
+            payload = record.get("payload")
+            if not isinstance(payload, dict):
+                payload = record
+            snapshot = payload.get("rate_limits")
+            if isinstance(snapshot, dict):
+                pending.append((snapshot, parse_reset(record.get("timestamp"))))
+        elif b'"turn_context"' in raw:
+            dated = True
+            if pending:
+                model = turn_model([raw])
+                found.setdefault(codex_pool(model), pending[0] + (model,))
+                pending = []
+                if len(found) == 2:
+                    return found
+    # Снимки, оставшиеся ПЕРЕД уже разобранным ходом, не достаются никому: их собственный
+    # turn_context в хвост не попал, пул неизвестен, и назвать их обычными значило бы выдать
+    # резервные проценты за обычные — ровно ту ложь, ради которой пулы и заведены. Проверено
+    # 13 сентября 2026: в хвосте 17-мегабайтного файла именно так и вышло — 23% резервного
+    # пула поехали в файл как обычное недельное окно.
+    #
+    # А вот хвост вообще без turn_context — другое дело: модель там тоже неизвестна, но и
+    # следов резервной сессии в нём нет. Так этот файл читался и до появления пулов.
+    if pending and not dated:
+        found.setdefault("codex", pending[0] + (None,))
+    return found
+
+
+# Сколько файлов сессий пересматривать в поисках обычных окон. Ходим назад редко (см.
+# codex_snapshots), но когда ходим — упереться можно в несколько подряд коротких сессий,
+# не доживших до первого снимка лимитов: 13 сентября 2026 таких оказалось три штуки подряд.
+CODEX_ROLLOUT_LOOKBACK = 12
+
+
+def codex_snapshots(known_pools=()):
+    """Записи по пулам из файлов сессий → ({пул: запись}, попадался ли снимок вообще).
+
+    Уйдя на резерв, Codex перестаёт присылать обычные окна совсем, и хвост свежего файла
+    может целиком состоять из резервных ходов. Тогда последний обычный замер лежит в
+    предыдущей сессии, и взять его больше неоткуда — а без него панель не знает даже того,
+    что у пятичасового окна есть срок и он уже прошёл.
+
+    Назад идём ровно за обычными окнами и только когда их нет ни здесь, ни в уже записанном
+    файле. За резервным окном — никогда: у аккаунта, который ни разу не упирался в лимит,
+    его нет вовсе, и поиск повторялся бы на каждом опросе без единого шанса найти.
+
+    Поиск останавливает измеренное окно, а не всякий снимок: Codex пишет снимок и на ходы,
+    где мерить нечего (`primary` и `secondary` приходят пустыми, а `limit_id` — чужой). Такой
+    снимок принимали за найденный обычный пул, и поиск замирал на первом же коротком ходе,
+    не дойдя до сессии, где обычные окна есть. Проверено 13 сентября 2026: ровно так и было.
+    """
+    found, seen = {}, False
+    for path in rollouts_by_age()[:CODEX_ROLLOUT_LOOKBACK]:
+        for pool, (snapshot, ts, model) in codex_file_snapshots(path).items():
+            seen = True
+            record = codex_limits_record(snapshot, ts=ts, model=model)
+            if record:
+                found.setdefault(pool, record)
+        if "codex" in found or "codex" in known_pools:
+            break
+    return found, seen
 
 
 def fetch_codex_limits():
-    """Один проход: свежий rollout → codex/limits.json. Молчалив при любом сбое."""
+    """Один проход: файлы сессий Codex → codex/limits.json. Молчалив при любом сбое."""
     if not os.path.isdir(CODEX):
         return t("codex.absent")
-    snapshot, ts, model = codex_snapshot()
-    if not snapshot:
-        return t("codex.nosnapshot")
-    record = codex_limits_record(snapshot, ts=ts, model=model)
-    if not record:
-        return t("codex.empty")
+    previous = read_json(CODEX_LIMITS)
+    steps, seen = codex_snapshots({w["pool"] for w in codex_known_windows(previous)})
+    if not steps:
+        return t("codex.empty") if seen else t("codex.nosnapshot")
+    record = previous
+    # От старого замера к свежему: последним слоем должен лечь самый свежий снимок — от него
+    # запись берёт и план, и источник.
+    for step in sorted(steps.values(), key=lambda step: step["ts"]):
+        record = merge_codex_limits(record, step)
     secure_codex_root()
     write_json(CODEX_LIMITS, record)
     windows = ", ".join(f"{w['kind']} {w['used_percentage']}%" for w in record["windows"])

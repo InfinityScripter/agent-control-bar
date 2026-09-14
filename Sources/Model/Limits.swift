@@ -6,6 +6,11 @@ struct LimitWindow: Equatable {
     let used: Int
     let resets: Double?
 
+    init(used: Int, resets: Double?) {
+        self.used = used
+        self.resets = resets
+    }
+
     init?(json: Any?) {
         // as? Int, deliberately: the statusLine payload reports fractional percentages and
         // hooks/statusline.py rounds them on the way in. If a writer ever forgets, the limits
@@ -69,9 +74,24 @@ struct NamedWindow: Equatable {
     /// The short capsule after the name; only Claude's Fable window has one.
     let badge: String?
     /// How long the window is. Nil when the writer did not say, which is also what makes a
-    /// snapshot undatable — see `live(at:ts:)`.
+    /// snapshot undatable — see `ended(at:ts:)`.
     let minutes: Int?
+    /// When THIS window was measured, when the writer said so per window rather than per record.
+    /// Codex's file keeps the last figure for each pool, and once a session has moved onto the
+    /// reserve those figures come from different moments — the ordinary pair from the last
+    /// ordinary turn, the reserve one from just now. Nil means "whatever the record says".
+    let ts: Double?
     let window: LimitWindow
+
+    init(key: String, title: String, badge: String?, minutes: Int?, ts: Double? = nil,
+         window: LimitWindow) {
+        self.key = key
+        self.title = title
+        self.badge = badge
+        self.minutes = minutes
+        self.ts = ts
+        self.window = window
+    }
 
     /// The two characters the menu bar icon has room for beside a bar, or nil when the window's
     /// length is unknown. The icon labels every bar it draws, and there is no honest short label
@@ -92,16 +112,29 @@ struct NamedWindow: Equatable {
         return "\(minutes / 60)h"
     }
 
-    /// Whether the figure is still about the window it was measured in.
+    /// Whether the window this figure was measured in is over by `now` — nil when that cannot be
+    /// answered at all.
     ///
-    /// A snapshot lifted out of a transcript can be a week old: the 12% it recorded belonged to a
-    /// window that has since rolled over, and drawing it today would be a plain lie. The reset
+    /// The question every drawn bar depends on. A percentage belongs to one window, and once that
+    /// window has rolled over the figure is not stale so much as about something that no longer
+    /// exists: 94% recorded a minute before the weekly reset is 0% a minute after it. The reset
     /// time answers it outright; without one, the window's own duration does, because a figure
-    /// cannot outlive the window it measures.
-    func live(at now: Double, ts: Double) -> Bool {
-        if let resets = window.resets { return resets > now }
-        guard let minutes, minutes > 0 else { return false }
-        return now - ts < Double(minutes) * 60
+    /// cannot outlive the window it measures. With neither, nothing here can date the figure.
+    func ended(at now: Double, ts: Double) -> Bool? {
+        if let resets = window.resets { return resets <= now }
+        guard let minutes, minutes > 0 else { return nil }
+        return now - (self.ts ?? ts) >= Double(minutes) * 60
+    }
+
+    /// The same window, known empty. What a reset means: the window rolled over, and nothing has
+    /// been measured against the new one yet — which for a figure read out of a transcript is
+    /// exact, because using the agent is what would have written a newer one.
+    ///
+    /// The reset time goes with the old figure. When the next window opens is not knowable: a
+    /// five-hour window starts at the first request made in it, not on the hour.
+    var emptied: NamedWindow {
+        NamedWindow(key: key, title: title, badge: badge, minutes: minutes, ts: ts,
+                    window: LimitWindow(used: 0, resets: nil))
     }
 }
 
@@ -126,13 +159,41 @@ struct LimitsSet: Equatable {
     /// session happened to leave behind.
     var isSnapshot: Bool { source == "rollout" }
 
-    /// The windows still worth drawing. For a polled source that is all of them — a window whose
-    /// reset has just passed is corrected by the next poll minutes later. For a snapshot it is
-    /// only the windows that have not rolled over since it was written, which is what makes a
-    /// provider disappear from the strip instead of showing last week's numbers.
-    func live(at now: Double) -> [NamedWindow] {
-        guard isSnapshot else { return windows }
-        return windows.filter { $0.live(at: now, ts: ts) }
+    /// The windows as they should be drawn at `now`: measured figures for windows still running,
+    /// empty bars for windows that have rolled over since they were measured.
+    ///
+    /// This is the one place that decides it, for both providers, because both used to get it
+    /// wrong in their own way. A polled file is rewritten every few minutes, so Claude's bars
+    /// showed the pre-reset figure for up to five minutes after every rollover — at its worst a
+    /// near-full red bar where the truth was empty. A Codex snapshot only changes when its owner
+    /// runs Codex, so its rolled-over windows used to vanish from the panel entirely and stay
+    /// gone, taking with them the fact that the ordinary pool had become available again.
+    func drawable(at now: Double) -> [NamedWindow] {
+        windows.compactMap { window in
+            switch window.ended(at: now, ts: ts) {
+            case true?: return window.emptied
+            case false?: return window
+            // Neither a reset stamp nor a length: the figure cannot be dated. A poll rewrites its
+            // own file every few minutes, so its figures are fresh by construction and are kept.
+            // A snapshot out of a transcript can be a week old, and an undatable week-old figure
+            // is the one thing here that cannot be shown honestly at all.
+            case nil: return isSnapshot ? nil : window
+            }
+        }
+    }
+
+    /// The moment of the newest rollover these figures have already outlived, or nil when they
+    /// are still about the windows they were measured in. `handled` is the last rollover that
+    /// already prompted a fresh reading, so one rollover asks for one reading rather than one
+    /// per tick.
+    ///
+    /// Only a reset later than the measurement counts. That is what makes the figures stale, and
+    /// it is also what makes this fall quiet by itself: a fresh answer carries reset times in the
+    /// future, so nothing here fires again until the next rollover.
+    func rolledOver(since handled: Double, at now: Double) -> Double? {
+        windows.compactMap { $0.window.resets }
+            .filter { $0 <= now && $0 > ts && $0 > handled }
+            .max()
     }
 
     /// The window that will run out first — what a one-line summary of a provider should say.
@@ -170,20 +231,30 @@ extension NamedWindow {
     /// One entry of the `windows` array in codex/limits.json, as scripts/mcpbar.py writes it from
     /// the rollout snapshot: a percentage, the window's length in minutes, and the reset stamp.
     ///
-    /// `reserve` is the whole record's flag, not the window's: once Codex has moved the session
-    /// onto its reserve model, every window in that snapshot measures the reserve pool. Naming it
-    /// "7 days" like any other weekly window would be the strip's worst kind of lie — the figure
-    /// is real, but it is about a pool the reader is not thinking about, while the ordinary window
-    /// it replaced is full and absent. So the pool takes the name and the length moves to the
-    /// badge, exactly as Fable's weekly slice is already drawn.
-    init?(codex object: [String: Any], reserve: Bool) {
+    /// `pool` says which pool of the account the figure measures: the ordinary one, or the
+    /// reserve Codex moves a session onto once the ordinary limit runs out. Naming a reserve
+    /// window "7 days" like any other weekly window would be the strip's worst kind of lie — the
+    /// figure is real, but it is about a pool the reader is not thinking about. So the pool takes
+    /// the name and the length moves to the badge, exactly as Fable's weekly slice is drawn.
+    ///
+    /// It rides on the window rather than on the record because one record carries both: the
+    /// writer keeps the last figure for each pool, and a reserve snapshot has nothing to say
+    /// about the ordinary windows it did not measure.
+    init?(codex object: [String: Any], legacyReserve: Bool) {
         guard let window = LimitWindow(json: object) else { return nil }
         let kind = object["kind"] as? String ?? ""
+        // The record-wide flag is how the previous version marked it, and the file outlives the
+        // update that replaces the app: read it when the window itself does not say.
+        let reserve = (object["pool"] as? String ?? (legacyReserve ? "reserve" : "codex")) == "reserve"
         let minutes = (object["window_minutes"] as? NSNumber)?.intValue
-        self.key = kind.isEmpty ? "window" : kind
+        // Both pools report a window under kind "primary", so the kind alone is not a name. The
+        // key has to stay unique within the provider: it is what a one-line summary names the row
+        // it quotes by, and two rows answering to "primary" would make that pick ambiguous.
+        self.key = (reserve ? "reserve:" : "") + (kind.isEmpty ? "window" : kind)
         self.minutes = minutes.flatMap { $0 > 0 ? $0 : nil }
         self.title = reserve ? "Reserve" : LimitsSet.title(minutes: self.minutes, kind: kind)
         self.badge = reserve ? NamedWindow.short(minutes: self.minutes) : nil
+        self.ts = (object["ts"] as? NSNumber)?.doubleValue
         self.window = window
     }
 }
@@ -193,8 +264,8 @@ extension LimitsSet {
     /// reports is not fixed, and a file of named keys would have had to invent a name for each.
     init?(codex root: [String: Any]) {
         guard let raw = root["windows"] as? [[String: Any]] else { return nil }
-        let reserve = root["reserve"] as? Bool ?? false
-        let windows = raw.compactMap { NamedWindow(codex: $0, reserve: reserve) }
+        let legacyReserve = root["reserve"] as? Bool ?? false
+        let windows = raw.compactMap { NamedWindow(codex: $0, legacyReserve: legacyReserve) }
         guard !windows.isEmpty else { return nil }
         self.provider = "codex"
         self.windows = windows
