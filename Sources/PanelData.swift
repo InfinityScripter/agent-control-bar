@@ -80,16 +80,16 @@ extension StatusController {
     /// signed in" or "last measured a week ago" mean.
     func panelLimitGroups(now: Double) -> ([PanelLimitGroup], String) {
         var sources: [(set: LimitsSet, windows: [NamedWindow], title: String, glyph: String)] = []
+        // `drawable` rather than the windows as written: a window whose reset has passed since it
+        // was measured reads as empty. Its old percentage is about a window that is over, and
+        // for the five minutes before the next poll lands it was drawn as if it were current.
         if let claude = limits?.set, !claude.isEmpty {
-            sources.append((claude, claude.windows, "Claude", "sparkle"))
+            sources.append((claude, claude.drawable(at: now), "Claude", "sparkle"))
         }
         if let codex = codexWindows {
-            // Only the windows that have not rolled over since Codex wrote them down. Its figures
-            // come out of a session transcript rather than a poll, so the newest one on disk can
-            // be from last week — and last week's 12% is about a window that no longer exists.
-            let live = codex.live(at: now)
-            if !live.isEmpty {
-                sources.append((codex, live, "Codex",
+            let rows = codex.drawable(at: now)
+            if !rows.isEmpty {
+                sources.append((codex, rows, "Codex",
                                 "chevron.left.forwardslash.chevron.right"))
             }
         }
@@ -181,7 +181,7 @@ extension StatusController {
         var count = 0
         if let limits, !limits.isEmpty { count += 1 }
         if let codexWindows,
-           !codexWindows.live(at: Date().timeIntervalSince1970).isEmpty { count += 1 }
+           !codexWindows.drawable(at: Date().timeIntervalSince1970).isEmpty { count += 1 }
         return count
     }
 

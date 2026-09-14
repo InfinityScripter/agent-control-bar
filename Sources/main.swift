@@ -104,6 +104,8 @@ final class StatusController: NSObject, NSWindowDelegate {
     var notificationsDenied = false     // the one macOS permission this app has; see notify()
     var lastNotifiedChangeAt: Date?     // dedupe: notifyMCPChange runs on every reload, the change lives 45 s
     var limitsMTime: Date?              // limits.json parse gate; nil forces a re-read (see loadLimits)
+    var lastLimitsPoll: Double = 0      // so a rollover cannot bring the next poll forward into a loop
+    var rolledOverHandled: Double = 0   // the reset stamp that already brought one poll forward
     var codexLimitsMTime: Date?         // the same gate for codex/limits.json
     var codexHooksMTime: Date?          // and for codex/hooks.json
     /// The mtimes the last hook-trust question was asked against; see askCodexAboutHooks().
@@ -663,7 +665,10 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// Each has its own off switch, for different reasons: the Anthropic poll spends the user's
     /// own OAuth token, and the Codex read opens files that belong to another program.
     func pollLimits() {
-        if oauthLimits { runQuietCommand("limits") }
+        if oauthLimits {
+            lastLimitsPoll = Date().timeIntervalSince1970
+            runQuietCommand("limits")
+        }
         // Not gated on the switch above, and deliberately: reading Codex's figures costs no token
         // and no request at all. Codex writes them into its own session file as it goes, and the
         // command only reads the newest one — so the only thing to opt out of is the reading.
@@ -674,6 +679,35 @@ final class StatusController: NSObject, NSWindowDelegate {
         if codexLimits, FileManager.default.fileExists(atPath: codexSessionsDir) {
             runQuietCommand("codex-limits")
         }
+    }
+
+    /// Ask again the moment a window rolls over, rather than waiting out the five-minute timer.
+    ///
+    /// The figures are right when they are written and wrong the instant a window resets: 94% a
+    /// minute before the weekly rollover is ~0% a minute after it. On the timer alone the bars
+    /// spent up to five minutes showing a nearly full bar at the exact moment the truth was
+    /// "empty" — the largest error this app can make, made at every single reset. The panel draws
+    /// such a window empty meanwhile; this is what keeps "meanwhile" down to a couple of seconds.
+    ///
+    /// Claude only. Codex's figures are lifted out of its session transcript, so asking again
+    /// rereads the same file for the same answer — they move when its owner runs Codex, not before.
+    /// Which rollovers count at all is decided in the model, where the check covers it — see
+    /// LimitsSet.rolledOver(since:at:), which already makes one rollover ask for one reading
+    /// rather than one per tick.
+    ///
+    /// The minute on top of that is for the one case it cannot see: a poll already on its way.
+    /// Its answer lands a second or two after the request, and until it does, the file still
+    /// describes the window that just ended. Launch is exactly that — pollLimits() fires as the
+    /// app starts, and the tick 0.4 s later reads a file written before the machine was last
+    /// closed, every window in it long since rolled over. Without the minute that is a second
+    /// request for the answer already coming.
+    func pollLimitsIfRolledOver(now: Double) {
+        guard oauthLimits, now - lastLimitsPoll >= 60,
+              let newest = limits?.set.rolledOver(since: rolledOverHandled, at: now)
+        else { return }
+        rolledOverHandled = newest
+        lastLimitsPoll = now
+        runQuietCommand("limits")
     }
 
     /// Run one backend command for the file it writes and nothing else. Not routed through runBackend:
@@ -982,6 +1016,7 @@ final class StatusController: NSObject, NSWindowDelegate {
         // — refreshed on our own timer, not by anything they just did — is noise.
         if codexServers { codexMCP.reloadIfChanged() }
         loadLimits()
+        pollLimitsIfRolledOver(now: now)
         loadCodexLimits()
         loadCodexHooks()
         evaluate()
@@ -1001,17 +1036,24 @@ final class StatusController: NSObject, NSWindowDelegate {
     }
 
     func currentGauge() -> Gauge {
+        let now = Date().timeIntervalSince1970
+        // Read through the same rule the panel's bars use: a window whose reset has passed is
+        // drawn empty rather than with the figure it carried before. The icon is the one surface
+        // that is always on screen, so a near-full bar left over from before a rollover is the
+        // most visible thing this app can get wrong.
+        //
         // Built first and tested for emptiness, rather than asking whether Claude has limits at
         // all: a plan that reports only its Fable window has limits and still draws no bars here,
         // and that used to leave the icon blank while Codex figures sat unused below.
-        let claude = Gauge(fiveHour: limits?.fiveHour?.fraction,
-                           sevenDay: limits?.sevenDay?.fraction)
+        let drawn = limits?.set.drawable(at: now) ?? []
+        let claude = Gauge(fiveHour: drawn.first { $0.key == "five_hour" }?.window.fraction,
+                           sevenDay: drawn.first { $0.key == "seven_day" }?.window.fraction)
         if !claude.isEmpty { return claude }
         // Codex only when Claude has no figures at all. The icon has room for two labelled bars,
         // and a pair mixed from two accounts would need a provider mark beside each one to mean
         // anything — so the rule here is the simple one: whoever has numbers gets the bars. Which
         // provider leads when both do is a setting of its own, and it is not this release.
-        let live = (codexWindows?.live(at: Date().timeIntervalSince1970) ?? [])
+        let live = (codexWindows?.drawable(at: now) ?? [])
             .filter { $0.shortTitle != nil }.prefix(2)
         guard let first = live.first else { return Gauge() }
         let second = live.count > 1 ? live.last : nil

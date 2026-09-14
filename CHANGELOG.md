@@ -7,6 +7,23 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.16.1] - 2026-09-14
+
+### Fixed
+- **A window that has reset no longer shows the figure it had before.** Every bar carries the
+  moment its window resets, and until now nothing looked at it: the percentage kept being drawn
+  as current. At a weekly rollover that meant an almost full red bar where the truth was empty —
+  the largest error this app can make, made at every single reset, for up to five minutes.
+  A rolled-over window now reads as empty, and the app asks for fresh figures the moment it
+  notices instead of waiting out the five-minute timer, so the real number arrives in seconds.
+- **Codex keeps its ordinary windows when a session moves to the reserve pool.** Once the
+  ordinary limit runs out, Codex sends snapshots of the reserve pool *only* — the five-hour and
+  weekly windows vanish from its session file entirely. The panel used to lose them with it and
+  show a lone *Reserve* bar with no way back, not even when the five-hour window had long since
+  reset. Codex limits are now remembered per pool, so the panel shows all three, and the
+  ordinary session window reads as empty again once its reset has passed. The last ordinary
+  reading is looked up in earlier sessions when the current one has been on reserve throughout.
+
 ## [0.16.0] - 2026-09-13
 
 ### Added
@@ -1189,6 +1206,7 @@ reports on Claude Code — it switches parts of it off.
 - Signed and notarized DMG so it opens without a Gatekeeper warning.
 - Claude Code plugin marketplace manifest for the plugin install path.
 
+[0.16.1]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.16.1
 [0.16.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.16.0
 [0.15.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.15.0
 [0.14.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.14.0

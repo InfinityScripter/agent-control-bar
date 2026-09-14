@@ -1874,10 +1874,10 @@ class CodexLimits(unittest.TestCase):
         self.assertEqual(record["ts"], 1_789_000_000)
         self.assertEqual(record["plan"], "pro")
         self.assertEqual(record["windows"], [
-            {"kind": "primary", "used_percentage": 12, "window_minutes": 300,
-             "resets_at": 1_789_012_345},
-            {"kind": "secondary", "used_percentage": 59, "window_minutes": 10080,
-             "resets_at": 1_789_500_000},
+            {"kind": "primary", "pool": "codex", "ts": 1_789_000_000, "used_percentage": 12,
+             "window_minutes": 300, "resets_at": 1_789_012_345},
+            {"kind": "secondary", "pool": "codex", "ts": 1_789_000_000, "used_percentage": 59,
+             "window_minutes": 10080, "resets_at": 1_789_500_000},
         ])
 
     def test_процент_целый_как_у_claude(self):
@@ -1918,7 +1918,7 @@ class CodexLimits(unittest.TestCase):
             self.token_count({"used_percent": 20, "window_minutes": 300},
                              stamp="2026-09-11T11:00:00Z"),
         ])
-        snapshot, ts, _model = mcpbar.codex_snapshot(path)
+        snapshot, ts, _model = mcpbar.codex_file_snapshots(path)["codex"]
         self.assertEqual(snapshot["primary"]["used_percent"], 20)
         # Момент записи, а не время файла: панель показывает возраст цифр, и возраст
         # недельного снимка должен читаться неделей, а не «только что».
@@ -1932,12 +1932,12 @@ class CodexLimits(unittest.TestCase):
         record = mcpbar.codex_limits_record(
             {"primary": {"used_percent": 13, "window_minutes": 10080}},
             ts=1, model="gpt-reserve")
-        self.assertTrue(record["reserve"])
+        self.assertEqual([w["pool"] for w in record["windows"]], ["reserve"])
 
     def test_обычная_модель_ничего_не_помечает(self):
         record = mcpbar.codex_limits_record(
             {"primary": {"used_percent": 13, "window_minutes": 300}}, ts=1, model="gpt-5.6-terra")
-        self.assertNotIn("reserve", record)
+        self.assertEqual([w["pool"] for w in record["windows"]], ["codex"])
 
     def test_модель_снимка_берётся_из_хода_а_не_из_всего_файла(self):
         """Сессия начинается на обычной модели и переезжает на резервную, когда лимит кончился.
@@ -1952,9 +1952,12 @@ class CodexLimits(unittest.TestCase):
             self.token_count({"used_percent": 13, "window_minutes": 10080},
                              stamp="2026-09-11T11:00:00Z"),
         ])
-        snapshot, ts, model = mcpbar.codex_snapshot(path)
-        self.assertEqual(snapshot["primary"]["used_percent"], 13)
-        self.assertEqual(model, "gpt-reserve")
+        found = mcpbar.codex_file_snapshots(path)
+        self.assertEqual(found["reserve"][0]["primary"]["used_percent"], 13)
+        self.assertEqual(found["reserve"][2], "gpt-reserve")
+        # И обычный снимок того же файла — тот, что был до переезда на резерв. Резервный ход
+        # перестаёт присылать обычные окна вовсе, так что взять их больше неоткуда.
+        self.assertEqual(found["codex"][0]["primary"]["used_percent"], 10)
 
     def test_свежий_файл_побеждает_а_архив_пропускается(self):
         old = self.rollout("rollout-2026-09-10T10-00-00-old.jsonl",
@@ -2009,12 +2012,226 @@ class CodexLimits(unittest.TestCase):
         mcpbar.fetch_codex_limits()
         with open(mcpbar.CODEX_LIMITS) as fh:
             written = json.load(fh)
-        self.assertTrue(written["reserve"])
+        self.assertEqual([w["pool"] for w in written["windows"]], ["reserve"])
         repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         seam_dir = os.path.join(repo, "build", "seam")
         os.makedirs(seam_dir, exist_ok=True)
         shutil.copyfile(mcpbar.CODEX_LIMITS,
                         os.path.join(seam_dir, "codex-limits-reserve.json"))
+
+
+    # ─── память по пулам ───────────────────────────────────────────────────────────────
+    #
+    # Codex в резерве присылает снимок ТОЛЬКО резервного пула: `primary` меряет резерв, а
+    # `secondary` приходит пустым. Проверено на живых файлах 13 сентября 2026 — обычное
+    # пятичасовое окно и обычное недельное из снимка исчезают целиком. Файл, который просто
+    # копировал последний снимок, вместе с ними терял и знание о том, что эти окна существуют:
+    # сброс пятичасового проходил, а сказать об этом панели было нечем. Поэтому файл хранит
+    # последний замер ПО КАЖДОМУ ПУЛУ, а свежий снимок обновляет только свой.
+
+    @staticmethod
+    def window(kind="primary", pool="codex", ts=1_789_000_000, used=10,
+               minutes=300, resets=1_789_100_000):
+        return {"kind": kind, "pool": pool, "ts": ts, "used_percentage": used,
+                "window_minutes": minutes, "resets_at": resets}
+
+    def test_резервный_снимок_не_затирает_обычные_окна(self):
+        previous = {"ts": 1_789_000_000, "source": "rollout", "plan": "plus", "windows": [
+            self.window("primary", used=97, minutes=300, resets=1_789_018_681),
+            self.window("secondary", used=15, minutes=10080, resets=1_789_605_481),
+        ]}
+        fresh = {"ts": 1_789_018_588, "source": "rollout", "plan": "plus", "windows": [
+            self.window("primary", pool="reserve", ts=1_789_018_588, used=29,
+                        minutes=10080, resets=1_789_616_476),
+        ]}
+        merged = mcpbar.merge_codex_limits(previous, fresh)
+        self.assertEqual([(w["pool"], w["kind"], w["used_percentage"]) for w in merged["windows"]],
+                         [("codex", "primary", 97), ("codex", "secondary", 15),
+                          ("reserve", "primary", 29)])
+
+    def test_обычный_снимок_возвращает_свои_окна_на_место(self):
+        """И не трогает запомненный резерв: его недельное окно живёт своим сроком."""
+        previous = {"ts": 1_789_018_588, "source": "rollout", "windows": [
+            self.window("primary", used=97, resets=1_789_018_681),
+            self.window("primary", pool="reserve", ts=1_789_018_588, used=29,
+                        minutes=10080, resets=1_789_616_476),
+        ]}
+        fresh = {"ts": 1_789_020_000, "source": "rollout", "windows": [
+            self.window("primary", ts=1_789_020_000, used=4, resets=1_789_038_000),
+        ]}
+        merged = mcpbar.merge_codex_limits(previous, fresh)
+        self.assertEqual([(w["pool"], w["used_percentage"]) for w in merged["windows"]],
+                         [("codex", 4), ("reserve", 29)])
+
+    def test_возраст_записи_это_самый_старый_замер(self):
+        """Подпись «measured N min ago» одна на всю группу, и врать она обязана в свою
+        сторону: свежесть резервного окна ничего не говорит про обычное, снятое утром."""
+        previous = {"ts": 1_789_000_000, "source": "rollout", "windows": [self.window()]}
+        fresh = {"ts": 1_789_020_000, "source": "rollout", "windows": [
+            self.window("primary", pool="reserve", ts=1_789_020_000, minutes=10080,
+                        resets=1_789_616_476),
+        ]}
+        self.assertEqual(mcpbar.merge_codex_limits(previous, fresh)["ts"], 1_789_000_000)
+
+    def test_файл_прошлой_версии_переезжает_без_потери(self):
+        """До этой версии пул стоял пометкой на всей записи, а момент замера был один на файл.
+        Первый же опрос после обновления обязан прочитать такой файл, а не выбросить его."""
+        previous = {"ts": 1_789_018_588, "source": "rollout", "reserve": True, "windows": [
+            {"kind": "primary", "used_percentage": 29, "window_minutes": 10080,
+             "resets_at": 1_789_616_476},
+        ]}
+        fresh = {"ts": 1_789_020_000, "source": "rollout", "windows": [
+            self.window("primary", ts=1_789_020_000, used=4, resets=1_789_038_000),
+        ]}
+        merged = mcpbar.merge_codex_limits(previous, fresh)
+        self.assertEqual([(w["pool"], w["used_percentage"], w["ts"]) for w in merged["windows"]],
+                         [("codex", 4, 1_789_020_000), ("reserve", 29, 1_789_018_588)])
+
+    def test_битый_предыдущий_файл_не_мешает_свежему_снимку(self):
+        fresh = {"ts": 1_789_020_000, "source": "rollout",
+                 "windows": [self.window(ts=1_789_020_000)]}
+        for previous in (None, [], {"windows": "нет"}, {"windows": ["строка"]}):
+            self.assertEqual(mcpbar.merge_codex_limits(previous, fresh), fresh, previous)
+
+    def test_обычные_окна_ищутся_в_прошлых_сессиях(self):
+        """Панель, впервые открытая уже на резерве, обязана показать обычные окна.
+
+        Сессия на резерве не присылает их совсем, а хвост свежего файла может целиком
+        состоять из резервных ходов — так и было 13 сентября 2026 на файле в 17 МБ. Тогда
+        последний обычный замер лежит в ПРЕДЫДУЩЕЙ сессии, и взять его больше неоткуда.
+        """
+        old = self.rollout("rollout-2026-09-11T09-00-00-was.jsonl", [
+            {"timestamp": "2026-09-11T09:00:00Z", "type": "turn_context",
+             "payload": {"turn_id": "1", "model": "gpt-5.6-terra"}},
+            self.token_count({"used_percent": 97, "window_minutes": 300,
+                              "resets_at": 1_789_124_400},
+                             {"used_percent": 15, "window_minutes": 10080,
+                              "resets_at": 1_789_700_000},
+                             stamp="2026-09-11T09:00:00Z", plan="plus"),
+        ])
+        now = self.rollout("rollout-2026-09-11T10-00-00-res.jsonl", [
+            {"timestamp": "2026-09-11T10:00:00Z", "type": "turn_context",
+             "payload": {"turn_id": "1", "model": "gpt-reserve"}},
+            self.token_count({"used_percent": 29, "window_minutes": 10080,
+                              "resets_at": 1_789_800_000}, plan="plus"),
+        ])
+        os.utime(old, (1_000_000, 1_000_000))
+        os.utime(now, (2_000_000, 2_000_000))
+        mcpbar.fetch_codex_limits()
+        with open(mcpbar.CODEX_LIMITS) as fh:
+            written = json.load(fh)
+        self.assertEqual([(w["pool"], w["kind"], w["used_percentage"]) for w in written["windows"]],
+                         [("codex", "primary", 97), ("codex", "secondary", 15),
+                          ("reserve", "primary", 29)])
+
+    def test_снимок_без_своего_хода_не_считается_обычным(self):
+        """Хвост файла обрывается посреди сессии, и у самых старых снимков в нём своей записи
+        turn_context уже нет. Пул их неизвестен — а назвать неизвестное обычным значит выдать
+        резервные проценты за обычные. Проверено на живом файле 13 сентября 2026: 23%
+        резервного пула уехали в файл как обычное недельное окно ровно этим путём."""
+        path = self.rollout("rollout-2026-09-11T10-00-00-cut.jsonl", [
+            # Самый старый снимок хвоста: его ход остался за границей чтения.
+            self.token_count({"used_percent": 23, "window_minutes": 10080},
+                             stamp="2026-09-11T09:00:00Z"),
+            {"timestamp": "2026-09-11T10:00:00Z", "type": "turn_context",
+             "payload": {"turn_id": "1", "model": "gpt-reserve"}},
+            self.token_count({"used_percent": 29, "window_minutes": 10080}),
+        ])
+        self.assertEqual(list(mcpbar.codex_file_snapshots(path)), ["reserve"])
+
+    def test_хвост_без_единого_хода_читается_как_прежде(self):
+        """Записи turn_context в хвосте нет вовсе — значит, и следов резервной сессии нет.
+        Так этот файл читался и до появления пулов, и ломать это незачем."""
+        path = self.rollout("rollout-2026-09-11T10-00-00-plain.jsonl", [
+            self.token_count({"used_percent": 12, "window_minutes": 300}),
+        ])
+        found = mcpbar.codex_file_snapshots(path)
+        self.assertEqual(list(found), ["codex"])
+        self.assertEqual(found["codex"][0]["primary"]["used_percent"], 12)
+
+    def test_пустой_снимок_не_останавливает_поиск(self):
+        """Codex пишет снимок и на ходах, где мерить нечего: `primary` и `secondary` приходят
+        пустыми. Такой снимок принимали за найденный обычный пул, и поиск замирал на первом же
+        коротком ходе, не дойдя до сессии с настоящими окнами. Проверено на живых файлах
+        13 сентября 2026 — панель так и осталась с одной резервной шкалой."""
+        files = [
+            ("res", [{"timestamp": "2026-09-11T12:00:00Z", "type": "turn_context",
+                      "payload": {"turn_id": "1", "model": "gpt-reserve"}},
+                     self.token_count({"used_percent": 29, "window_minutes": 10080},
+                                      stamp="2026-09-11T12:00:00Z")]),
+            ("nil", [{"timestamp": "2026-09-11T11:00:00Z", "type": "turn_context",
+                      "payload": {"turn_id": "1", "model": "gpt-5.6-terra"}},
+                     self.token_count(None, stamp="2026-09-11T11:00:00Z")]),
+            ("real", [{"timestamp": "2026-09-11T10:00:00Z", "type": "turn_context",
+                       "payload": {"turn_id": "1", "model": "gpt-5.6-terra"}},
+                      self.token_count({"used_percent": 97, "window_minutes": 300},
+                                       stamp="2026-09-11T10:00:00Z")]),
+        ]
+        for at, (name, lines) in enumerate(files):
+            path = self.rollout(f"rollout-2026-09-11T10-00-00-{name}.jsonl", lines)
+            os.utime(path, (3_000_000 - at, 3_000_000 - at))
+        mcpbar.fetch_codex_limits()
+        with open(mcpbar.CODEX_LIMITS) as fh:
+            written = json.load(fh)
+        self.assertEqual([(w["pool"], w["used_percentage"]) for w in written["windows"]],
+                         [("codex", 97), ("reserve", 29)])
+
+    def test_за_резервным_окном_в_прошлое_не_ходим(self):
+        """Аккаунт, который ни разу не упирался в лимит, резервного окна не имеет вовсе —
+        и поиск его в прошлых сессиях повторялся бы на каждом опросе без всякого шанса.
+        Назад идём ровно за обычными окнами и только когда их нет."""
+        seen = []
+        real = mcpbar.codex_file_snapshots
+
+        def counting(path):
+            seen.append(path)
+            return real(path)
+
+        for name in ("a", "b", "c"):
+            path = self.rollout(f"rollout-2026-09-11T10-00-00-{name}.jsonl", [
+                {"timestamp": "2026-09-11T10:00:00Z", "type": "turn_context",
+                 "payload": {"turn_id": "1", "model": "gpt-5.6-terra"}},
+                self.token_count({"used_percent": 10, "window_minutes": 300}),
+            ])
+            os.utime(path, (1_000_000 + ord(name), 1_000_000 + ord(name)))
+        mcpbar.codex_file_snapshots = counting
+        try:
+            mcpbar.fetch_codex_limits()
+        finally:
+            mcpbar.codex_file_snapshots = real
+        self.assertEqual(len(seen), 1, seen)
+
+    def test_память_доезжает_до_файла(self):
+        """Сквозь весь путь: обычный ход, потом резервный — в файле остаются оба пула."""
+        first = self.rollout("rollout-2026-09-11T10-00-00-one.jsonl", [
+            self.token_count({"used_percent": 97, "window_minutes": 300,
+                              "resets_at": 1_789_124_400},
+                             {"used_percent": 15, "window_minutes": 10080,
+                              "resets_at": 1_789_700_000}, plan="plus"),
+        ])
+        os.utime(first, (1_000_000, 1_000_000))
+        mcpbar.fetch_codex_limits()
+        second = self.rollout("rollout-2026-09-11T11-00-00-two.jsonl", [
+            {"timestamp": "2026-09-11T11:00:00Z", "type": "turn_context",
+             "payload": {"turn_id": "1", "model": "gpt-reserve"}},
+            self.token_count({"used_percent": 29, "window_minutes": 10080,
+                              "resets_at": 1_789_800_000},
+                             stamp="2026-09-11T11:00:00Z", plan="plus"),
+        ])
+        os.utime(second, (2_000_000, 2_000_000))
+        mcpbar.fetch_codex_limits()
+        with open(mcpbar.CODEX_LIMITS) as fh:
+            written = json.load(fh)
+        self.assertEqual([(w["pool"], w["kind"], w["used_percentage"]) for w in written["windows"]],
+                         [("codex", "primary", 97), ("codex", "secondary", 15),
+                          ("reserve", "primary", 29)])
+        # Артефакт для swift-стороны шва: model-проверка парсит ровно этот файл и обязана
+        # увидеть в нём три окна — два обычных и резервное.
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        seam_dir = os.path.join(repo, "build", "seam")
+        os.makedirs(seam_dir, exist_ok=True)
+        shutil.copyfile(mcpbar.CODEX_LIMITS,
+                        os.path.join(seam_dir, "codex-limits-pools.json"))
 
 
 class CodexHooks(unittest.TestCase):
