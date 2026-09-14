@@ -510,6 +510,11 @@ final class StatusController: NSObject, NSWindowDelegate {
     }
 
     // `/bin/zsh -lc node` saw only the login PATH, missing nvm/fnm set in .zshrc.
+    //
+    // Existence alone is not enough: after `brew upgrade llhttp` (or a partial upgrade) Homebrew's
+    // `node` can still be executable on disk yet fail to launch — dyld looking for a
+    // libllhttp.N.M.dylib the Cellar no longer has. Prefer the stable Homebrew symlink first, but
+    // smoke-test each candidate and fall through so install.js still runs under nvm/volta/system.
     static func locateNode() -> String? {
         let fm = FileManager.default
         let home = NSHomeDirectory()
@@ -529,7 +534,13 @@ final class StatusController: NSObject, NSWindowDelegate {
                 candidates.append("\(nvmDir)/\(v)/bin/node")
             }
         }
-        for path in candidates where fm.isExecutableFile(atPath: path) { return path }
+        for path in candidates where fm.isExecutableFile(atPath: path) {
+            if Self.nodeRuns(path) { return path }
+            if path == "/opt/homebrew/bin/node" || path == "/usr/local/bin/node" {
+                NSLog("ClaudeControlBar: skipping broken Homebrew node at \(path) "
+                    + "(won't launch — try `brew reinstall node`); trying other candidates")
+            }
+        }
 
         for args in [["-ilc", "command -v node"], ["-lc", "command -v node"]] {
             let p = Process()
@@ -544,9 +555,35 @@ final class StatusController: NSObject, NSWindowDelegate {
             let path = (String(data: data, encoding: .utf8) ?? "")
                 .split(separator: "\n").last.map(String.init)?
                 .trimmingCharacters(in: .whitespaces) ?? ""
-            if !path.isEmpty, fm.isExecutableFile(atPath: path) { return path }
+            if !path.isEmpty, fm.isExecutableFile(atPath: path), Self.nodeRuns(path) { return path }
         }
         return nil
+    }
+
+    /// True when `path` is a Node that actually starts. Catches dyld ABI skew (missing
+    /// libllhttp.*.dylib) that `isExecutableFile` cannot see. Mirror of bootstrap.node_runs().
+    static func nodeRuns(_ path: String, timeout: TimeInterval = 3) -> Bool {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: path)
+        p.arguments = ["-e", "process.exit(0)"]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return false }
+        let deadline = Date().addingTimeInterval(timeout)
+        while p.isRunning, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if p.isRunning {
+            p.terminate()
+            // Hard kill if terminate is ignored — a hung probe must not stall ensureHooksInstalled.
+            let hard = Date().addingTimeInterval(0.5)
+            while p.isRunning, Date() < hard {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            if p.isRunning { p.interrupt() }
+            return false
+        }
+        return p.terminationStatus == 0
     }
 
     // MARK: MCP backend

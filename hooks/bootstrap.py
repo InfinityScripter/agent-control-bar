@@ -127,6 +127,41 @@ def version_key(name):
     return parts
 
 
+def node_runs(path, timeout=3):
+    """True when `path` is a Node that actually starts — mirror of StatusController.nodeRuns().
+
+    Existence alone is not enough: after `brew upgrade llhttp` Homebrew's node can still be
+    executable on disk yet die in dyld looking for a libllhttp.N.M.dylib the Cellar no longer
+    has. A one-shot `process.exit(0)` catches that before we hand the path to uninstall.js.
+    """
+    try:
+        result = subprocess.run(
+            [path, "-e", "process.exit(0)"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return result.returncode == 0
+
+
+def first_working_node(candidates):
+    """First candidate that is executable *and* launches. Shared by find_node() so tests can
+    feed a fixture list without touching /opt/homebrew."""
+    homebrew = ("/opt/homebrew/bin/node", "/usr/local/bin/node")
+    for path in candidates:
+        if not os.access(path, os.X_OK):
+            continue
+        if node_runs(path):
+            return path
+        if path in homebrew:
+            log_problem_once(
+                f"skipping broken Homebrew node at {path} "
+                f"(won't launch — try `brew reinstall node`); trying other candidates\n")
+    return None
+
+
 def find_node():
     """Node wherever it actually lives — the same places the app looks (see locateNode()).
 
@@ -135,6 +170,9 @@ def find_node():
     removed — while the app itself, which does know those layouts, had installed them and kept
     them working. Both sets then fired on every event, forever: the exact duplication the lease
     below exists to prevent.
+
+    Prefer the stable Homebrew symlink first, but smoke-test each candidate: a dyld-broken
+    Homebrew node must not win over a working nvm/volta/system install.
     """
     candidates = [
         "/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node",
@@ -147,7 +185,7 @@ def find_node():
     except OSError:
         versions = []
     candidates += [os.path.join(nvm, v, "bin", "node") for v in versions]
-    return next((p for p in candidates if os.access(p, os.X_OK)), None)
+    return first_working_node(candidates)
 
 
 def shell_quoted(value):

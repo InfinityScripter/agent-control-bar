@@ -238,5 +238,74 @@ class BuildTimeout(unittest.TestCase):
             pass
 
 
+class FirstWorkingNode(unittest.TestCase):
+    """Executable on disk ≠ launches: dyld/llhttp skew leaves Homebrew node X_OK but dead.
+
+    locateNode()/find_node() used to return the first isExecutableFile hit; a broken
+    /opt/homebrew/bin/node then made install/uninstall fail instead of falling through.
+    """
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self._saved_root = bootstrap.ROOT
+        bootstrap.ROOT = self._dir.name
+
+    def tearDown(self):
+        bootstrap.ROOT = self._saved_root
+        self._dir.cleanup()
+
+    def _exe(self, name, body):
+        path = os.path.join(self._dir.name, name)
+        with open(path, "w") as fh:
+            fh.write("#!/bin/sh\n" + body)
+        os.chmod(path, 0o755)
+        return path
+
+    def test_пропускает_исполняемый_но_не_запускающийся(self):
+        broken = self._exe("broken-node", "exit 1\n")
+        good = self._exe("good-node", "exit 0\n")
+        self.assertEqual(bootstrap.first_working_node([broken, good]), good)
+
+    def test_все_битые_дают_none(self):
+        broken = self._exe("broken-node", "exit 1\n")
+        self.assertIsNone(bootstrap.first_working_node([broken]))
+
+    def test_node_runs_отличает_живой_от_битого(self):
+        broken = self._exe("broken-node", "exit 1\n")
+        good = self._exe("good-node", "exit 0\n")
+        self.assertFalse(bootstrap.node_runs(broken))
+        self.assertTrue(bootstrap.node_runs(good))
+
+    def test_homebrew_битый_логируется_и_пропускается(self):
+        """Точный путь Homebrew — триггер лога; сам бинарь подменить нельзя, поэтому
+        access/node_runs подменяются только для этой строки-кандидата."""
+        good = self._exe("good-node", "exit 0\n")
+        homebrew = "/opt/homebrew/bin/node"
+        real_runs, real_access = bootstrap.node_runs, os.access
+
+        def runs(path, timeout=3):
+            if path == homebrew:
+                return False
+            return real_runs(path, timeout)
+
+        def access(path, mode):
+            if path == homebrew:
+                return True
+            return real_access(path, mode)
+
+        bootstrap.node_runs = runs
+        os.access = access
+        try:
+            picked = bootstrap.first_working_node([homebrew, good])
+        finally:
+            bootstrap.node_runs = real_runs
+            os.access = real_access
+        self.assertEqual(picked, good)
+        with open(os.path.join(bootstrap.ROOT, "problems.log")) as fh:
+            log = fh.read()
+        self.assertIn(homebrew, log)
+        self.assertIn("brew reinstall node", log)
+
+
 if __name__ == "__main__":
     unittest.main()

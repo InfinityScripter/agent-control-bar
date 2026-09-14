@@ -27,6 +27,8 @@ a clock or a percentage) is usually enough. Cmd-drag rearranges menu bar items.
 
 **Icon disappeared weeks ago and never came back?** If you installed Node via Homebrew, versions before 0.4.2 wrote a version-specific Node path into the hooks, and a `brew upgrade node` broke them silently. Fixed in 0.4.2: update the app and launch it once, and the hooks repair themselves.
 
+**`node` crashes with `Library not loaded: …/libllhttp.*.dylib` (dyld)?** Homebrew upgraded `llhttp` out from under `node` — the binary on disk is still there, but it was linked against an older `libllhttp` the Cellar no longer ships. Confirm with `node -e 'console.log(process.version)'` (same dyld error) or `otool -L "$(brew --prefix)/bin/node" | grep llhttp`. Fix: `brew reinstall node` (or `brew reinstall llhttp && brew reinstall node`). Then launch Claude Control Bar once so hook install can run under a working Node. The app skips a dyld-broken Homebrew `node` and falls through to other installs when it can find one; if Homebrew is your only Node, reinstall is required.
+
 **Icon stuck on "thinking" in the desktop app?** If a session hits your usage limit mid-turn, Claude Code fires no hook to close it out, so the icon keeps thinking until it times out (about 15 minutes). To clear it right away, click the icon in the menu bar and press **Quit**.
 
 **The icon doesn't appear at all?**
