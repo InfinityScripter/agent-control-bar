@@ -40,7 +40,7 @@ a clock or a percentage) is usually enough. Cmd-drag rearranges menu bar items.
 - `install.js failed: settings.json does not parse …`: fix the JSON in `~/.claude/settings.json`.
 - *can't run* means the hooks are written, but the node their commands call is broken. They put `/opt/homebrew/bin` and `/usr/local/bin` first on their PATH, so a broken node there fails every hook even when another node on the machine works.
 
-The same status, with the cause selectable for copying, is in Settings → About → Hooks.
+The same status, with the cause selectable for copying, is in Settings → About → Hooks. Installed as a plugin, the session-start script also skips a node that does not start when it removes the app's duplicate hooks, and writes which one and why to `~/.claude/control-bar/problems.log` (`skipped node that does not start: …`).
 
 **Codex sessions don't show up?** Codex reviews hooks it has not seen before and asks you to
 trust them, once, on its own screen — and it runs none of them until you do. So: start `codex`

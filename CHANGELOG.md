@@ -7,6 +7,19 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.17.2] - 2026-09-15
+
+### Fixed
+- **The plugin takes over the hooks even when the first node it finds is broken.** Installed as
+  a plugin, the app's own copy of the hooks in `settings.json` has to go on session start, or both
+  sets fire on every event. The script that removes them ran with the first file named `node` that
+  existed — and a Homebrew node left linked against a library an upgrade had removed died before
+  reading a line, so the duplicates stayed, session after session. It now runs with the first node
+  that actually starts, the same rule the app follows since 0.17.0. The ones it skips are written
+  to `problems.log` once, with the reason (`Library not loaded: libllhttp.9.3.dylib`) and, for
+  Homebrew's, the usual fix (`brew upgrade node`). The search is bounded, so a node that hangs
+  cannot eat the time the build needs in the same session-start hook. Based on #19.
+
 ## [0.17.1] - 2026-09-15
 
 ### Fixed

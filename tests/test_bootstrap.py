@@ -6,8 +6,10 @@
 
 import json
 import os
+import shutil
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks"))
@@ -236,6 +238,158 @@ class BuildTimeout(unittest.TestCase):
             self.fail("внук сборки пережил таймаут")
         except ProcessLookupError:
             pass
+
+
+class WorkingNode(unittest.TestCase):
+    """Исполняемый файл ≠ node, который запускается.
+
+    После того как Homebrew обновил llhttp, /opt/homebrew/bin/node оставался исполняемым и падал
+    в dyld, не выполнив ни строки. find_node() отдавал его первым, uninstall.js --hooks-only не
+    запускался, дубли хуков приложения оставались в settings.json, и lease не забирался. Идея
+    пробного запуска — из PR #19.
+    """
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self._saved_root = bootstrap.ROOT
+        bootstrap.ROOT = self._dir.name
+
+    def tearDown(self):
+        bootstrap.ROOT = self._saved_root
+        self._dir.cleanup()
+
+    def _exe(self, name, body):
+        path = os.path.join(self._dir.name, name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write("#!/bin/sh\n" + body)
+        os.chmod(path, 0o755)
+        return path
+
+    def _log(self):
+        try:
+            with open(os.path.join(bootstrap.ROOT, "problems.log")) as fh:
+                return fh.read()
+        except OSError:
+            return ""
+
+    def test_пропускает_исполняемый_но_не_запускающийся(self):
+        broken = self._exe("broken-node", "exit 1\n")
+        good = self._exe("good-node", "exit 0\n")
+        self.assertEqual(bootstrap.first_working_node([broken, good]), good)
+        self.assertIn(broken + ": exited with code 1", self._log())
+
+    def test_все_битые_дают_none(self):
+        broken = self._exe("broken-node", "exit 1\n")
+        self.assertIsNone(bootstrap.first_working_node([broken]))
+
+    def test_отсутствующий_кандидат_не_пробуется_и_не_логируется(self):
+        good = self._exe("good-node", "exit 0\n")
+        missing = os.path.join(self._dir.name, "no-such-node")
+        self.assertEqual(bootstrap.first_working_node([missing, good]), good)
+        self.assertEqual(self._log(), "")
+
+    def test_причина_из_dyld_и_подсказка_brew_попадают_в_лог(self):
+        """Ровно то, что пишет dyld мёртвому node; путь — ссылка в Cellar, как у Homebrew."""
+        target = self._exe("Cellar/node/25.8.2/bin/node", (
+            'echo "dyld[13151]: Library not loaded: /opt/homebrew/opt/llhttp/lib/libllhttp.9.3.dylib" >&2\n'
+            'echo "  Referenced from: <E834CE0F> /opt/homebrew/Cellar/node/25.8.2/bin/node" >&2\n'
+            "kill -ABRT $$\n"))
+        link = os.path.join(self._dir.name, "bin", "node")
+        os.makedirs(os.path.dirname(link))
+        os.symlink(target, link)
+        good = self._exe("good-node", "exit 0\n")
+
+        self.assertEqual(bootstrap.first_working_node([link, good]), good)
+        log = self._log()
+        self.assertIn(link + ": Library not loaded: libllhttp.9.3.dylib", log)
+        self.assertIn("usually fixed by: brew upgrade node", log)
+
+    def test_не_homebrew_node_без_подсказки_brew(self):
+        broken = self._exe("broken-node", "echo 'TypeError: nope' >&2\nexit 1\n")
+        bootstrap.first_working_node([broken])
+        self.assertIn(broken + ": TypeError: nope\n", self._log())
+        self.assertNotIn("brew", self._log())
+
+    def test_тот_же_битый_node_на_каждом_старте_не_раздувает_лог(self):
+        first_broken = self._exe("broken-a", "exit 1\n")
+        second_broken = self._exe("broken-b", "exit 2\n")
+        bootstrap.first_working_node([first_broken, second_broken])
+        once = self._log()
+        bootstrap.first_working_node([first_broken, second_broken])
+        self.assertEqual(self._log(), once)
+
+    def test_зависший_кандидат_бросается_по_таймауту(self):
+        hung = self._exe("hung-node", "exec sleep 30\n")
+        good = self._exe("good-node", "exit 0\n")
+        started = time.monotonic()
+        self.assertEqual(bootstrap.first_working_node([hung, good], timeout=0.5, budget=10), good)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertIn(hung + ": did not answer within 0.5s", self._log())
+
+    def test_бюджет_поиска_конечен(self):
+        """Два зависших подряд съедают бюджет — третий, живой, уже не пробуется: сборке в том же
+        хуке нужен её запас, а lease подождёт следующей сессии."""
+        first = self._exe("hung-a", "exec sleep 30\n")
+        second = self._exe("hung-b", "exec sleep 30\n")
+        good = self._exe("good-node", "exit 0\n")
+        started = time.monotonic()
+        self.assertIsNone(bootstrap.first_working_node([first, second, good], timeout=5, budget=0.6))
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertIn("stopped looking after 0.6s", self._log())
+
+    def test_поиск_uninstall_и_сборка_помещаются_в_таймаут_хука(self):
+        """Все трое идут в одном SessionStart под одним потолком из hooks.json."""
+        import inspect
+        hooks = json.load(open(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks", "hooks.json")))
+        outer = hooks["hooks"]["SessionStart"][0]["hooks"][0]["timeout"]
+        build = inspect.signature(bootstrap.build).parameters["timeout"].default
+        self.assertLess(bootstrap.NODE_SEARCH_BUDGET + bootstrap.UNINSTALL_TIMEOUT + build, outer)
+
+    @unittest.skipUnless(shutil.which("node"), "нужен настоящий node, чтобы запустить uninstall.js")
+    def test_lease_забирается_мимо_мёртвого_первого_node(self):
+        """Весь путь целиком: мёртвый node первым в списке, настоящий uninstall.js --hooks-only,
+        песочница вместо HOME. Дубли хуков приложения уходят, owner.json — за плагином."""
+        home = self._dir.name
+        root = os.path.join(home, ".claude", "control-bar")
+        settings = os.path.join(home, ".claude", "settings.json")
+        os.makedirs(root)
+        ours = (f"PATH=\"/opt/homebrew/bin:/usr/local/bin${{PATH:+:$PATH}}\" node "
+                f"'{os.path.join(root, 'update.js')}' pre")
+        with open(settings, "w") as fh:
+            json.dump(settings_with([ours, "echo keep-me"]), fh)
+        dead = self._exe("dead-node", "kill -ABRT $$\n")
+
+        names = ("ROOT", "SETTINGS", "OWNER", "PLUGIN_ROOT", "node_candidates")
+        saved = {name: getattr(bootstrap, name) for name in names}
+        saved_home = os.environ.get("HOME")
+        bootstrap.ROOT, bootstrap.SETTINGS = root, settings
+        bootstrap.OWNER = os.path.join(root, "owner.json")
+        bootstrap.PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        bootstrap.node_candidates = lambda: [dead, shutil.which("node")]
+        os.environ["HOME"] = home  # uninstall.js finds settings.json through os.homedir()
+        try:
+            bootstrap.claim_hooks()
+            present = bootstrap.app_hooks_present()
+        finally:
+            for name, value in saved.items():
+                setattr(bootstrap, name, value)
+            if saved_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = saved_home
+
+        self.assertFalse(present, "дубли хуков приложения остались в settings.json")
+        with open(os.path.join(root, "owner.json")) as fh:
+            self.assertEqual(json.load(fh)["channel"], "plugin")
+        with open(settings) as fh:
+            self.assertIn("echo keep-me", fh.read())
+
+    def test_первыми_пробуются_каталоги_из_PATH_хуков(self):
+        """Команды хуков ставят их в начало PATH — их node и будет запущен в хуках."""
+        self.assertEqual(bootstrap.node_candidates()[:2],
+                         ["/opt/homebrew/bin/node", "/usr/local/bin/node"])
 
 
 if __name__ == "__main__":
