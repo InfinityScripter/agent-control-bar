@@ -7,6 +7,17 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.17.1] - 2026-09-15
+
+### Fixed
+- **The app builds again with Swift 6.0.** The General page of Settings wrote its two longest
+  footers as chains of string literals joined with `+` inside `Text(...)`, and Swift 6.0.3 — the
+  compiler in the Command Line Tools for Xcode 16.2 — gave up on that page: *unable to type-check
+  this expression in reasonable time*. `build.sh` failed, and the plugin, which compiles the app on
+  your Mac when there is no copy in Applications, failed the same way on every session start with
+  nothing to show for it but a line in `problems.log`. The text is unchanged. CI now type-checks
+  the app with Swift 6.0 too: its own compiler is newer and had accepted the page all along.
+
 ## [0.17.0] - 2026-09-15
 
 ### Fixed
