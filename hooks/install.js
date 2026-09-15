@@ -195,8 +195,8 @@ const resolveSettingsPath = () => {
 // new one, never a half of either.
 const writeSettingsAtomic = (text, readAt) => {
   if (stamp() !== readAt) {
-    console.log("settings.json changed while we were working on it — leaving it alone.");
-    console.log("Nothing was written. The next launch will try again against the current file.");
+    console.error("settings.json changed while we were working on it — leaving it alone.");
+    console.error("Nothing was written. The app tries again shortly, against the current file.");
     return false;
   }
   let mode;
@@ -219,7 +219,7 @@ if (fs.existsSync(settingsPath)) {
     // with no sessions in it and no explanation anywhere. Rewriting the file from {} instead
     // would be far worse: it would take the user's own settings with it.
     console.error("settings.json does not parse — hooks not installed:", err.message);
-    console.error("Fix " + settingsPath + " and the next launch will install them.");
+    console.error("Fix " + settingsPath + " and the app installs them on its next try.");
     process.exit(1);
   }
   const bak = settingsPath + ".bak-control-bar";
@@ -279,6 +279,11 @@ if (next === before) {
   console.log("Installed control-bar hooks into", settingsPath);
   console.log("Scripts:", updateDest, "and", lifecycleDest);
   console.log("Backup (first run only):", settingsPath + ".bak-control-bar");
+} else {
+  // Nothing was installed, so this run is not a success. The app takes the exit status as the
+  // verdict — it retries on a failure and shows why — and a 0 here told it everything was in
+  // place while the hooks were missing. 75 is EX_TEMPFAIL: the file was busy, not broken.
+  process.exitCode = 75;
 }
 
 // claude-status-bar — the project this was forked from — installs its own hooks under

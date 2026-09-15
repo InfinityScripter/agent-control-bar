@@ -11,6 +11,9 @@ struct PanelSessionsTab: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // Above the list, not below it: it explains what the list is missing, and an empty tab
+            // is short enough that a line under "No session running" reads as an afterthought.
+            if let hooks = store.snapshot.hooks { hooksBlock(hooks) }
             if store.snapshot.sessions.isEmpty {
                 emptyState
             } else {
@@ -46,6 +49,34 @@ struct PanelSessionsTab: View {
         .help("Codex runs only the hooks it has been told to trust, and this app's are still "
               + "untrusted — so it writes down no session at all. Start Codex in a terminal and "
               + "approve them once, and its sessions appear here.")
+    }
+
+    /// This app's own hooks are not installed, or the node they call does not start — the cause
+    /// in full, because the fix happens somewhere this app cannot see (`brew upgrade node`, a
+    /// repaired settings.json), and a button to look again once it has. The app also looks again
+    /// by itself every few minutes; the button is for the person who just ran the fix.
+    private func hooksBlock(_ hooks: PanelHooks) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            PanelNotice(glyph: "exclamationmark.triangle", text: hooks.title)
+            Text(hooks.reason)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 4)
+            if let hint = hooks.hint {
+                Text(hint)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 4)
+            }
+            Button(hooks.checking ? "Checking…" : "Try again") { store.checkHooks() }
+                .buttonStyle(PanelButtonStyle())
+                .disabled(hooks.checking)
+                .help("Installs the hooks again and checks that the node they call starts")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.bottom, 10)
     }
 
     @ViewBuilder

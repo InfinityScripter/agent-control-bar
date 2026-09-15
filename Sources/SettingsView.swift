@@ -254,6 +254,43 @@ private struct SoundsSettings: View {
 private struct AboutSettings: View {
     @ObservedObject var store: SettingsStore
 
+    /// A typed constant rather than a `+` chain inside Text(): every `+` there multiplies the
+    /// overloads the type checker weighs (String, LocalizedStringKey, Text), and a chain of five
+    /// in a Form body is past what Swift 6.0 will solve at all.
+    private static let hooksFooter: String = "Sessions reach this app only through hooks \u{2014} "
+        + "small Node scripts Claude Code and Codex run on every prompt and tool call. This copy "
+        + "writes them into ~/.claude/settings.json and ~/.codex/hooks.json each time it starts, "
+        + "then checks that the node they call actually starts. While either fails, it tries again "
+        + "every few minutes and says why here and in the panel."
+
+    /// The cause is selectable here and not in the panel: this is a normal window, and a path or a
+    /// library name is exactly what someone wants to paste into a terminal or a bug report.
+    @ViewBuilder
+    private var hooksStatus: some View {
+        if !store.hooksManaged {
+            Label("Not managed by this copy \u{2014} it is not in Applications",
+                  systemImage: "minus.circle")
+                .foregroundStyle(.secondary)
+        } else if let problem = store.hooksHealth.problem {
+            Label(problem.title, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text(problem.reason)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+            if let hint = problem.hint {
+                Text(hint)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        } else if store.hooksHealth == .ok {
+            Label("Installed", systemImage: "checkmark.circle")
+                .foregroundStyle(.secondary)
+        } else {
+            Label("Checking\u{2026}", systemImage: "clock")
+                .foregroundStyle(.secondary)
+        }
+    }
+
     var body: some View {
         Form {
             Section {
@@ -261,6 +298,19 @@ private struct AboutSettings: View {
                 Button("What\u{2019}s new in \(store.version)") { store.showWhatsNew() }
             } header: {
                 Text(store.appName)
+            }
+            Section {
+                hooksStatus
+                if store.hooksManaged {
+                    Button(store.hooksChecking ? "Checking\u{2026}" : "Install hooks again") {
+                        store.checkHooks()
+                    }
+                    .disabled(store.hooksChecking)
+                }
+            } header: {
+                Text("Hooks")
+            } footer: {
+                Text(Self.hooksFooter)
             }
             Section {
                 if let newer = store.newerVersion {

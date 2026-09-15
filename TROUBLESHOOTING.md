@@ -35,6 +35,13 @@ a clock or a percentage) is usually enough. Cmd-drag rearranges menu bar items.
 - Confirm it's running with `pgrep -x ClaudeControlBar`: a number means it's running (it may just be hidden), no output means it exited because no Claude session is active.
 - If first-launch setup never took, run the installer manually: `node "/Applications/Claude Control Bar.app/Contents/Resources/install.js"`. Installed as a plugin, the app lives in `~/Applications` instead.
 
+**Sessions tab says *Session hooks aren't installed* or *Session hooks can't run*?** Every row comes from files the hooks write, so the app checks them itself: at launch, every few minutes while something is wrong, and when you open the panel on an empty Sessions tab. The line under the warning is the cause, taken from whatever failed:
+- `… does not start: Library not loaded: libllhttp.9.3.dylib` (or another library): Homebrew upgraded something node was built against. `brew upgrade node` fixes it; the warning clears on the app's next look, or press **Try again**.
+- `install.js failed: settings.json does not parse …`: fix the JSON in `~/.claude/settings.json`.
+- *can't run* means the hooks are written, but the node their commands call is broken. They put `/opt/homebrew/bin` and `/usr/local/bin` first on their PATH, so a broken node there fails every hook even when another node on the machine works.
+
+The same status, with the cause selectable for copying, is in Settings → About → Hooks.
+
 **Codex sessions don't show up?** Codex reviews hooks it has not seen before and asks you to
 trust them, once, on its own screen — and it runs none of them until you do. So: start `codex`
 in a terminal, confirm the hooks named `.claude/control-bar/update.js` and `lifecycle.js`, and

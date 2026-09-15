@@ -115,6 +115,8 @@ final class PanelStore: ObservableObject {
     }
 
     func checkMCPNow() { controller?.refreshMCP() }
+    /// Stays open: the block the button sits in is what reports the answer.
+    func checkHooks() { controller?.checkHooks() }
     func openSettingsJSON() { controller?.closePanel(); controller?.openSettingsJSON() }
     func openSettings() { controller?.closePanel(); controller?.openSettingsWindow() }
     func openNotificationSettings() { controller?.closePanel(); controller?.openNotificationSettings() }
@@ -226,6 +228,11 @@ struct PanelSnapshot: Equatable {
     /// without the second half the line would appear beside Codex rows that are plainly there —
     /// which happens while one hook of the set is still waiting to be approved.
     var codexHooksBlocked = false
+    /// What is wrong with this app's own hooks, when something is. Every row in the Sessions tab
+    /// comes out of files those hooks write, so without this a failed install looked exactly like
+    /// a machine with nothing running on it. Shown whether or not rows are there: a node that broke
+    /// mid-session leaves the rows it already had, frozen, and they need the explanation too.
+    var hooks: PanelHooks?
     /// One entry per provider that has figures. A provider with none is absent rather than
     /// drawn empty: an empty bar reads as "you have not used it", which is not what "no data"
     /// means.
@@ -277,6 +284,15 @@ struct PanelSession: Equatable, Identifiable {
         [branch, status, elapsed].compactMap { $0 }.filter { !$0.isEmpty }
             .joined(separator: " · ")
     }
+}
+
+/// The hooks warning: what is wrong, why, and what usually fixes it.
+struct PanelHooks: Equatable {
+    let title: String
+    let reason: String
+    let hint: String?
+    /// A look is running right now, so the button says so instead of offering another.
+    let checking: Bool
 }
 
 /// What the row cannot carry, shown when the row is expanded: the same blocks the hover card drew.
@@ -400,6 +416,7 @@ extension PanelSnapshot {
         // Codex writes down a session at all, its hooks are running, whatever else is unapproved.
         codexHooksBlocked = c.codexHooksUntrusted > 0
             && !c.sessions.values.contains { $0.provider == "codex" }
+        hooks = c.panelHooks()
         (limitGroups, limitsNote) = c.panelLimitGroups(now: now)
         limitsLayout = c.limitsLayout
         limitsProvider = c.limitsProvider
