@@ -7,6 +7,34 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.17.0] - 2026-09-15
+
+### Fixed
+- **A hook install that failed now says so, and tries again.** Every session row comes out of files
+  the hooks write, and the app installed them by starting `node` and never looking at how it
+  ended. When Homebrew's node broke — an upgrade that left it linked against a library the Cellar
+  no longer ships — it died before reading a line of the installer, the hooks were never written,
+  and the Sessions tab said *No session running* for as long as the app stayed up, with sessions
+  plainly running. The installer's exit is read now. A node that does not start is skipped for the
+  next one that does (nvm, Volta, asdf, your shell's), and a failure is tried again — after 30
+  seconds, then every few minutes, and whenever the panel opens on an empty Sessions tab — so a
+  repaired node is picked up without restarting the app.
+- **Hooks that are installed but cannot run are called out.** Their commands put
+  `/opt/homebrew/bin` and `/usr/local/bin` first on PATH, so a broken node there fails every hook
+  even when the installer succeeded with another one. The app checks that node too.
+- **An install that wrote nothing no longer passes for one that worked.** When `settings.json`
+  changed between the installer's read and its write, it left the file alone — rightly — and
+  exited 0, so the app believed the hooks were in place until its next launch. It exits 75 now,
+  and the app tries again.
+
+### Added
+- **The Sessions tab says what is wrong with the hooks.** *Session hooks aren't installed* or
+  *Session hooks can't run*, with the cause underneath — `Library not loaded:
+  libllhttp.9.3.dylib`, a `settings.json` that does not parse — the usual fix when there is one
+  (`brew upgrade node`), and **Try again**.
+- **Settings → About → Hooks.** Whether the hooks are installed, the cause when they are not —
+  selectable, for a terminal or a bug report — and a button that installs them again.
+
 ## [0.16.1] - 2026-09-14
 
 ### Fixed

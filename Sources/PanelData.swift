@@ -70,6 +70,17 @@ extension StatusController {
         }
     }
 
+    // MARK: hooks
+
+    /// The warning for the Sessions tab, or nil while the hooks are fine or not yet looked at.
+    /// Nothing is said during the first look after launch: it takes a fraction of a second, and a
+    /// "checking" line that flashes on every launch would teach the reader to ignore the block.
+    func panelHooks() -> PanelHooks? {
+        guard let problem = hookHealth.problem else { return nil }
+        return PanelHooks(title: problem.title, reason: problem.reason, hint: problem.hint,
+                          checking: hookCheckRunning)
+    }
+
     // MARK: limits
 
     /// Each provider's windows, grouped, plus one line saying how old the figures are — or, when

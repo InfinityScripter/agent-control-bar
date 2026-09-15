@@ -61,6 +61,12 @@ extension StatusController {
         if Date().timeIntervalSince1970 - (limits?.ts ?? 0) > 600 { pollLimits() }
         checkForUpdate()          // refreshes the update cache for next open (gated to once a day)
         refreshNotificationAuthStatus()
+        // The verdict from launch is not good enough for the one person looking at an empty tab,
+        // or at a hooks warning they may have just fixed from a terminal.
+        if HookInstall.checkDueOnOpen(problem: hookHealth.problem != nil, noSessions: sessions.isEmpty,
+                                      sinceLastCheck: Date().timeIntervalSince1970 - hookCheckedAt) {
+            checkHooks()
+        }
         // Branches otherwise refresh only on hook events, so re-read on open (one tiny file read
         // per session) to catch a checkout made while a session sat idle. On open, not on every
         // 2.5 Hz refresh: this walks directories toward the filesystem root.
@@ -229,6 +235,11 @@ extension StatusController {
             }
         }
         lines.append("Sessions (\(snapshot.sessions.count))")
+        if let hooks = snapshot.hooks {
+            lines.append("  [hooks] \(hooks.title) — \(hooks.reason)"
+                + (hooks.hint.map { " — \($0)" } ?? "")
+                + (hooks.checking ? "  [checking]" : ""))
+        }
         for session in snapshot.sessions {
             // session.subtitle, not a second spelling of it: the row draws that exact sentence, and
             // the point of this dump is to say what the row says.

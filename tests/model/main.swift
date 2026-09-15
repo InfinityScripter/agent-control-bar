@@ -1560,6 +1560,138 @@ check(claudeServer.plugin.isEmpty, "and carries no plugin id")
 check(mcpGroups.map(\.key) == ["user", "claude.ai", "plugin", "project", "codex", "codex-plugin"],
       "the group table carries both agents: \(mcpGroups.map(\.key))")
 
+// MARK: hook install
+
+// The failure these cover, as it happened: install.js was handed to the first executable node on
+// the list, that node died in dyld, nothing read how it ended, and the Sessions tab stayed empty for
+// hours with sessions running. Real child processes where the behaviour lives in the spawn.
+let hookDir = NSTemporaryDirectory() + "ccb-hooks-\(ProcessInfo.processInfo.processIdentifier)/"
+try? FileManager.default.createDirectory(atPath: hookDir, withIntermediateDirectories: true)
+func hookScript(_ name: String, _ body: String) -> String {
+    let file = hookDir + name
+    FileManager.default.createFile(atPath: file, contents: Data(("#!/bin/sh\n" + body + "\n").utf8),
+                                   attributes: [.posixPermissions: 0o755])
+    return file
+}
+
+let hookSpoke = HookInstall.run("/bin/sh", ["-c", "echo out; echo err >&2; exit 3"], timeout: 10)
+check(hookSpoke.end == .exited(3), "a child's exit code is read, not ignored: \(hookSpoke.end)")
+check(hookSpoke.output.contains("out") && hookSpoke.output.contains("err"),
+      "and both of its streams are kept: \(hookSpoke.output)")
+check(HookInstall.run("/usr/bin/true", [], timeout: 10).succeeded, "exit 0 is a success")
+
+// What dyld does to a node whose library Homebrew upgraded away: one line on stderr, then abort.
+let hookDeadNode = hookScript("dead-node", """
+    echo "dyld[13151]: Library not loaded: /opt/homebrew/opt/llhttp/lib/libllhttp.9.3.dylib" >&2
+    echo "  Referenced from: <E834CE0F> /opt/homebrew/Cellar/node/25.8.2/bin/node" >&2
+    kill -ABRT $$
+    """)
+let hookCrash = HookInstall.run(hookDeadNode, ["-e", ""], timeout: 10)
+check(hookCrash.end == .signalled(SIGABRT), "a node killed at launch reads as a crash: \(hookCrash.end)")
+check(!hookCrash.succeeded, "which is the one thing the old spawn could not tell from a finished install")
+check(HookInstall.describe(hookCrash) == "Library not loaded: libllhttp.9.3.dylib",
+      "and what it said is cut down to the library: \(HookInstall.describe(hookCrash))")
+
+let hookHungAt = Date()
+let hookHung = HookInstall.run("/bin/sleep", ["30"], timeout: 0.5)
+check(hookHung.end == .timedOut, "a child that never ends is given up on: \(hookHung.end)")
+check(Date().timeIntervalSince(hookHungAt) < 5, "promptly, not when it finally finishes")
+if case .notStarted = HookInstall.run(hookDir + "no-such-node", [], timeout: 5).end {
+    check(true, "a path that is not there reads as not started, not as a crash")
+} else {
+    check(false, "a path that is not there reads as not started, not as a crash")
+}
+
+let hookLiveNode = hookScript("live-node", "exit 0")
+let hookPick = HookInstall.firstRunning([hookDir + "missing-node", hookDeadNode, hookDeadNode, hookLiveNode])
+check(hookPick.node == hookLiveNode,
+      "the first node that starts is picked, past a dead one: \(hookPick.node ?? "nil")")
+check(hookPick.rejected.map(\.path) == [hookDeadNode],
+      "the dead one is remembered once, the missing one skipped: \(hookPick.rejected.map(\.path))")
+
+check(HookInstall.hookRuntime(isExecutable: { _ in true }) == "/opt/homebrew/bin/node",
+      "the hooks call Homebrew's node first, as their PATH prefix says")
+check(HookInstall.hookRuntime(isExecutable: { $0 == "/usr/local/bin/node" }) == "/usr/local/bin/node",
+      "then /usr/local's")
+check(HookInstall.hookRuntime(isExecutable: { _ in false }) == nil,
+      "and with neither, the session's own PATH decides — which is not guessed at")
+
+let hookDead = HookInstall.Rejected(path: "/opt/homebrew/bin/node", run: hookCrash)
+let hookBrew: (String) -> Bool = { $0.hasPrefix("/opt/homebrew/") }
+let hookInstalled = HookInstall.Run(end: .exited(0), output: "Hooks already current in settings.json")
+
+// The machine this was written for: Homebrew's node dead, nvm's fine. The install succeeds with
+// nvm's, and every hook still fails, because their PATH puts Homebrew's first.
+let hookVerdict = HookInstall.health(rejected: [hookDead], installer: hookInstalled,
+                                     runtime: "/opt/homebrew/bin/node", isHomebrew: hookBrew)
+check(hookVerdict == .cannotRun(
+        reason: "They call /opt/homebrew/bin/node, and it does not start: "
+            + "Library not loaded: libllhttp.9.3.dylib",
+        hint: "Usually fixed by: brew upgrade node"),
+      "an install that worked with another node still says the hooks cannot run: \(hookVerdict)")
+check(HookInstall.health(rejected: [hookDead], installer: hookInstalled,
+                         runtime: "/usr/local/bin/node", isHomebrew: hookBrew) == .ok,
+      "a dead node the hooks never call is not their problem")
+check(HookInstall.health(rejected: [], installer: hookInstalled, runtime: "/opt/homebrew/bin/node") == .ok,
+      "a clean install with a live node is fine")
+
+let hookNoNode = HookInstall.health(rejected: [hookDead], installer: nil, runtime: nil, isHomebrew: hookBrew)
+check(hookNoNode.problem?.title == "Session hooks aren't installed",
+      "no node that starts means nothing was installed")
+check(hookNoNode.problem?.reason
+        == "/opt/homebrew/bin/node does not start: Library not loaded: libllhttp.9.3.dylib",
+      "and it names the node and the reason: \(hookNoNode.problem?.reason ?? "nil")")
+check(HookInstall.health(rejected: [], installer: nil, runtime: nil).problem?.hint?
+        .contains("brew install node") == true,
+      "a Mac with no node at all is told to install one")
+
+let hookBusy = HookInstall.Run(end: .exited(75), output:
+    "settings.json changed while we were working on it — leaving it alone.\nNothing was written.")
+check(HookInstall.health(rejected: [], installer: hookBusy, runtime: nil) == .notInstalled(
+        reason: "install.js failed: settings.json changed while we were working on it — leaving it alone.",
+        hint: nil),
+      "an installer that exits non-zero is a failure, with its first line as the reason")
+check(HookHealth.ok.problem == nil && HookHealth.unchecked.problem == nil,
+      "fine and not-yet-looked-at both show nothing")
+
+let hookThrown = """
+    node:internal/modules/cjs/loader:1228
+      throw err;
+      ^
+
+    Error: Cannot find module '/Applications/Claude Control Bar.app/Contents/Resources/install.js'
+        at Module._resolveFilename (node:internal/modules/cjs/loader:1225:15)
+    """
+check(HookInstall.summary(of: hookThrown)?.hasPrefix("Error: Cannot find module") == true,
+      "an uncaught exception is summed up by its error line, not its caret")
+check(HookInstall.summary(of: "\n   \n") == nil, "silence sums up to nothing")
+check(HookInstall.describe(HookInstall.Run(end: .signalled(9), output: "")) == "crashed (signal 9)",
+      "a crash that said nothing still says it crashed")
+
+let hookCellarNode = hookDir + "Cellar/node/26.0.0/bin/node"
+try? FileManager.default.createDirectory(atPath: (hookCellarNode as NSString).deletingLastPathComponent,
+                                         withIntermediateDirectories: true)
+FileManager.default.createFile(atPath: hookCellarNode, contents: Data())
+try? FileManager.default.createDirectory(atPath: hookDir + "bin", withIntermediateDirectories: true)
+try? FileManager.default.createSymbolicLink(atPath: hookDir + "bin/node",
+                                            withDestinationPath: "../Cellar/node/26.0.0/bin/node")
+check(HookInstall.isHomebrew(hookDir + "bin/node"), "a node linked into a Cellar is Homebrew's")
+check(!HookInstall.isHomebrew(hookLiveNode), "and one that is not is not offered brew's fix")
+
+check(HookInstall.retryDelay(afterFailures: 1) < HookInstall.retryDelay(afterFailures: 2)
+        && HookInstall.retryDelay(afterFailures: 2) < HookInstall.retryDelay(afterFailures: 3),
+      "retries spread out")
+check(HookInstall.retryDelay(afterFailures: 50) == 300, "and settle at five minutes")
+check(HookInstall.checkDueOnOpen(problem: true, noSessions: false, sinceLastCheck: 11),
+      "a warning on screen is looked at again when the panel opens")
+check(!HookInstall.checkDueOnOpen(problem: true, noSessions: false, sinceLastCheck: 3),
+      "but not on a second open straight after")
+check(HookInstall.checkDueOnOpen(problem: false, noSessions: true, sinceLastCheck: 121),
+      "an empty Sessions tab is worth a look")
+check(!HookInstall.checkDueOnOpen(problem: false, noSessions: false, sinceLastCheck: 10_000),
+      "a tab with sessions in it is proof enough")
+try? FileManager.default.removeItem(atPath: hookDir)
+
 
 print(failures == 0 ? "\nall model checks passed" : "\n\(failures) failed")
 exit(failures == 0 ? 0 : 1)

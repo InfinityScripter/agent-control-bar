@@ -392,7 +392,7 @@ final class StatusController: NSObject, NSWindowDelegate {
         }
         enforceSingleInstance()
         retirePredecessors()
-        ensureHooksInstalled()
+        checkHooks()
         checkForUpdate()
         announceVersionChange()
         warmCanBuildFromSource()
@@ -486,42 +486,124 @@ final class StatusController: NSObject, NSWindowDelegate {
         }
     }
 
-    // Re-runs on first install AND on every version change, so upgrades pick up hook
-    // changes and retire old artifacts.
-    func ensureHooksInstalled() {
-        // Run on every launch, not once per version. The installer is idempotent — it compares
-        // and writes nothing when nothing differs — and it is also what reclaims the hooks when
-        // the plugin channel goes away, which is not a version change at all. A version gate got
-        // this exactly backwards: remove the hooks by hand (or have another install remove them)
-        // and the app would never put them back, because UserDefaults still said "done".
-        guard isInstalledCopy,
-              let installer = Bundle.main.path(forResource: "install", ofType: "js") else { return }
-        DispatchQueue.global().async {
-            guard let node = Self.locateNode() else {
-                NSLog("ClaudeControlBar: could not find node; hooks not installed (will retry next launch)")
-                return
+    // MARK: hooks
+
+    /// What the last look at the hooks found. The panel and Settings both show it, and neither
+    /// asks for it: the look runs on its own schedule (see checkHooks) and republishes when done.
+    var hookHealth: HookHealth = .unchecked
+    var hookCheckRunning = false
+    var hookCheckedAt: Double = 0
+    /// Failed looks in a row, which is what spaces the retries out.
+    var hookFailures = 0
+    var hookRetryTimer: Timer?
+
+    /// Installs the hooks, then makes sure the node they call starts. At launch, again on a timer
+    /// while that keeps failing, when the panel opens on an empty Sessions tab, and whenever
+    /// someone presses the button in the panel or in Settings.
+    ///
+    /// The installer runs on every launch, not once per version. It is idempotent — it compares
+    /// and writes nothing when nothing differs — and it is also what reclaims the hooks when the
+    /// plugin channel goes away, which is not a version change at all. A version gate got this
+    /// exactly backwards: remove the hooks by hand (or have another install remove them) and the
+    /// app would never put them back, because UserDefaults still said "done".
+    ///
+    /// And a failure is a state, not a log line. This used to spawn the installer with `try?`,
+    /// never read how it ended, and leave the next attempt to the next launch. A node that died in
+    /// dyld therefore looked like a finished install, and the Sessions tab said "No session
+    /// running" for as long as the app stayed up — hours — with sessions plainly running.
+    func checkHooks() {
+        // A build run out of build/ keeps its hands off settings.json, as before; it simply has no
+        // verdict to show, and Settings says why.
+        guard isInstalledCopy, !hookCheckRunning else { return }
+        guard let installer = Bundle.main.path(forResource: "install", ofType: "js") else {
+            // No retry timer: a file missing from the bundle does not come back by itself.
+            hooksWillChange()
+            hookHealth = .notInstalled(reason: "This copy of the app has no install.js inside it.",
+                                       hint: "Reinstall the app.")
+            hookCheckedAt = Date().timeIntervalSince1970
+            refreshCounts()
+            return
+        }
+        hooksWillChange()
+        hookCheckRunning = true
+        hookRetryTimer?.invalidate()
+        hookRetryTimer = nil
+        refreshCounts()
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let (health, trace) = Self.installHooks(installer: installer)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                // Logged when something is wrong and when the verdict moves — a launch that finds
+                // everything in place, or an empty-tab look that changes nothing, stays quiet.
+                if health.problem != nil || health != self.hookHealth {
+                    NSLog("ClaudeControlBar: hooks — \(trace)")
+                }
+                self.hooksWillChange()
+                self.hookCheckRunning = false
+                self.hookCheckedAt = Date().timeIntervalSince1970
+                self.hookHealth = health
+                if health.problem != nil {
+                    self.hookFailures += 1
+                    self.scheduleHookRetry()
+                } else {
+                    self.hookFailures = 0
+                }
+                self.refreshCounts()
             }
-            let task = Process()
-            task.executableURL = URL(fileURLWithPath: node)
-            task.arguments = [installer]
-            try? task.run()
-            task.waitUntilExit()
         }
     }
 
-    // `/bin/zsh -lc node` saw only the login PATH, missing nvm/fnm set in .zshrc.
-    static func locateNode() -> String? {
-        let fm = FileManager.default
+    /// Looks again after a failure, sooner at first and then every few minutes — so a node
+    /// repaired by `brew upgrade` is noticed without a restart, which is the step that never
+    /// happened when "next launch" was the only retry.
+    func scheduleHookRetry() {
+        hookRetryTimer?.invalidate()
+        let timer = Timer(timeInterval: HookInstall.retryDelay(afterFailures: hookFailures),
+                          repeats: false) { [weak self] _ in self?.checkHooks() }
+        // .common, so it fires while the panel is open — which is when someone is watching for it.
+        RunLoop.main.add(timer, forMode: .common)
+        hookRetryTimer = timer
+    }
+
+    /// The Settings page reads the hook state at draw time and has to be told before it moves;
+    /// see SettingsStore.bind for why the announcement comes first.
+    func hooksWillChange() {
+        if settingsWindow != nil { settingsStore.objectWillChange.send() }
+    }
+
+    /// One look, off the main thread: find a node that starts, run the installer with it, and
+    /// check the node the hook commands will call. Returns the verdict and a line for the log.
+    static func installHooks(installer: String) -> (HookHealth, String) {
+        var (node, rejected) = HookInstall.firstRunning(nodeCandidates())
+        if node == nil, let found = shellNode(), !rejected.contains(where: { $0.path == found }) {
+            let second = HookInstall.firstRunning([found])
+            node = second.node
+            rejected += second.rejected
+        }
+        let dead = rejected.map { "\($0.path) does not start (\(HookInstall.describe($0.run)))" }
+        guard let node else {
+            let health = HookInstall.health(rejected: rejected, installer: nil, runtime: nil)
+            return (health, (["no working node"] + dead).joined(separator: "; "))
+        }
+        let run = HookInstall.run(node, [installer], timeout: 60)
+        let health = HookInstall.health(rejected: rejected, installer: run,
+                                        runtime: HookInstall.hookRuntime())
+        let said = run.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trace = dead + ["install.js via \(node): \(run.end)" + (said.isEmpty ? "" : " — " + said)]
+        return (health, trace.joined(separator: "; "))
+    }
+
+    /// Where a node may be, in the order they are tried. The two the hook commands put in front of
+    /// PATH come first, so whether the hooks' own node starts is always part of the answer.
+    static func nodeCandidates() -> [String] {
         let home = NSHomeDirectory()
-        var candidates = [
-            "/opt/homebrew/bin/node",
-            "/usr/local/bin/node",
+        var candidates = HookInstall.hookPathPrefix.map { $0 + "/node" } + [
             "/usr/bin/node",
             "\(home)/.volta/bin/node",
             "\(home)/.asdf/shims/node",
         ]
         let nvmDir = "\(home)/.nvm/versions/node"
-        if let versions = try? fm.contentsOfDirectory(atPath: nvmDir) {
+        if let versions = try? FileManager.default.contentsOfDirectory(atPath: nvmDir) {
             // Component-wise, not alphabetical: as text "v9.11.2" sorts above "v20.19.0", so the
             // newest-first intent picked the oldest Node on the machine — and the installer this
             // runs uses APIs a Node that old does not have.
@@ -529,22 +611,21 @@ final class StatusController: NSObject, NSWindowDelegate {
                 candidates.append("\(nvmDir)/\(v)/bin/node")
             }
         }
-        for path in candidates where fm.isExecutableFile(atPath: path) { return path }
+        return candidates
+    }
 
+    /// The last resort, asked of the user's own shell. `/bin/zsh -lc node` saw only the login PATH,
+    /// missing nvm/fnm set in .zshrc — hence the interactive spelling first.
+    static func shellNode() -> String? {
         for args in [["-ilc", "command -v node"], ["-lc", "command -v node"]] {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            p.arguments = args
-            let pipe = Pipe()
-            p.standardOutput = pipe
-            p.standardError = FileHandle.nullDevice
-            guard (try? p.run()) != nil else { continue }
-            p.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let path = (String(data: data, encoding: .utf8) ?? "")
-                .split(separator: "\n").last.map(String.init)?
-                .trimmingCharacters(in: .whitespaces) ?? ""
-            if !path.isEmpty, fm.isExecutableFile(atPath: path) { return path }
+            let result = HookInstall.run("/bin/zsh", args, timeout: 10)
+            // The last line naming a node, not simply the last line: stdout and stderr share one
+            // file here, and a .zshrc or .zlogout can print after the answer.
+            let path = result.output.split(whereSeparator: \.isNewline)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .last { $0.hasPrefix("/") && $0.hasSuffix("/node")
+                    && FileManager.default.isExecutableFile(atPath: $0) }
+            if let path { return path }
         }
         return nil
     }

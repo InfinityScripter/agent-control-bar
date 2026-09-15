@@ -379,29 +379,41 @@ test("a settings file changed underneath us is left alone rather than clobbered"
   // The installer reads settings.json, then checks the fingerprint again before renaming. A
   // writer that lands in between must not be overwritten — its change would vanish silently and
   // the .bak, taken once at first install, could not bring it back.
-  const out = execFileSync(
-    process.execPath,
-    ["-e", [
-      `require("node:child_process").execSync = () => { throw new Error("pgrep: no match"); };`,
-      `require("node:child_process").spawn = () => ({ unref() {} });`,
-      // Sneak a write in between the installer's read and its rename. The first-run backup
-      // write is the hook: it happens after the parse and before the fingerprint re-check.
-      `const fs = require("node:fs");`,
-      `const real = fs.writeFileSync;`,
-      `fs.writeFileSync = (p, ...rest) => {`,
-      `  real(p, ...rest);`,
-      `  if (String(p).endsWith(".bak-control-bar")) {`,
-      `    real(process.env.SETTINGS, JSON.stringify({ theirs: true }, null, 2) + "\\n");`,
-      `  }`,
-      `};`,
-      `require(process.env.SCRIPT_PATH);`,
-    ].join("\n"), installerPath],
-    { env: { ...process.env, HOME: home, SCRIPT_PATH: installerPath, SETTINGS: settingsPath(home) },
-      input: "{}", stdio: "pipe" }
-  ).toString();
-  assert.match(out, /changed while we were working on it/);
+  //
+  // Nor is it a success. Nothing got installed, and the app takes the exit status as its verdict:
+  // this path used to exit 0, which told the app the hooks were in place, so nothing tried again
+  // until the next launch.
+  let failure;
+  try {
+    execFileSync(
+      process.execPath,
+      ["-e", [
+        `require("node:child_process").execSync = () => { throw new Error("pgrep: no match"); };`,
+        `require("node:child_process").spawn = () => ({ unref() {} });`,
+        // Sneak a write in between the installer's read and its rename. The first-run backup
+        // write is the hook: it happens after the parse and before the fingerprint re-check.
+        `const fs = require("node:fs");`,
+        `const real = fs.writeFileSync;`,
+        `fs.writeFileSync = (p, ...rest) => {`,
+        `  real(p, ...rest);`,
+        `  if (String(p).endsWith(".bak-control-bar")) {`,
+        `    real(process.env.SETTINGS, JSON.stringify({ theirs: true }, null, 2) + "\\n");`,
+        `  }`,
+        `};`,
+        `require(process.env.SCRIPT_PATH);`,
+      ].join("\n"), installerPath],
+      { env: { ...process.env, HOME: home, SCRIPT_PATH: installerPath, SETTINGS: settingsPath(home) },
+        input: "{}", stdio: "pipe" }
+    );
+  } catch (error) {
+    failure = error;
+  }
+  assert.equal(failure?.status, 75, "an install that wrote nothing exited as if it had worked");
+  assert.match(failure.stderr.toString(), /changed while we were working on it/);
   assert.deepEqual(JSON.parse(fs.readFileSync(settingsPath(home), "utf8")), { theirs: true });
   assert.equal(fs.readdirSync(path.join(home, ".claude")).filter((f) => f.endsWith(".tmp")).length, 0);
+  assert.equal(fs.existsSync(path.join(home, ".claude", "control-bar", "owner.json")), false,
+    "an install that did not happen still claimed the lease");
 });
 
 // A row click resolves the app to focus from TERM_PROGRAM — but Cursor, Windsurf and VS Code

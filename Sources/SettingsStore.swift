@@ -105,6 +105,18 @@ final class SettingsStore: ObservableObject {
     func showWhatsNew() { controller?.showWhatsNewCurrent() }
     func showLatestNotes() { controller?.showWhatsNewLatest() }
     func checkForUpdate() { controller?.checkForUpdate(force: true) }
+
+    // MARK: Hooks
+    //
+    // Read at draw time like the rest of this page; the controller announces a change before it
+    // makes one (hooksWillChange), because a look finishes while the window may be open.
+
+    /// False for a build run outside Applications, which never touches settings.json — so the
+    /// page says that, rather than showing a status nobody checked.
+    var hooksManaged: Bool { controller?.isInstalledCopy ?? false }
+    var hooksHealth: HookHealth { controller?.hookHealth ?? .unchecked }
+    var hooksChecking: Bool { controller?.hookCheckRunning ?? false }
+    func checkHooks() { controller?.checkHooks() }
 }
 
 // Applying a setting: the value, the UserDefaults key it is remembered under, and the side effect
