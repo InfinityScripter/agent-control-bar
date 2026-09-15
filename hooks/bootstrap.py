@@ -10,6 +10,7 @@ an upgrade.
 import json
 import os
 import plistlib
+import re
 import subprocess
 import sys
 import time
@@ -127,8 +128,16 @@ def version_key(name):
     return parts
 
 
-def find_node():
-    """Node wherever it actually lives — the same places the app looks (see locateNode()).
+# The node search runs inside SessionStart, before uninstall.js and the build, and the three
+# share one hook timeout (hooks.json: 300 s). So the search has a budget of its own, each probe
+# is clamped to what is left of it, and a test keeps the three ceilings added up under the hook's.
+NODE_PROBE_TIMEOUT = 3
+NODE_SEARCH_BUDGET = 15
+UNINSTALL_TIMEOUT = 20
+
+
+def node_candidates():
+    """Where a node may be, in the order the app tries them (nodeCandidates() in main.swift).
 
     Three fixed paths cover a system or Homebrew install and nothing else. On a machine using
     nvm, volta or asdf there was no node here at all, so the app channel's hooks could not be
@@ -146,8 +155,91 @@ def find_node():
         versions = sorted(os.listdir(nvm), key=version_key, reverse=True)
     except OSError:
         versions = []
-    candidates += [os.path.join(nvm, v, "bin", "node") for v in versions]
-    return next((p for p in candidates if os.access(p, os.X_OK)), None)
+    return candidates + [os.path.join(nvm, v, "bin", "node") for v in versions]
+
+
+def probe_summary(output):
+    """The one line of a failed start worth keeping — mirror of HookInstall.summary(of:) in
+    Sources/Model/HookInstall.swift, so problems.log and the app's hooks warning name the same
+    cause: dyld's reason with the library's own name, a JavaScript error, or the first line."""
+    lines = [line.strip() for line in (output or "").splitlines() if line.strip()]
+    text = ""
+    dyld = next((line for line in lines if line.startswith("dyld") and ":" in line), None)
+    if dyld:
+        text = dyld.split(":", 1)[1].strip()
+        marker = "Library not loaded: "
+        if text.startswith(marker):
+            text = marker + os.path.basename(text[len(marker):])
+    else:
+        text = next((line for line in lines if re.match(r"[A-Za-z]*Error\b", line)),
+                    lines[0] if lines else "")
+    return text if len(text) <= 180 else text[:179] + "…"
+
+
+def node_runs(path, timeout=NODE_PROBE_TIMEOUT):
+    """(True, "") when `path` is a node that starts, else (False, why).
+
+    Executable is not the question. After Homebrew upgraded llhttp under it, a real Mac's
+    /opt/homebrew/bin/node was an executable file that died in dyld before running a line, and
+    uninstall.js never ran. The reason is kept, not discarded: for a plugin user problems.log is
+    the one place to read it.
+    """
+    try:
+        result = subprocess.run([path, "-e", ""], stdout=subprocess.DEVNULL,
+                                stderr=subprocess.PIPE, text=True, errors="replace",
+                                timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False, f"did not answer within {timeout:.1f}s"
+    except OSError as err:
+        return False, err.strerror or str(err)
+    if result.returncode == 0:
+        return True, ""
+    said = probe_summary(result.stderr)
+    if said:
+        return False, said
+    if result.returncode < 0:
+        return False, f"crashed (signal {-result.returncode})"
+    return False, f"exited with code {result.returncode}"
+
+
+def is_homebrew(path):
+    """Told by where the link resolves, like HookInstall.isHomebrew: /usr/local/bin holds
+    Homebrew's node on Intel, and nodejs.org's installer puts its own there too."""
+    return "/Cellar/" in os.path.realpath(path)
+
+
+def first_working_node(candidates, timeout=NODE_PROBE_TIMEOUT, budget=NODE_SEARCH_BUDGET):
+    """The first candidate that starts, or None. The ones that did not go to problems.log as a
+    single entry, so the same broken node found on every session start is written down once
+    rather than a line per terminal opened (log_problem_once compares the file's tail).
+
+    Past `budget` the search stops: a candidate that hangs costs a probe timeout, and the build
+    later in the same hook must keep its share. The lease then simply waits for the next session.
+    """
+    deadline = time.monotonic() + budget
+    skipped, tried, found = [], set(), None
+    for path in candidates:
+        if path in tried or not os.access(path, os.X_OK):
+            continue
+        tried.add(path)
+        left = deadline - time.monotonic()
+        if left <= 0:
+            skipped.append(f"  (stopped looking after {budget:g}s; the rest were not tried)\n")
+            break
+        ok, why = node_runs(path, timeout=min(timeout, left))
+        if ok:
+            found = path
+            break
+        hint = " — usually fixed by: brew upgrade node" if is_homebrew(path) else ""
+        skipped.append(f"  {path}: {why}{hint}\n")
+    if skipped:
+        log_problem_once("skipped node that does not start:\n" + "".join(skipped))
+    return found
+
+
+def find_node():
+    """A node that starts, wherever it lives — not merely the first executable file named node."""
+    return first_working_node(node_candidates())
 
 
 def shell_quoted(value):
@@ -206,7 +298,8 @@ def clear_app_channel_hooks():
     # load spike would kill the whole SessionStart hook with a traceback Claude Code surfaces
     # as a hook error — for a cleanup whose failure the lease logic already tolerates.
     try:
-        subprocess.run([node, uninstall, "--hooks-only"], capture_output=True, timeout=20)
+        subprocess.run([node, uninstall, "--hooks-only"], capture_output=True,
+                       timeout=UNINSTALL_TIMEOUT)
     except (subprocess.TimeoutExpired, OSError):
         pass
     return not app_hooks_present()
