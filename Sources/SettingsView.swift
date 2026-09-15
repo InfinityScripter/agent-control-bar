@@ -88,6 +88,26 @@ private struct GeneralSettings: View {
             + "happens. PRIVACY.md has the exact bytes."
     }
 
+    // The two footers below are typed constants rather than `+` chains written inside Text().
+    // In there every `+` between literals multiplies the overloads the type checker has to weigh,
+    // and this body — a nine-part chain and a three-part one — was past what Swift 6.0.3 will
+    // solve at all: "unable to type-check this expression in reasonable time". CI's newer compiler
+    // took it, which is how it shipped; the plugin compiles the app on the user's own Mac, with
+    // whatever Swift that Mac's Command Line Tools carry, and there `build.sh` simply failed.
+    private static let limitsFooter: String = "Polls Anthropic's usage endpoint with your own Claude "
+        + "OAuth token, which is sent to api.anthropic.com and nowhere else. With this off, the 5h "
+        + "and 7d bars only move when a status line happens to write them."
+
+    // Worth spelling out, because "reads your Codex sessions" sounds like more than it is: the
+    // numbers are already on disk, and nothing but them is looked at.
+    private static let codexFooter: String = "Codex records how much of your OpenAI limits is gone "
+        + "into its own session file as it works. This reads the newest one for those two figures — "
+        + "no token, no request, nothing sent anywhere. A figure older than the window it measures "
+        + "is dropped rather than shown, so the row disappears until Codex runs again.\n\n"
+        + "The second switch lists Codex's own MCP servers in the MCP tab, with the same switches. "
+        + "Asking Codex for the tool names starts each configured server, the way Codex itself "
+        + "does — so with a slow server, turn this off and the servers stop being asked."
+
     var body: some View {
         Form {
             Section("Menu bar") {
@@ -101,9 +121,7 @@ private struct GeneralSettings: View {
             } header: {
                 Text("Limits")
             } footer: {
-                Text("Polls Anthropic's usage endpoint with your own Claude OAuth token, which is "
-                     + "sent to api.anthropic.com and nowhere else. With this off, the 5h and 7d "
-                     + "bars only move when a status line happens to write them.")
+                Text(Self.limitsFooter)
             }
             Section {
                 Toggle("Codex limits", isOn: store.codexLimits)
@@ -111,17 +129,7 @@ private struct GeneralSettings: View {
             } header: {
                 Text("Codex")
             } footer: {
-                // Worth spelling out, because "reads your Codex sessions" sounds like more than it
-                // is: the numbers are already on disk, and nothing but them is looked at.
-                Text("Codex records how much of your OpenAI limits is gone into its own session "
-                     + "file as it works. This reads the newest one for those two figures — no "
-                     + "token, no request, nothing sent anywhere. A figure older than the window "
-                     + "it measures is dropped rather than shown, so the row disappears until "
-                     + "Codex runs again.\n\n"
-                     + "The second switch lists Codex's own MCP servers in the MCP tab, with the "
-                     + "same switches. Asking Codex for the tool names starts each configured "
-                     + "server, the way Codex itself does — so with a slow server, turn this off "
-                     + "and the servers stop being asked.")
+                Text(Self.codexFooter)
             }
             if store.analyticsConfigured {
                 Section {
@@ -254,9 +262,9 @@ private struct SoundsSettings: View {
 private struct AboutSettings: View {
     @ObservedObject var store: SettingsStore
 
-    /// A typed constant rather than a `+` chain inside Text(): every `+` there multiplies the
-    /// overloads the type checker weighs (String, LocalizedStringKey, Text), and a chain of five
-    /// in a Form body is past what Swift 6.0 will solve at all.
+    /// A typed constant rather than a `+` chain inside Text(), for the reason spelled out above
+    /// GeneralSettings' footers: that shape took the General page past what Swift 6.0.3 would
+    /// type-check at all.
     private static let hooksFooter: String = "Sessions reach this app only through hooks \u{2014} "
         + "small Node scripts Claude Code and Codex run on every prompt and tool call. This copy "
         + "writes them into ~/.claude/settings.json and ~/.codex/hooks.json each time it starts, "

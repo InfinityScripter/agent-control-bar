@@ -31,6 +31,38 @@ jobs:
       - name: Shell scripts pass shellcheck
         run: shellcheck -x build.sh hooks/statusline.sh
 
+  # The job below builds with macos-latest's compiler, and that is newer than the Swift in many a
+  # Mac's Command Line Tools — while the plugin compiles the app on the user's own Mac, with
+  # whatever Swift is there. Swift 6.0.3 gave up type-checking a Settings page the runner's
+  # compiler accepted ("unable to type-check this expression in reasonable time"), so build.sh
+  # failed for those users and nothing here noticed. A type-check is enough to catch that class:
+  # the solver gives up long before code generation. Fails loudly when the image stops shipping
+  # a Swift 6.0 Xcode — then pin an older image or retire the job, but do not let it pass empty.
+  swift-6-0:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Type-check the app with Swift 6.0
+        run: |
+          developer=""
+          for app in /Applications/Xcode_16.2*.app /Applications/Xcode_16.1*.app /Applications/Xcode_16.0*.app /Applications/Xcode_16*.app; do
+            [ -d "$app" ] || continue
+            if DEVELOPER_DIR="$app/Contents/Developer" xcrun swiftc --version 2>&1 | grep -q "Swift version 6\.0"; then
+              developer="$app/Contents/Developer"
+              break
+            fi
+          done
+          if [ -z "$developer" ]; then
+            echo "No Xcode with Swift 6.0 on this runner image. Installed:"
+            ls -d /Applications/Xcode*.app
+            exit 1
+          fi
+          DEVELOPER_DIR="$developer" xcrun swiftc --version
+          DEVELOPER_DIR="$developer" xcrun swiftc -typecheck -target arm64-apple-macos13.0 \
+            Sources/*.swift Sources/Model/*.swift -framework Cocoa -framework SwiftUI
+
   check:
     runs-on: macos-latest
     timeout-minutes: 30
