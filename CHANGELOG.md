@@ -7,6 +7,60 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.18.0] - 2026-09-16
+
+### Added
+- **Exact terminal focus: a click lands on the session's own window and tab.** Until now a click
+  on a CLI session raised its terminal application, and macOS then showed whichever window was
+  used last — with a handful of tabs open, reliably not the one clicked. The hooks now record the
+  session's controlling tty, and the click matches it against Terminal's or iTerm's own tab `tty`:
+  the only property that identifies a tab from outside, since a title is the shell's to rewrite
+  and a window index moves the moment anything is dragged. Ghostty, WezTerm, kitty and Warp
+  publish nothing equivalent, so they keep the old behaviour rather than getting a worse guess.
+  Off by default, and the only setting in this app that is — it buys its behaviour with a macOS
+  Automation permission, and a permission nobody asked for is a worse default than a click that
+  lands one tab off. The app explains what is being asked for before macOS asks; saying no
+  switches the setting back off and clears the decision, because macOS remembers a refusal and
+  never asks again, which would otherwise leave a toggle that is on and a click that does nothing.
+  Ported from claude-status-bar's `v0.4.0-beta.1`, which this fork had never carried.
+
+### Fixed
+- **A Codex session kept spinning long after its turn had ended.** The session engine read every
+  transcript with Claude Code's parser, which searches for `"type":"user"` and `"type":"assistant"`
+  records. A Codex rollout carries neither — measured across every rollout file on the machine
+  this was found on, zero lines of each — because its format is an envelope:
+  `{"timestamp":…,"type":"event_msg","payload":{…}}`. So all three of the engine's recovery nets
+  were dead for Codex and only the flat timeouts were left: a session whose `Stop` hook never
+  arrived kept its spinner, its live turn timer and its share of the menu bar animation for the
+  full fifteen minutes, and a permission wait that had already been answered sat amber for thirty.
+  Codex states the boundaries of every turn in the rollout itself, which is the better signal of
+  the two — written by the agent rather than inferred — and those are now what end a turn:
+  `task_complete` and `turn_aborted`, plus the `turn_*` spelling Codex's newer tracing subsystem
+  uses for the same events, so a rename cannot quietly restore the fifteen-minute spinner. The
+  hooks also record the `turn_id` Codex stamps on every turn-scoped event, which is what matches a
+  boundary to a session exactly instead of comparing a whole-second hook clock against a
+  millisecond rollout one.
+- **A Codex worker thread could speak for the session it belonged to.** Codex's own hook schemas
+  define `agent_id` on `PreToolUse`, `PostToolUse`, `PermissionRequest` and `UserPromptSubmit` —
+  and on neither `Stop` nor `Interrupt`, the two events a turn ends with. The rollout, which is
+  the net that has actually been seen to work, was read only while a session had no state file
+  yet, leaving every later event with nothing but that undefined field to go on. It is now re-read
+  whenever an event names a different rollout than the state file records. `SessionEnd` gets the
+  same check: it does not rewrite state, it deletes the file, so a worker's end took a live
+  session's row off the panel mid-turn.
+
+### Changed
+- **The Codex hook-trust notice is something you can act on.** Approving means saying yes to eight
+  shell commands pointing at a script in your home folder, and the old surface was one line with
+  the explanation hidden in a tooltip — which has to be hovered to be found, and which held not a
+  footnote but the two things a reader needs. The panel now says how many hooks are waiting (the
+  same number Codex's own review screen shows, so the two can be checked against each other), what
+  to do about it, and offers to open `~/.codex/hooks.json` so the real entries can be read before
+  deciding. A *Check again* button asks Codex on the spot instead of waiting for the app to notice
+  by itself. Settings → Codex keeps the standing answer afterwards, where *not asked yet* is
+  deliberately distinct from *all approved*. Both READMEs gain a table of what those hooks write,
+  read, run and send — including the commands they run, which the hooks file itself does not show.
+
 ## [0.17.2] - 2026-09-15
 
 ### Fixed
