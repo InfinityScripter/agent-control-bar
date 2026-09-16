@@ -442,6 +442,138 @@ check(SessionFormat.surfaceTag(Session(json: ["provider": "codex", "surface": ""
 check(SessionFormat.surfaceTag(Session(json: ["entrypoint": "claude-desktop"], id: "x")) == "APP",
       "Claude's own badges are untouched")
 
+// MARK: the tty a click focuses — normalised, and refused when it is not a device name
+
+check(SessionFormat.ttyDevice("/dev/ttys004") == "/dev/ttys004", "the hook's own spelling passes")
+check(SessionFormat.ttyDevice("ttys004") == "/dev/ttys004",
+      "and the bare name `ps` prints is completed, because the dictionaries compare full paths")
+check(SessionFormat.ttyDevice("") == nil, "no terminal, nothing to focus")
+// The string is interpolated into `if tty of t is "…"` in an AppleScript. A quote closes the
+// literal and leaves the rest as script, and the state file is one a user is invited to read and
+// can edit — so "our own hook wrote it" is not a guarantee about its contents.
+check(SessionFormat.ttyDevice("/dev/ttys0\" then do shell script \"x\" end if --") == nil,
+      "a quote does not reach the script")
+check(SessionFormat.ttyDevice("/dev/pts/0") == nil, "and neither does a device that is not a tty")
+check(SessionFormat.ttyDevice("/etc/passwd") == nil, "nor a path that is not a device at all")
+check(SessionFormat.ttyDevice("/dev/tty" + String(repeating: "s", count: 200)) == nil,
+      "an absurd length is refused rather than pasted into a script")
+check(Session(json: ["tty": "/dev/ttys009"], id: "x").tty == "/dev/ttys009",
+      "and the field crosses from the state file")
+check(Session(json: [:], id: "x").tty.isEmpty, "a pre-upgrade file simply has none")
+
+// MARK: the Codex turn-over net — the rollout says when a turn ended, so a missing hook cannot
+// leave a row spinning
+
+// A rollout envelope, in the shape Codex actually writes: the record's own ISO stamp on the
+// outside, the event on the payload. Nothing here is a turn record by Claude's rules, which is
+// the whole reason this net had to be written — see the premise check below.
+func codexEvent(ts: Double, _ type: String, turn: String = "") -> String {
+    let iso = ISO8601DateFormatter()
+    iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let stamp = iso.string(from: Date(timeIntervalSince1970: ts))
+    let id = turn.isEmpty ? "" : ",\"turn_id\":\"\(turn)\""
+    return "{\"timestamp\":\"\(stamp)\",\"type\":\"event_msg\",\"payload\":{\"type\":\"\(type)\"\(id)}}"
+}
+func makeCodex(state: String, ts: Double, transcript: String, turn: String = "") -> Session {
+    Session(json: ["state": state, "ts": ts, "transcript": transcript, "pid": 1,
+                   "provider": "codex", "surface": "cli", "turn_id": turn], id: "c")
+}
+
+// The premise, pinned so it cannot quietly stop being true: Claude's parser finds NOTHING in a
+// rollout line. That is why every net in the engine was dead for Codex — the parser was asked the
+// question and honestly answered "no turn records here", for the whole life of the session.
+let rolloutLine = codexEvent(ts: nowTs, "task_complete", turn: "t1")
+check(!Transcript.isTurnRecord(rolloutLine) && Transcript.turnTimestamp(rolloutLine) == nil,
+      "a Codex rollout line is not a Claude turn record and never was")
+check(CodexRollout.boundary(rolloutLine)?.ends == true,
+      "and the Codex parser reads the same line as the end of a turn")
+
+let ended = writeTranscript("codex-ended.jsonl", lines: [
+    codexEvent(ts: nowTs - 90, "task_started", turn: "t1"),
+    codexEvent(ts: nowTs - 30, "task_complete", turn: "t1"),
+])
+check(engine.effectiveState(makeCodex(state: "thinking", ts: nowTs - 60, transcript: ended, turn: "t1"),
+                            now: nowTs) == "idle",
+      "a finished turn idles the row even though Stop never arrived")
+check(engine.effectiveState(makeCodex(state: "tool", ts: nowTs - 60, transcript: ended, turn: "t1"),
+                            now: nowTs) == "idle",
+      "the same for a tool state, whose cap is a whole hour away")
+// The net that was dead outright: a denied permission fires no hook at all in Codex, and the
+// amber dot outranks every other session in the menu bar while it is up.
+check(engine.effectiveState(makeCodex(state: "permission", ts: nowTs - 60, transcript: ended, turn: "t1"),
+                            now: nowTs) == "idle",
+      "and a permission wait whose turn has ended stops being a wait")
+
+// Still running: the newest boundary starts a turn, so the older completion says nothing about it.
+let running = writeTranscript("codex-running.jsonl", lines: [
+    codexEvent(ts: nowTs - 90, "task_complete", turn: "t1"),
+    codexEvent(ts: nowTs - 30, "task_started", turn: "t2"),
+])
+check(engine.effectiveState(makeCodex(state: "thinking", ts: nowTs - 20, transcript: running, turn: "t2"),
+                            now: nowTs) == "thinking",
+      "a turn that has started and not ended keeps working")
+
+// The id is what makes this exact. The previous turn's completion is newer than this turn's first
+// hook whenever a prompt is sent inside the same second the last one finished in — the hook stamps
+// whole seconds, the rollout milliseconds — so the clock alone would end a turn that just began.
+let otherTurn = writeTranscript("codex-other-turn.jsonl", lines: [
+    codexEvent(ts: nowTs - 10, "task_complete", turn: "t1"),
+])
+check(engine.effectiveState(makeCodex(state: "thinking", ts: nowTs - 20, transcript: otherTurn, turn: "t2"),
+                            now: nowTs) == "thinking",
+      "another turn's completion is not this turn's")
+
+// No id on either side — an older Codex. The clock is all there is, and it takes no margin: a
+// margin that swallowed the boundary would leave the row spinning for the whole cap.
+let noID = writeTranscript("codex-no-id.jsonl", lines: [codexEvent(ts: nowTs - 30, "task_complete")])
+check(engine.effectiveState(makeCodex(state: "thinking", ts: nowTs - 60, transcript: noID),
+                            now: nowTs) == "idle",
+      "without ids a completion newer than the state ends the turn")
+let noIDStale = writeTranscript("codex-no-id-stale.jsonl", lines: [codexEvent(ts: nowTs - 90, "task_complete")])
+check(engine.effectiveState(makeCodex(state: "thinking", ts: nowTs - 60, transcript: noIDStale),
+                            now: nowTs) == "thinking",
+      "and one older than the state does not")
+
+// Esc, an error, a replaced turn: all arrive as turn_aborted, and all end the turn.
+let aborted = writeTranscript("codex-aborted.jsonl", lines: [
+    codexEvent(ts: nowTs - 90, "task_started", turn: "t1"),
+    codexEvent(ts: nowTs - 30, "turn_aborted", turn: "t1"),
+])
+check(engine.effectiveState(makeCodex(state: "thinking", ts: nowTs - 60, transcript: aborted, turn: "t1"),
+                            now: nowTs) == "idle",
+      "an aborted turn is an ended turn")
+
+// Codex's newer tracing subsystem names the same boundary turn_started / turn_complete. Carrying
+// both spellings costs one set lookup; not carrying them costs every user a fifteen-minute
+// spinner on the release that renames them, silently.
+let renamed = writeTranscript("codex-renamed.jsonl", lines: [
+    codexEvent(ts: nowTs - 90, "turn_started", turn: "t1"),
+    codexEvent(ts: nowTs - 30, "turn_complete", turn: "t1"),
+])
+check(engine.effectiveState(makeCodex(state: "thinking", ts: nowTs - 60, transcript: renamed, turn: "t1"),
+                            now: nowTs) == "idle",
+      "the other spelling of the same boundary is read too")
+
+// A tool result that QUOTES a boundary name is not one — and a Codex session working on this
+// repository produces exactly that, because these names are written out in the sources.
+let quoted = writeTranscript("codex-quoted.jsonl", lines: [
+    codexEvent(ts: nowTs - 90, "task_started", turn: "t1"),
+    "{\"timestamp\":\"x\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call_output\","
+      + "\"output\":\"grep found \\\"task_complete\\\" in Sessions.swift\"}}",
+])
+check(engine.effectiveState(makeCodex(state: "thinking", ts: nowTs - 60, transcript: quoted, turn: "t1"),
+                            now: nowTs) == "thinking",
+      "a tool result naming a boundary does not end the turn")
+
+// Claude keeps its own parser: a rollout-shaped line must not reach into a Claude session, or the
+// two agents' formats start deciding each other's state.
+let codexShapedForClaude = writeTranscript("claude-with-codex-line.jsonl", lines: [
+    codexEvent(ts: nowTs - 10, "task_complete", turn: "t1"),
+])
+check(engine.effectiveState(makeSession(state: "thinking", ts: nowTs - 60,
+                                        transcript: codexShapedForClaude), now: nowTs) == "thinking",
+      "a Claude session is unmoved by a Codex boundary record")
+
 // The js→swift seam for Codex, written by the real update.js during the node suite.
 let codexSessionSeamPath = FileManager.default.currentDirectoryPath + "/build/seam/codex-session.json"
 if !FileManager.default.fileExists(atPath: codexSessionSeamPath) {
@@ -457,6 +589,9 @@ if !FileManager.default.fileExists(atPath: codexSessionSeamPath) {
           "the context Codex itself reported crosses over: \(parsed.pct.map(String.init) ?? "nil")")
     check(!parsed.assumed, "and is not marked a guess, because Codex states the window")
     check(parsed.model == "gpt-5.6-sol", "the model crosses over from the payload")
+    // Without this the turn-over net falls back to comparing a whole-second hook clock against a
+    // millisecond rollout one, which is the one case it can get wrong.
+    check(parsed.turnID == "turn-7", "the turn id the hook wrote survives the js→swift trip")
 } else {
     check(false, "codex seam fixture unreadable")
 }

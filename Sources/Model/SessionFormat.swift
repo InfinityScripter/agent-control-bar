@@ -43,6 +43,28 @@ enum SessionFormat {
         return URL(string: "codex://threads/" + id)
     }
 
+    // The session's terminal device as a string safe to name inside an AppleScript literal, or nil
+    // when there is nothing usable to name.
+    //
+    // Two jobs in one place. It normalises — the hooks write "/dev/ttys004", but a hand-written or
+    // older file may carry the bare "ttys004" that `ps` prints, and the scripting dictionaries
+    // compare against the full path. And it refuses anything that is not a device name: this string
+    // is interpolated into `if tty of t is "…"`, where one quote character would close the literal
+    // and leave whatever follows as script. The state file is a file a user is invited to look at
+    // and can edit, so "it came from our own hook" is not a guarantee about its contents.
+    //
+    // Letters, digits and slashes only, because that is what a tty device name is. No attempt to
+    // escape a richer string: refusing is the answer, and the caller has a perfectly good fallback.
+    static func ttyDevice(_ tty: String) -> String? {
+        guard !tty.isEmpty else { return nil }
+        let dev = tty.hasPrefix("/dev/") ? tty : "/dev/" + tty
+        guard dev.count <= 64,
+              dev.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "/") }),
+              dev.hasPrefix("/dev/tty")
+        else { return nil }
+        return dev
+    }
+
     // "claude-fable-5-1" -> "Fable 5.1", "claude-opus-4-8-20260101" -> "Opus 4.8". Unknown
     // shapes fall through untouched: a wrong pretty name is worse than a raw id.
     static func prettyModel(_ id: String) -> String {

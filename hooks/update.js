@@ -45,6 +45,31 @@ const CODEX_TOOL_LABELS = {
 
 const safeId = (s) => String(s || "").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 64) || "unknown";
 
+// The controlling terminal of this session, as "/dev/ttys004". It is what lets a click on a row
+// focus the exact window and tab rather than merely raising the terminal app: Terminal and iTerm
+// both expose a tab's tty to AppleScript, so the app matches on this string.
+//
+// Walked up the process tree rather than read once, because the hook is not always a direct child
+// of the process holding the tty, and a session with stdio piped reports no tty of its own. Six
+// levels is well past any real chain and stops a loop on a cycle. "" for anything with no terminal
+// at all — the desktop app, an IDE panel, a `codex exec` run — which is the honest answer there and
+// the one that makes the app fall back to its old behaviour.
+//
+// (lifecycle.js carries the same reader for SessionStart — keep the two in step, for the same
+// reason the rollout reader is duplicated there.)
+function ttyDev() {
+  try {
+    let pid = String(process.pid);
+    for (let i = 0; i < 6 && pid && pid !== "1"; i++) {
+      const [tty, ppid] = cp.execSync(`ps -o tty=,ppid= -p ${pid}`, { encoding: "utf8" })
+        .trim().split(/\s+/);
+      if (tty && tty.startsWith("tty")) return "/dev/" + tty;
+      pid = ppid;
+    }
+  } catch {}
+  return "";
+}
+
 // The first line of a Codex rollout is a session_meta record naming which surface the session
 // runs on and whether the thread is the user's or a worker's. Neither fact changes mid-session.
 // (lifecycle.js carries the same reader for SessionStart — keep the two in step. A shared third
@@ -324,20 +349,26 @@ process.stdin.on("end", () => {
   let prev = {};
   try { prev = JSON.parse(fs.readFileSync(statePath, "utf8")); } catch {}
 
-  // A Codex subagent is a thread of its own: own session id, own rollout, own hook events.
-  // Left alone, one prompt of the user's showed five running sessions — the parent plus four
-  // workers — and whichever worker fired last decided what the menu bar icon said.
+  // A Codex subagent is a thread of its own: own rollout, own hook events. Left alone, one prompt
+  // of the user's showed five running sessions — the parent plus four workers — and whichever
+  // worker fired last decided what the menu bar icon said.
   //
-  // Two nets, because only one of them is a fact. `agent_id`/`agent_type` on the payload is
-  // what Codex's hook documentation describes, and it is free to check — but it has NOT been
-  // seen on a live worker's own event here, only asserted. The rollout's `thread_source` has:
-  // `subagent` and `guardian_review` both appear in this machine's files. So the documented
-  // field is the cheap first look, and the rollout is what actually decides.
+  // Two nets, because only one of them is a fact. `agent_id`/`agent_type` on the payload is what
+  // Codex's hook documentation describes, and it is free to check — but it has NOT been seen on a
+  // live worker's own event here, only asserted, and Codex's own hook schemas do not even define
+  // it on Stop or Interrupt. The rollout's `thread_source` has been seen: `subagent` and
+  // `guardian_review` both appear in this machine's files. So the documented field is the cheap
+  // first look, and the rollout is what actually decides.
   //
-  // Read only when this session has no file yet: one open per session, not per event. A
-  // worker has no file by definition (it never gets one), which is the one case that pays the
-  // read every time — and a worker's life is a handful of events.
-  const codexMeta = codex && !prev.provider ? codexRollout(p.transcript_path || prev.transcript) : null;
+  // Which thread an event belongs to is settled by the rollout it names, not by how far into the
+  // session it arrives. This used to read the rollout only while the session had no file yet, and
+  // that left every later event with nothing but the undefined `agent_id` to go on — including
+  // the two events that end a turn. A file already written for THIS rollout needs no second look;
+  // an event naming a different one does, whether that is a worker thread or the same session
+  // after a compaction wrote it a new file.
+  const transcript = p.transcript_path || prev.transcript || "";
+  const settledThread = prev.provider === "codex" && transcript === prev.transcript;
+  const codexMeta = codex && !settledThread ? codexRollout(transcript) : null;
   if (codex && (p.agent_id || p.agent_type || (codexMeta && codexMeta.worker))) return;
 
   const project = p.cwd ? path.basename(p.cwd) : prev.project || "";
@@ -401,7 +432,8 @@ process.stdin.on("end", () => {
   // stable for the session's life, on both CLI and desktop). The app uses kill(pid,0) for liveness.
   // started:true — any update.js event (prompt/tool/permission/stop) is real activity, so the session
   // graduates from "merely opened" to visible in the dropdown. Clicking a conversation never fires here.
-  const transcript = p.transcript_path || prev.transcript || "";
+  //
+  // (`transcript` is settled above, where the thread this event belongs to is decided.)
   // Carried over from prev when this event's transcript is unreadable (a compaction rewrites the
   // file, and a read landing mid-rewrite finds no usage record) — a momentarily missing number
   // would otherwise blank the context bar and read as "context freed".
@@ -410,7 +442,10 @@ process.stdin.on("end", () => {
     || {
       pct: prev.pct, tokens: prev.tokens, window: prev.window, model: prev.model, assumed: prev.assumed,
     };
-  const out = { state, label, tool: p.tool_name || "", project, cwd, sessionId: p.session_id || "", transcript, entrypoint, term_program: termProgram, term_bundle: termBundle, pid: process.ppid, started: true, startedAt, ts, ...ctx,
+  // Carried over rather than re-measured: a session's controlling terminal does not change, and
+  // this is the one field here that costs a process to find out.
+  const tty = typeof prev.tty === "string" && prev.tty ? prev.tty : ttyDev();
+  const out = { state, label, tool: p.tool_name || "", project, cwd, sessionId: p.session_id || "", transcript, entrypoint, term_program: termProgram, term_bundle: termBundle, tty, pid: process.ppid, started: true, startedAt, ts, ...ctx,
     ...costFromStatusLine(sid, prev), dirty: dirtyCount(cwd, event, prev) };
   if (codex) {
     // The app keys its session map by "<provider>:<id>" and draws the pill from this field, so
@@ -425,6 +460,14 @@ process.stdin.on("end", () => {
     out.surface = typeof prev.surface === "string" ? prev.surface
                   : (codexMeta ? codexMeta.surface : "");
     out.model = p.model || prev.model || "";
+    // The turn this event belongs to. Codex stamps the same id on the rollout record that ENDS
+    // the turn, so the app can tell "this session's turn is over" from "some turn finished in
+    // this file" exactly, instead of comparing a whole-second hook clock against a millisecond
+    // one. Never carried over from prev, unlike the surface beside it: a new turn brings its own
+    // id, and inheriting the finished turn's would make the app read the previous turn's
+    // completion as this one's — the one way this net could end a turn that is still running. An
+    // event without an id leaves it empty, and the app falls back to comparing clocks.
+    out.turn_id = typeof p.turn_id === "string" ? p.turn_id : "";
   }
   try {
     fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });

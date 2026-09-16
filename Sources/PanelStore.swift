@@ -106,7 +106,8 @@ final class PanelStore: ObservableObject {
         controller?.closePanel()
         controller?.openSession(session.sessionID, threadURL: session.threadURL,
                                 entrypoint: session.entrypoint,
-                                termProgram: session.termProgram, termBundle: session.termBundle)
+                                termProgram: session.termProgram, termBundle: session.termBundle,
+                                tty: session.tty)
     }
 
     func openClaude() {
@@ -117,6 +118,11 @@ final class PanelStore: ObservableObject {
     func checkMCPNow() { controller?.refreshMCP() }
     /// Stays open: the block the button sits in is what reports the answer.
     func checkHooks() { controller?.checkHooks() }
+    /// Both stay open for the same reason — the block is the answer. Revealing the hooks file does
+    /// bring the Finder forward, which closes the panel by itself; nothing is closed here, so a
+    /// user who cancels out of the Finder still has the block in front of them.
+    func checkCodexHooks() { controller?.recheckCodexHooks() }
+    func revealCodexHooks() { controller?.revealCodexHooks() }
     func openSettingsJSON() { controller?.closePanel(); controller?.openSettingsJSON() }
     func openSettings() { controller?.closePanel(); controller?.openSettingsWindow() }
     func openNotificationSettings() { controller?.closePanel(); controller?.openNotificationSettings() }
@@ -228,6 +234,13 @@ struct PanelSnapshot: Equatable {
     /// without the second half the line would appear beside Codex rows that are plainly there —
     /// which happens while one hook of the set is still waiting to be approved.
     var codexHooksBlocked = false
+    /// How many of this app's hooks Codex is still skipping. Shown as a number because it is the
+    /// one thing that makes the block checkable against what Codex itself puts on screen: a review
+    /// screen listing eight and a panel saying eight are the same fact, and a panel that only said
+    /// "some" would leave the reader to wonder whether it meant theirs.
+    var codexHooksUntrusted = 0
+    /// True while the block's own "Check again" is running.
+    var codexHooksChecking = false
     /// What is wrong with this app's own hooks, when something is. Every row in the Sessions tab
     /// comes out of files those hooks write, so without this a failed install looked exactly like
     /// a machine with nothing running on it. Shown whether or not rows are there: a node that broke
@@ -269,6 +282,9 @@ struct PanelSession: Equatable, Identifiable {
     let entrypoint: String
     let termProgram: String
     let termBundle: String
+    /// The session's controlling terminal. Carried to the click so it can focus that exact window
+    /// and tab; "" for anything not running in one.
+    let tty: String
     /// Where a click should land when the session's own agent can open the conversation itself:
     /// only Codex's desktop app has such a link, and only for sessions it is the right place for.
     /// Nil means the ordinary rules apply — raise the terminal or the editor it runs in.
@@ -416,6 +432,8 @@ extension PanelSnapshot {
         // Codex writes down a session at all, its hooks are running, whatever else is unapproved.
         codexHooksBlocked = c.codexHooksUntrusted > 0
             && !c.sessions.values.contains { $0.provider == "codex" }
+        codexHooksUntrusted = c.codexHooksUntrusted
+        codexHooksChecking = c.codexHooksChecking
         hooks = c.panelHooks()
         (limitGroups, limitsNote) = c.panelLimitGroups(now: now)
         limitsLayout = c.limitsLayout

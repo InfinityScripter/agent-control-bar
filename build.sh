@@ -63,6 +63,7 @@ cat > "$STAGE_APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>NSAppleEventsUsageDescription</key><string>$APP_NAME focuses the terminal window and tab a session runs in when you click it in the panel. It is used for nothing else, and only while "Exact terminal focus" is switched on.</string>
 </dict>
 </plist>
 PLIST
@@ -109,15 +110,21 @@ fi
 # carry — codesign rejects them ("resource fork, Finder information, ... not allowed").
 xattr -cr "$STAGE_APP"
 
+# Signed into BOTH paths. The entitlement is what lets "Exact terminal focus" reach the macOS
+# Automation prompt at all under the hardened runtime (see app.entitlements) — and a local dev
+# build that silently could not do the one thing being worked on is how that gets debugged for an
+# afternoon in the wrong place.
+ENTITLEMENTS="app.entitlements"
+test -f "$ENTITLEMENTS"
 if [[ -n "$SIGN_ID" ]]; then
   echo "Signing with Developer ID: $SIGN_ID"
-  codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$STAGE_APP"
+  codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS" --sign "$SIGN_ID" "$STAGE_APP"
 else
   echo "No Developer ID certificate found — ad-hoc signing. The result is NOT notarized:"
   echo "  macOS will block the first launch. See README, section \"Gatekeeper\"."
   # || warns instead of swallowing: macOS kills an unsigned arm64 binary at launch, so a
   # silently failed ad-hoc codesign shipped a complete-looking .app that never starts.
-  codesign --force --sign - "$STAGE_APP" >/dev/null 2>&1 \
+  codesign --force --entitlements "$ENTITLEMENTS" --sign - "$STAGE_APP" >/dev/null 2>&1 \
     || echo "WARNING: ad-hoc codesign failed — Apple Silicon Macs will refuse to launch this build" >&2
 fi
 # The swap happens only past this line: binary present and executable, plist well-formed.

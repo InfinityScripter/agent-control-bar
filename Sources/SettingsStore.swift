@@ -49,12 +49,30 @@ final class SettingsStore: ObservableObject {
     var codexServers: Binding<Bool> {
         bind({ $0.codexServers }, { $0.applyCodexServers($1) }, or: true)
     }
+    var exactTerminalFocus: Binding<Bool> {
+        bind({ $0.exactTerminalFocus }, { $0.applyExactTerminalFocus($1) }, or: false)
+    }
     var limitsLayout: Binding<PanelLimitsLayout> {
         bind({ $0.limitsLayout }, { $0.applyLimitsLayout($1) }, or: .rows)
     }
     var analytics: Binding<Bool> {
         bind({ $0.analytics }, { $0.applyAnalytics($1) }, or: true)
     }
+    /// Whether this Mac has Codex at all. The hook-trust row below is about a program that is not
+    /// on most machines, and a settings window that explains a problem the reader cannot have is
+    /// worse than one that stays quiet.
+    var codexPresent: Bool {
+        controller.map { FileManager.default.fileExists(atPath: $0.codexHome) } ?? false
+    }
+    /// How many of this app's hooks Codex is still skipping, and whether an answer has been had at
+    /// all. Nil means Codex has not been asked yet — a fresh launch, or a Codex that did not
+    /// answer — and that is not the same as zero: saying "all approved" on the strength of never
+    /// having looked is the one wrong thing this row could say.
+    var codexHooksUntrusted: Int? { controller?.codexHooksAnswered == true
+        ? controller?.codexHooksUntrusted : nil }
+    func recheckCodexHooks() { controller?.recheckCodexHooks() }
+    func revealCodexHooks() { controller?.revealCodexHooks() }
+
     /// Whether the ping row is shown at all: a build with no receiver, or a machine whose
     /// environment forbids the ping, has nothing to switch. The footer says which.
     var analyticsConfigured: Bool { AnalyticsPing.configured }
@@ -178,6 +196,48 @@ extension StatusController {
         loadCodexLimits()
         refreshCounts()
     }
+
+    /// Exact terminal focus: on a click, jump to the window and tab a CLI session runs in rather
+    /// than raising its terminal app.
+    ///
+    /// Off by default and never turned on for anybody, because the first click after this costs a
+    /// macOS Automation prompt — and a permission prompt that arrives with no warning is the thing
+    /// this project spends the most care avoiding. The app explains itself first, in its own words,
+    /// so the system prompt arrives as the expected second step and not as an ambush; the
+    /// explanation is shown once, and again after a refusal, since a refusal means the first one
+    /// did not land.
+    ///
+    /// Deferred to the next turn of the run loop so the switch finishes moving before a modal takes
+    /// the window: a toggle frozen mid-animation behind an alert reads as a hang.
+    func applyExactTerminalFocus(_ on: Bool) {
+        exactTerminalFocus = on
+        UserDefaults.standard.set(on, forKey: "exactTerminalFocus")
+        hooksWillChange()
+        guard on, !UserDefaults.standard.bool(forKey: "exactFocusExplained") else { return }
+        UserDefaults.standard.set(true, forKey: "exactFocusExplained")
+        DispatchQueue.main.async { [weak self] in self?.explainExactTerminalFocus() }
+    }
+
+    /// The app's own words, before macOS's. It names what is being asked for, who it is asked of,
+    /// and where to take it back — the three things the system prompt does not say.
+    func explainExactTerminalFocus() {
+        let alert = NSAlert()
+        alert.messageText = "Exact terminal focus"
+        alert.informativeText = Self.exactFocusExplanation
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
+
+    /// Typed constant per the code conventions.
+    static let exactFocusExplanation: String =
+        "Clicking a session will now jump to the exact terminal window and tab it runs in, "
+        + "instead of just bringing the terminal to the front.\n\n"
+        + "To do that the app has to control your terminal, so macOS will ask you once, the next "
+        + "time you click a session. It asks about Terminal or iTerm only, and the app uses it for "
+        + "nothing but selecting the tab.\n\n"
+        + "You can take it back at any time in System Settings → Privacy & Security → Automation. "
+        + "Saying no also switches this off, so clicks go back to raising the terminal app."
 
     /// Nothing to re-read: the layout is only how the same figures are arranged, so the panel
     /// republishing is the whole effect.

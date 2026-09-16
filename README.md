@@ -6,9 +6,9 @@ https://github.com/user-attachments/assets/39381f85-c8ce-4d32-8baa-dce67d39ee7e
 
 A macOS menu bar app for **Claude Code**. It shows what Claude is doing and lets you manage sessions, MCP servers and usage limits from the menu bar.
 
-- **Sessions.** An animated icon while Claude works, a yellow dot when it waits for your permission, a turn timer and context-window usage for each session. Click a session to focus the terminal or editor it runs in.
+- **Sessions.** An animated icon while Claude works, a yellow dot when it waits for your permission, a turn timer and context-window usage for each session. Click a session to focus the terminal or editor it runs in — or the exact window and tab, with **Exact terminal focus** switched on.
 - **MCP.** Every server and every tool has its own switch. A muted tool disappears from Claude's context at the next session start.
-- **Codex too.** If you also run **OpenAI Codex**, its sessions appear in the same list as Claude's — same states, same turn timer, same context figure, same "needs you" dot — and its MCP servers in the same tab, with switches. Clicking a Codex row lands where the session can actually be read: a desktop session opens its own conversation through Codex's `codex://threads/` link, a terminal one raises its terminal. Codex asks you once to trust the hooks; until you do, its sessions stay invisible, and the panel says so rather than showing nothing. Everything is read from what Codex already writes on this machine.
+- **Codex too.** If you also run **OpenAI Codex**, its sessions appear in the same list as Claude's — same states, same turn timer, same context figure, same "needs you" dot — and its MCP servers in the same tab, with switches. Clicking a Codex row lands where the session can actually be read: a desktop session opens its own conversation through Codex's `codex://threads/` link, a terminal one raises its terminal. Codex asks you once to trust the hooks; until you do, its sessions stay invisible, and the panel says so rather than showing nothing — see [If you also use Codex](#if-you-also-use-codex) for what that approval covers. Everything is read from what Codex already writes on this machine.
 - **Limits.** 5-hour and 7-day usage as bars in the menu bar; the panel lists them with reset times, plus Fable's weekly window on plans that have one. If you also use **OpenAI Codex**, its own windows appear beside Claude's — read from the session file Codex writes itself, without a token or a request.
 
 ## Install
@@ -59,6 +59,27 @@ No icon?
 - A full menu bar is the most common cause: macOS parks items that don't fit behind the `›` overflow chevron, which from the outside looks exactly like "the app didn't start". Cmd-drag a few icons out of the bar to free a slot.
 - `pgrep -x ClaudeControlBar` in a terminal: a number means the app is running and only the icon is hidden; no output means it isn't — start a session, or see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
+### If you also use Codex
+
+Codex has a hook system of its own, and the app uses it the same way it uses Claude Code's. On install it merges eight entries into `~/.codex/hooks.json`; hooks you put there yourself are left untouched.
+
+**Codex runs no hook it has not been told to trust.** The next time you start Codex it shows a review screen for the entries it has not seen before. Approve them once and Codex sessions appear in the panel beside Claude's. Until then Codex writes down no session at all — the Sessions tab says exactly that, rather than looking like Codex isn't running.
+
+Approving means saying yes to eight shell commands, so here is what is behind them:
+
+| | |
+| --- | --- |
+| **Which scripts** | `~/.claude/control-bar/update.js` on six events (`UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop`, `Interrupt`) and `~/.claude/control-bar/lifecycle.js` on `SessionStart` and `SessionEnd`. Both are installed by this app, and they are the same two files Claude Code's hooks run. |
+| **What they write** | One small JSON file per session under `~/.claude/control-bar/codex/state.d/`, mode `0600`: state, project folder, branch, turn id, context figure, pid. Everything else they write is in that same folder — a marker file that throttles the app-is-running check, and `problems.log` when a write fails. Nothing outside `~/.claude/control-bar/`. |
+| **What they read** | The hook payload on stdin, plus the first line and the tail of that session's own rollout file — the first line names the surface, the tail carries the token count Codex reports. |
+| **What they run** | `git status --porcelain` in the session's folder for the "uncommitted" count, `pgrep` to see whether the menu bar app is up, and `open -g -b …` to start it if it isn't. |
+| **What they send** | Nothing. The hooks make no network request of any kind. |
+| **Dependencies** | None — Node's own `fs`/`os`/`path`/`child_process`, no npm packages. |
+
+The panel's own block has the two buttons for this moment: **What gets approved** opens `~/.codex/hooks.json` in the Finder so you can read the real entries before deciding, and **Check again** asks Codex whether it trusts them now — worth a click right after approving, instead of waiting for the app to notice by itself.
+
+Afterwards the standing answer lives in **Settings → Codex**: *Hooks approved*, *N hooks not approved*, or *not asked yet* when Codex has not been reachable to answer. To take the trust back, remove this app's entries from `~/.codex/hooks.json` — or run the uninstall script, which removes them for you — and Codex will ask again if they ever reappear.
+
 ## Usage
 
 Sessions, limits and MCP switches live in the panel under the menu bar icon, the settings in a window of their own; the app starts and quits on its own, as described above.
@@ -98,6 +119,7 @@ Server and tool switches apply to new sessions: Claude Code assembles the tool l
 - **Timer in menu bar** — the running turn's elapsed time next to the icon. The session rows always show theirs.
 - **Thinking words** — one of Claude Code's own spinner verbs ("Manifesting…") in place of "Thinking…".
 - **Limits via Anthropic API** — the usage poll behind the 5h/7d bars; off means the request never happens (see [PRIVACY.md](PRIVACY.md)).
+- **Exact terminal focus** — off by default, and the only switch here that costs a macOS permission. Off, a click on a session brings its terminal to the front and macOS lands you on whichever window you used last; on, it jumps to the exact window and tab that session runs in. macOS asks once, on the next click, and the app explains what it is asking for first. Terminal and iTerm only — no other terminal publishes which tab is which, so the rest keep the old behaviour. Saying no also switches it back off, and you can revoke it any time in Privacy & Security → Automation.
 - **Codex limits** — Codex's own 5-hour and weekly windows in the strip, read from the newest file in `~/.codex/sessions`. Nothing is sent anywhere, and a figure older than the window it measures is dropped rather than shown, so the row disappears until Codex runs again. When Codex has moved you onto its **reserve** model — what it does once the ordinary limit runs out — the window says `RESERVE` rather than its length, because from then on the figure measures the reserve pool and not the limit you were watching.
 - **Codex MCP servers** — Codex's own servers in the MCP tab, in their own groups, with the same switches. Asking Codex for the tool names starts each configured server the way Codex itself does, so with a slow server this is the switch to turn off.
 - **Anonymous usage ping** — once a day: app version, macOS version, chip, install channel, and no identifier, so the project can count copies in use. Off means the request never happens; `CONTROL_BAR_NO_ANALYTICS=1` in the environment does the same. Exact bytes in [PRIVACY.md](PRIVACY.md).

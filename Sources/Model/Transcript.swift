@@ -35,11 +35,21 @@ enum Transcript {
     /// number would end a wait that is real.
     static func turnTimestamp(_ line: String) -> Double? {
         guard let root = record(line), let stamp = root["timestamp"] as? String else { return nil }
-        return isoParser.date(from: stamp)?.timeIntervalSince1970
+        return unixTime(stamp)
+    }
+
+    /// Unix time from an ISO-8601 stamp, or nil for anything that does not parse as one.
+    ///
+    /// Shared rather than private because Codex stamps its rollout envelopes the same way, and the
+    /// two-formatter dance below is the whole reason a second copy would be worth avoiding: it is
+    /// not obvious, and a reader who writes the obvious one line gets nil for every timestamp
+    /// either agent actually writes.
+    static func unixTime(_ stamp: String) -> Double? {
+        isoParser.date(from: stamp)?.timeIntervalSince1970
             ?? isoParserPlain.date(from: stamp)?.timeIntervalSince1970
     }
 
-    /// Claude Code writes milliseconds ("2026-07-03T09:32:46.368Z"); the plain parser is the
+    /// Both agents write milliseconds ("2026-07-03T09:32:46.368Z"); the plain parser is the
     /// fallback because ISO8601DateFormatter refuses fractions unless told to expect them.
     private static let isoParser: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()

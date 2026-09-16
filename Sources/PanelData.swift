@@ -47,6 +47,7 @@ extension StatusController {
             entrypoint: s.entrypoint,
             termProgram: s.termProgram,
             termBundle: s.termBundle,
+            tty: s.tty,
             // Decided here, in the model half, rather than at the click: which of the two places a
             // Codex session can be read is the right one is a rule about the session, and rules
             // about sessions are what the model checks cover.

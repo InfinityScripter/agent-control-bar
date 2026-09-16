@@ -79,6 +79,43 @@ Settings → Appearance → *Limits strip* стоит выбор **Two rows** (�
   значке» (сейчас значок падает на Codex сам, когда у Claude цифр нет), деградированный режим
   `notify` для старых сборок Codex.
 
+**Фаза 1 (2026-09-16): сессия Codex «крутилась», когда ход давно кончился.** Разбор жалобы
+пользователя, факты сняты со **встроенных в бинарь Codex JSON-схем хуков**
+(`/Applications/ChatGPT.app/Contents/Resources/codex`, строки вида `stop.command.input`) и с
+реальных `rollout-*.jsonl` этой машины (cli 0.154.0-alpha).
+
+- **Найдено и исправлено.** `SessionEngine.effectiveState` читал транскрипт ЛЮБОЙ сессии
+  парсером Claude Code — он ищет подстроки `"type":"user"` / `"type":"assistant"`. В rollout'ах
+  Codex их **ноль** (проверено по всем файлам машины): формат — конверт
+  `{"timestamp":…,"type":"event_msg","payload":{…}}`. Поэтому все три страховочные сетки движка
+  были для Codex мертвы, оставались только плоские кэпы, и сессия с недоставленным `Stop` сидела
+  «Thinking…» — со спиннером, таймером и своей долей анимации в строке меню — все 15 минут.
+  Лечение: `Sources/Model/CodexRollout.swift` читает границы хода из самого rollout'а
+  (`task_started`/`task_complete`/`turn_aborted`, плюс написание `turn_*` на будущее), а хук
+  записывает `turn_id`, чтобы границу сопоставлять с сессией точно, а не по часам.
+- **Ключевой факт из схем.** `agent_id`/`agent_type` объявлены у `PreToolUse`, `PostToolUse`,
+  `PermissionRequest`, `UserPromptSubmit`, `Subagent*`, `Pre/PostCompact` — и **отсутствуют у
+  `Stop`, `Interrupt`, `SessionStart`, `SessionEnd`**. То есть на двух событиях, которыми ход
+  заканчивается, документированное поле воркера отличить не может в принципе. Guard в `update.js`
+  читал rollout только пока у сессии нет файла, поэтому на всех последующих событиях не работал
+  ни один из двух нетов; теперь rollout перечитывается, когда событие называет **другой** файл
+  rollout'а, чем записан в состоянии. `SessionEnd` получил ту же проверку — он не переписывает
+  состояние, а удаляет файл, и чужой `end` снимал живую строку с панели.
+- **`turn_id` есть у всех turn-scoped событий** (`UserPromptSubmit`, `Pre/PostToolUse`,
+  `PermissionRequest`, `Stop`, `Interrupt`, `Pre/PostCompact`) — «Codex extension: expose the
+  active turn id to internal turn-scoped hooks». На нём и держится сопоставление.
+- **Полный список событий `hooks.json`** (из enum в бинаре): `PreToolUse`, `PermissionRequest`,
+  `PostToolUse`, `PreCompact`, `PostCompact`, `SessionStart`, `SessionEnd`, `UserPromptSubmit`,
+  `SubagentStart`, `SubagentStop`, `Stop`, `Interrupt`. Мы ставим восемь из них; `Subagent*` и
+  `*Compact` не ставим намеренно.
+- **`SessionStart.source` у Codex** — `startup | resume | clear | compact`; `fork` из
+  Claude Code там нет (наш список в `lifecycle.js` шире, и это безвредно).
+- **Остаётся неподтверждённым.** Совпадает ли `session_id` в payload хука у сабагента с id
+  родителя. В `session_meta` rollout'а сабагента `session_id` — это id **корня**, собственный id
+  треда лежит в `id`, а `~/.codex/session_index.jsonl` содержит только корневые треды. Если
+  payload устроен так же, то события воркеров попадают в файл родителя; правки выше закрывают
+  этот случай по rollout-пути, но сам факт стоит измерить.
+
 Факты про Codex ниже сверены с исходниками `openai/codex` (коммит `9469737`, 2026-09-10,
 crates `codex-rs/hooks`, `codex-rs/rollout`, `codex-rs/protocol`, `codex-rs/backend-client`,
 `codex-rs/app-server-protocol`). Что не проверено на живой машине — помечено «проверить».
