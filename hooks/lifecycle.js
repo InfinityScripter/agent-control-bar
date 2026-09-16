@@ -33,6 +33,22 @@ const safeId = (s) => String(s || "").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 6
 // kill(pid, 0) probes existence without signalling: it throws ESRCH when the process is gone
 // and EPERM when it exists but belongs to someone else (same user here, so it should not
 // happen — treated as alive anyway, because deleting a live session's file is the worse error).
+// The session's controlling terminal, for focusing its exact window and tab on a click. Mirrors
+// ttyDev() in update.js — keep the two in step. Seeded here as well as there so a session that has
+// only just started, and is already a clickable row, clicks to the right place.
+const ttyDev = () => {
+  try {
+    let pid = String(process.pid);
+    for (let i = 0; i < 6 && pid && pid !== "1"; i++) {
+      const [tty, ppid] = cp.execSync(`ps -o tty=,ppid= -p ${pid}`, { encoding: "utf8" })
+        .trim().split(/\s+/);
+      if (tty && tty.startsWith("tty")) return "/dev/" + tty;
+      pid = ppid;
+    }
+  } catch {}
+  return "";
+};
+
 const alive = (pid) => {
   if (!(pid > 0)) return false;
   try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; }
@@ -166,7 +182,7 @@ function run() {
     try {
       // started:false — a merely-opened conversation seeds this for launch + liveness but stays out of
       // the dropdown until it has real activity (update.js flips started:true on a prompt/tool).
-      const seed = { state: "idle", label: "", tool: "", project: cwd ? path.basename(cwd) : "", cwd, sessionId: id, transcript, entrypoint: process.env.CLAUDE_CODE_ENTRYPOINT || "", term_program: process.env.TERM_PROGRAM || "", term_bundle: process.env.__CFBundleIdentifier || "", pid: process.ppid, started: false, startedAt: 0, ts: Math.floor(Date.now() / 1000) };
+      const seed = { state: "idle", label: "", tool: "", project: cwd ? path.basename(cwd) : "", cwd, sessionId: id, transcript, entrypoint: process.env.CLAUDE_CODE_ENTRYPOINT || "", term_program: process.env.TERM_PROGRAM || "", term_bundle: process.env.__CFBundleIdentifier || "", tty: ttyDev(), pid: process.ppid, started: false, startedAt: 0, ts: Math.floor(Date.now() / 1000) };
       if (codex) { seed.provider = "codex"; seed.surface = meta.surface; }
       writeAtomic(statePath, seed);
     } catch {}
@@ -176,6 +192,20 @@ function run() {
   } else if (event === "end") {
     // Removing the file drops this session from the aggregate — this is also what recovers a
     // frozen animation on force-quit (SessionEnd fires, but no Stop). No state rewrite needed.
+    //
+    // Unless the file belongs to another thread. SessionEnd carries no agent id — Codex's own
+    // schema defines none on it — so a worker's end is told apart by the only other thing it
+    // brings: the rollout it was written for. Deleting a file recorded against a different
+    // rollout takes a live session's row off the panel while it is still working.
+    //
+    // A state file read, not the rollout read SessionStart does: this hook promises Codex it can
+    // finish inside one second, and it keeps that promise by only ever touching small files of
+    // our own.
+    if (codex && transcript) {
+      let prev = {};
+      try { prev = JSON.parse(fs.readFileSync(statePath, "utf8")); } catch {}
+      if (prev.transcript && prev.transcript !== transcript) process.exit(0);
+    }
     forget(id);
   }
   process.exit(0);

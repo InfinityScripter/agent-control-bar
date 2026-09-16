@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Required for "Exact terminal focus" (Settings → Sessions, off by default): a hardened-runtime
+       app cannot send an Apple Event to Terminal or iTerm without it. Missing, the event is blocked
+       before macOS can show the Automation prompt at all — no prompt, no error, a click that
+       silently does nothing. NSAppleEventsUsageDescription in Info.plist is the other half and is
+       not a substitute for this one.
+
+       It grants nothing by itself: it only makes the app ELIGIBLE to ask, and the user is still
+       asked, per target app, the first time a click needs it. -->
+  <key>com.apple.security.automation.apple-events</key>
+  <true/>
+</dict>
+</plist>

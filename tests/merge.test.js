@@ -564,7 +564,8 @@ test("the state file a hook event writes carries exactly the keys the swift read
   assert.deepEqual(Object.keys(state).sort(), [
     "assumed", "cost", "cwd", "dirty", "duration", "entrypoint", "label", "linesAdded",
     "linesRemoved", "model", "pct", "pid", "project", "sessionId", "started", "startedAt",
-    "state", "term_bundle", "term_program", "tokens", "tool", "transcript", "ts", "window",
+    "state", "term_bundle", "term_program", "tokens", "tool", "transcript", "ts", "tty",
+    "window",
   ]);
   assert.equal(typeof state.state, "string");
   assert.equal(typeof state.pid, "number");
@@ -587,7 +588,7 @@ test("the seeded session file carries exactly the keys the swift reader parses",
   const state = JSON.parse(fs.readFileSync(path.join(stateDir(home), "pin2.json"), "utf8"));
   assert.deepEqual(Object.keys(state).sort(), [
     "cwd", "entrypoint", "label", "pid", "project", "sessionId", "started", "startedAt",
-    "state", "term_bundle", "term_program", "tool", "transcript", "ts",
+    "state", "term_bundle", "term_program", "tool", "transcript", "ts", "tty",
   ]);
   assert.equal(state.started, false, "a merely-opened session stays out of the dropdown");
   assert.equal(state.state, "idle");
@@ -778,6 +779,89 @@ test("a codex worker is turned away by its rollout, not only by a field on the p
     "no agent_id on the payload, and it is still not a session of its own");
 });
 
+test("the session's tty is found once and carried, not re-measured per event", () => {
+  // Finding it costs a `ps` — the only field here that costs a process — and PreToolUse holds the
+  // tool call until this hook exits. A session's controlling terminal cannot change, so measuring
+  // it again on every event would be a spawn per tool call for an answer already on disk.
+  const home = sandbox();
+  fs.writeFileSync(path.join(stateDir(home), "t9.json"), JSON.stringify({
+    sessionId: "t9", tty: "/dev/ttys042", pid: process.pid, ts: 1 }));
+
+  run(updatePath, home, ["post"], JSON.stringify({ session_id: "t9", cwd: home }));
+
+  const state = JSON.parse(fs.readFileSync(path.join(stateDir(home), "t9.json"), "utf8"));
+  assert.equal(state.tty, "/dev/ttys042");
+});
+
+test("the codex turn id is recorded per event and never inherited from the last turn", () => {
+  // The app matches this id against the turn_id on the rollout record that ENDS a turn, which is
+  // how it tells "this session's turn is over" from "some turn finished in this file" without
+  // comparing a whole-second hook clock against a millisecond rollout one. Inheriting a finished
+  // turn's id is the one way that match could end a turn still running, so an event that carries
+  // no id must clear the field rather than keep the old one.
+  const home = sandbox();
+  const payload = (extra) => JSON.stringify({ session_id: "t1", cwd: home, ...extra });
+  const read = () => JSON.parse(fs.readFileSync(path.join(codexStateDir(home), "t1.json"), "utf8"));
+
+  run(updatePath, home, ["prompt", "--provider", "codex"], payload({ turn_id: "turn-a" }));
+  assert.equal(read().turn_id, "turn-a");
+
+  run(updatePath, home, ["post", "--provider", "codex"], payload({ turn_id: "turn-b" }));
+  assert.equal(read().turn_id, "turn-b", "a new turn replaces the old id");
+
+  run(updatePath, home, ["post", "--provider", "codex"], payload({}));
+  assert.equal(read().turn_id, "", "and an event without one leaves no stale id behind");
+});
+
+test("a codex worker is turned away on every event, not only on the first one", () => {
+  // Codex defines agent_id on four of the events this app registers and on NEITHER of the two
+  // that end a turn — Stop and Interrupt carry none at all. So on those two the documented field
+  // can never turn a worker away, and the rollout is the only thing that can. Reading it once, on
+  // the event that first wrote the file, left every later event with nothing.
+  const home = sandbox();
+  // rollout() always writes the one path, so each thread's file is copied aside before the next
+  // call overwrites it: two threads, two rollouts, which is the whole shape being tested.
+  const minePath = path.join(home, "mine.jsonl");
+  fs.copyFileSync(rollout(home, [], { thread_source: "user" }), minePath);
+  const workerPath = path.join(home, "worker.jsonl");
+  fs.copyFileSync(rollout(home, [], { thread_source: "subagent" }), workerPath);
+
+  run(updatePath, home, ["prompt", "--provider", "codex"], JSON.stringify({
+    session_id: "s1", cwd: home, transcript_path: minePath, turn_id: "turn-a" }));
+  const state = () => JSON.parse(fs.readFileSync(path.join(codexStateDir(home), "s1.json"), "utf8"));
+  assert.equal(state().state, "thinking", "the user's own thread is a session");
+
+  // The worker's Stop, arriving on the same session id with the worker's rollout and no agent_id.
+  run(updatePath, home, ["stop", "--provider", "codex"], JSON.stringify({
+    session_id: "s1", cwd: home, transcript_path: workerPath }));
+  assert.equal(state().state, "thinking", "a worker's Stop does not end the session's turn");
+  assert.equal(state().transcript, minePath, "and does not repoint the row at the worker's rollout");
+});
+
+test("a codex worker's SessionEnd does not delete the session's file", () => {
+  // SessionEnd carries no agent id either, and it does not rewrite state — it deletes the file
+  // outright. A worker's end landing on a live session took the row off the panel mid-turn.
+  const home = sandbox();
+  const minePath = path.join(home, "mine.jsonl");
+  fs.copyFileSync(rollout(home, [], { thread_source: "user" }), minePath);
+  const workerPath = path.join(home, "worker.jsonl");
+  fs.copyFileSync(rollout(home, [], { thread_source: "subagent" }), workerPath);
+
+  run(updatePath, home, ["prompt", "--provider", "codex"], JSON.stringify({
+    session_id: "s2", cwd: home, transcript_path: minePath }));
+  run(lifecyclePath, home, ["end", "--provider", "codex"], JSON.stringify({
+    session_id: "s2", cwd: home, transcript_path: workerPath }));
+
+  assert.ok(fs.existsSync(path.join(codexStateDir(home), "s2.json")),
+    "the session survives a worker's end");
+
+  // Its own end still removes it, or nothing ever would.
+  run(lifecyclePath, home, ["end", "--provider", "codex"], JSON.stringify({
+    session_id: "s2", cwd: home, transcript_path: minePath }));
+  assert.ok(!fs.existsSync(path.join(codexStateDir(home), "s2.json")),
+    "and its own end still ends it");
+});
+
 test("a codex session already running when the hooks arrived still gets its surface", () => {
   // It never fired SessionStart, so nothing seeded the surface — the badge would stay blank for
   // the rest of its life. The first event reads the rollout once and settles it.
@@ -883,7 +967,7 @@ test("the codex state file carries exactly the keys the swift reader parses", ()
     session_id: "pin3", cwd: home, transcript_path: transcript, source: "startup" }));
   run(updatePath, home, ["pre", "--provider", "codex"], JSON.stringify({
     session_id: "pin3", cwd: home, transcript_path: transcript, tool_name: "apply_patch",
-    model: "gpt-5.6-sol",
+    model: "gpt-5.6-sol", turn_id: "turn-7",
   }));
 
   const state = JSON.parse(fs.readFileSync(path.join(codexStateDir(home), "pin3.json"), "utf8"));
@@ -891,7 +975,7 @@ test("the codex state file carries exactly the keys the swift reader parses", ()
     "assumed", "cost", "cwd", "dirty", "duration", "entrypoint", "label", "linesAdded",
     "linesRemoved", "model", "pct", "pid", "project", "provider", "sessionId", "started",
     "startedAt", "state", "surface", "term_bundle", "term_program", "tokens", "tool",
-    "transcript", "ts", "window",
+    "transcript", "ts", "tty", "turn_id", "window",
   ]);
   assert.equal(state.surface, "ide", "the surface survives the events that follow the start");
   assert.equal(state.model, "gpt-5.6-sol", "the model comes from the payload, not from a guess");

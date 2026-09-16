@@ -31,24 +31,63 @@ struct PanelSessionsTab: View {
                     }
                 }
             }
-            if store.snapshot.codexHooksBlocked { codexHooksNote }
+            if store.snapshot.codexHooksBlocked { codexHooksBlock }
         }
     }
 
-    /// Codex runs only the hooks a human has approved, and the hook it is skipping is the one that
-    /// writes a session file. Without this line the tab is simply empty of Codex — which reads as
+    /// Codex runs only the hooks a human has approved, and the ones it is skipping are the ones
+    /// that write a session file. Without this the tab is simply empty of Codex — which reads as
     /// "Codex is not running", and sends the reader looking for a fault in the wrong place
-    /// entirely. The approval lives in Codex's own screen, so there is nothing here to click.
+    /// entirely.
+    ///
+    /// This used to be one line with the explanation in a tooltip, and a tooltip is the wrong
+    /// place for it twice over: it has to be hovered to be found, and what it holds is not a
+    /// footnote but the two things the reader needs — what to do, and what they are being asked to
+    /// trust. Somebody is about to approve eight shell commands pointing at a script in their home
+    /// folder; "just approve it" is not an answer they should accept from a menu bar app, so the
+    /// block says which file, and offers to open it.
     ///
     /// Worded as the thing to DO, not as "sessions are hidden": someone who has not started Codex
     /// today has no sessions to hide, and a line claiming otherwise would be its own small lie.
-    private var codexHooksNote: some View {
-        PanelNotice(glyph: "exclamationmark.triangle",
-                    text: "Approve Codex's hooks to see its sessions")
+    private var codexHooksBlock: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            PanelNotice(glyph: "exclamationmark.triangle",
+                        text: "Approve Codex's hooks to see its sessions")
+            Text(Self.codexHooksReason(store.snapshot.codexHooksUntrusted))
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 4)
+            HStack(spacing: 6) {
+                Button("What gets approved") { store.revealCodexHooks() }
+                    .buttonStyle(PanelButtonStyle())
+                    .help("Opens ~/.codex/hooks.json in the Finder — the exact file Codex is "
+                          + "asking about. Every entry runs one script this app installed, and "
+                          + "that script writes one small file per session and reads nothing else.")
+                Button(store.snapshot.codexHooksChecking ? "Checking…" : "Check again") {
+                    store.checkCodexHooks()
+                }
+                .buttonStyle(PanelButtonStyle())
+                .disabled(store.snapshot.codexHooksChecking)
+                .help("Asks Codex whether it trusts them now. Worth a click right after approving; "
+                      + "the app also asks by itself whenever Codex rewrites its config.")
+            }
+            .padding(.top, 2)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, 8)
-        .help("Codex runs only the hooks it has been told to trust, and this app's are still "
-              + "untrusted — so it writes down no session at all. Start Codex in a terminal and "
-              + "approve them once, and its sessions appear here.")
+    }
+
+    /// Typed constant per the code conventions, and one sentence per question: what is happening,
+    /// and what to do about it. The count is Codex's own — the same number its review screen puts
+    /// on screen — so the two can be checked against each other.
+    private static func codexHooksReason(_ untrusted: Int) -> String {
+        let n = untrusted == 1 ? "1 hook" : "\(untrusted) hooks"
+        let head: String = "Codex skips any hook it has not been told to trust, and \(n) of this "
+            + "app's are still waiting — so it writes down no session at all.\n"
+        let tail: String = "Start Codex once in a terminal and approve them on the review screen "
+            + "it shows. The approval is Codex's to record, so it cannot be given from here."
+        return head + tail
     }
 
     /// This app's own hooks are not installed, or the node they call does not start — the cause

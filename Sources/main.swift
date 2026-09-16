@@ -31,6 +31,13 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// session file — so a count above zero means Codex is writing down less than it would, and
     /// with the whole set unapproved it writes down nothing at all.
     var codexHooksUntrusted = 0
+    /// True while the panel's own "Check again" is in flight, so the button can say so. Not a
+    /// general busy flag: the periodic ask is invisible on purpose and must not flicker a button.
+    var codexHooksChecking = false
+    /// Whether Codex has ever answered about the hooks on this run. Separate from the count above
+    /// because zero has two meanings otherwise — "all approved" and "never asked" — and Settings
+    /// must not report the first when it means the second.
+    var codexHooksAnswered = false
     var mcpBusy = false
     var recheckTimer: Timer?
     /// How often the MCP picture is rebuilt from scratch in the background. Measured at ~34s a
@@ -192,6 +199,11 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// switch, because this one is the half that starts every configured server to ask it for its
     /// tools, and someone with a slow one may not want that on a ten-minute timer.
     var codexServers = true
+    /// Whether a click on a CLI session focuses its exact window and tab, or only raises its
+    /// terminal app. Off by default, and the ONLY setting in this app that is: it is the one that
+    /// buys its behaviour with a macOS permission prompt, and a permission nobody asked for is a
+    /// worse default than a click that lands one tab off.
+    var exactTerminalFocus = false
     var limitsLayout = PanelLimitsLayout.rows   // how the strip shows two providers at once
     /// Which provider the switcher layout is showing. Remembered across opens: someone who
     /// switched to Codex was answering "how much Codex have I got left", not this once.
@@ -276,6 +288,7 @@ final class StatusController: NSObject, NSWindowDelegate {
         if d.object(forKey: "oauthLimits") != nil { oauthLimits = d.bool(forKey: "oauthLimits") }
         if d.object(forKey: "codexLimits") != nil { codexLimits = d.bool(forKey: "codexLimits") }
         if d.object(forKey: "codexServers") != nil { codexServers = d.bool(forKey: "codexServers") }
+        exactTerminalFocus = d.bool(forKey: "exactTerminalFocus")   // absent = off, which is the default
         if let s = d.string(forKey: "limitsLayout"), let l = PanelLimitsLayout(rawValue: s) { limitsLayout = l }
         if let s = d.string(forKey: "limitsProvider") { limitsProvider = s }
         if d.object(forKey: "analytics") != nil { analytics = d.bool(forKey: "analytics") }
@@ -794,8 +807,8 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// Run one backend command for the file it writes and nothing else. Not routed through runBackend:
     /// that toggles mcpBusy and re-reads mcp.json, and a poll that only rewrites its own file
     /// has nothing to say about either — the tick's mtime gate picks the file up.
-    func runQuietCommand(_ command: String...) {
-        guard !backend.script.isEmpty else { return }
+    func runQuietCommand(_ command: String..., then done: (() -> Void)? = nil) {
+        guard !backend.script.isEmpty else { done?(); return }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
             let task = Process()
@@ -805,7 +818,45 @@ final class StatusController: NSObject, NSWindowDelegate {
             task.standardError = FileHandle.nullDevice
             try? task.run()
             task.waitUntilExit()
+            if let done { DispatchQueue.main.async(execute: done) }
         }
+    }
+
+    /// Ask Codex about the hooks again, now, because the person reading the panel says they have
+    /// just approved them.
+    ///
+    /// Deliberately past askCodexAboutHooks's mtime gate. That gate exists so a handful of clicks
+    /// in the MCP tab cannot spawn a `codex app-server` each, and it answers "nothing changed" for
+    /// the one case this button is for: a user who approved in a Codex that has not written its
+    /// config back yet, or who wants to see for themselves that it took. A button that answered
+    /// "nothing to do" would read as the click having done nothing.
+    func recheckCodexHooks() {
+        guard !codexHooksChecking else { return }
+        hooksWillChange()
+        codexHooksChecking = true
+        refreshCounts()
+        runQuietCommand("codex-hooks") { [weak self] in
+            guard let self else { return }
+            // The next tick re-reads codex/hooks.json through its own mtime gate; clearing the
+            // flag here is what turns the button back from "Checking…" to its own name.
+            self.hooksWillChange()
+            self.codexHooksChecking = false
+            self.codexTrustInputs = ""   // the gate has been overtaken, so let it re-measure
+            self.refreshCounts()
+        }
+    }
+
+    /// Open ~/.codex/hooks.json in the Finder, selected. The one thing this app can honestly do
+    /// about a trust decision that belongs to the user: show them the exact file Codex is asking
+    /// them to approve, before they approve it. Everything else here — running Codex, answering
+    /// its prompt, writing the trust hash — would be this app approving its own hooks.
+    @objc func revealCodexHooks() {
+        let path = (codexHome as NSString).appendingPathComponent("hooks.json")
+        guard FileManager.default.fileExists(atPath: path) else {
+            NSWorkspace.shared.open(URL(fileURLWithPath: codexHome))
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
     }
 
     /// Re-publish the panel's picture if it is on screen. The menu needed a list of closures for
@@ -986,11 +1037,19 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// Codex itself has been asked, and a machine where the command has not run yet must not be
     /// told its hooks are fine.
     func loadCodexHooks() {
+        // The Settings row draws this at draw time, so it has to be told before the value moves —
+        // but only when it actually moves: this runs at 2.5 Hz, and announcing every tick would
+        // redraw the window forever for an answer that changes when a human approves something.
+        let wasUntrusted = codexHooksUntrusted, wasAnswered = codexHooksAnswered
         switch codexStateFile(at: "codex/hooks.json", gate: &codexHooksMTime) {
-        case .missing: codexHooksUntrusted = 0
+        case .missing: codexHooksUntrusted = 0; codexHooksAnswered = false
         case .unchanged: break
         case .changed(let object):
             codexHooksUntrusted = (object["untrusted"] as? NSNumber)?.intValue ?? 0
+            codexHooksAnswered = true
+        }
+        if codexHooksUntrusted != wasUntrusted || codexHooksAnswered != wasAnswered {
+            hooksWillChange()
         }
     }
 

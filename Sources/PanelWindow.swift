@@ -254,7 +254,8 @@ extension StatusController {
         }
         if snapshot.offerOpenClaude { lines.append("  Open Claude") }
         if snapshot.codexHooksBlocked {
-            lines.append("  Approve Codex's hooks to see its sessions")
+            lines.append("  Approve Codex's hooks to see its sessions"
+                + " (\(snapshot.codexHooksUntrusted) waiting)")
         }
         lines.append("MCP — \(snapshot.mcp.summary) · \(snapshot.mcp.toolsLine)")
         if let change = snapshot.mcp.change { lines.append("  changed: \(change)") }

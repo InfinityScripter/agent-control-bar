@@ -12,6 +12,10 @@ struct Session {
     var entrypoint: String  // CLAUDE_CODE_ENTRYPOINT: "cli", "claude-desktop", …
     var termProgram: String // TERM_PROGRAM for CLI sessions: "Apple_Terminal", "iTerm.app", …
     var termBundle: String  // __CFBundleIdentifier of the hosting app; "" over ssh / pre-upgrade files
+    // The session's controlling terminal, "/dev/ttys004". Terminal and iTerm both hand a tab's tty
+    // to AppleScript, so this is what turns "raise the terminal app" into "focus THAT tab". "" for
+    // a session with no terminal at all — the desktop app, an IDE panel, a pre-upgrade file.
+    var tty: String
     var pid: Int32          // the session's `claude` process; kill(pid,0) drives liveness. 0 = pre-upgrade file.
     var started: Bool       // true once the session had real activity (a prompt/tool); a merely-opened
                             // conversation seeds started=false and stays out of the dropdown.
@@ -42,6 +46,11 @@ struct Session {
     // originator we do not know. Claude's equivalent is inferred from entrypoint + TERM_PROGRAM
     // instead, because Claude Code does not state it.
     var surface: String = ""
+    // The Codex turn this state was written during, from the `turn_id` its hook payload carries on
+    // every turn-scoped event. The rollout stamps the same id on the record that ENDS the turn, so
+    // the two can be matched exactly — see effectiveState's turn-over net. "" for Claude, which has
+    // no such id, and for a Codex build that stamps none.
+    var turnID: String = ""
 
     var eff: String = ""   // effective state, recomputed once per tick in evaluate()
     var branch: String = ""      // git branch (or short SHA when detached); "" outside a repo
@@ -62,6 +71,7 @@ struct Session {
         self.entrypoint = o["entrypoint"] as? String ?? ""
         self.termProgram = o["term_program"] as? String ?? ""
         self.termBundle = o["term_bundle"] as? String ?? ""
+        self.tty = o["tty"] as? String ?? ""
         self.pid = Int32(truncatingIfNeeded: (o["pid"] as? NSNumber)?.intValue ?? 0)
         self.started = o["started"] as? Bool ?? false
         self.startedAt = (o["startedAt"] as? NSNumber)?.doubleValue ?? 0
@@ -78,13 +88,32 @@ struct Session {
         self.dirty = (o["dirty"] as? NSNumber)?.intValue
         self.provider = o["provider"] as? String ?? "claude"
         self.surface = o["surface"] as? String ?? ""
+        self.turnID = o["turn_id"] as? String ?? ""
     }
+}
+
+/// What a session's transcript says about the turn its state file was written during.
+///
+/// File-derived only: every comparison against the session itself happens outside, which is what
+/// lets one cache entry per transcript stay correct no matter which session reads it.
+struct TurnFacts {
+    /// Claude Code's "[Request interrupted by user]" marker — the only thing that says a turn is
+    /// over there, since neither Esc nor a denied permission fires a hook. Always false for Codex:
+    /// it has an Interrupt hook, and states the abort in the rollout besides.
+    var interrupted = false
+    /// Unix time of the last turn record — Claude's permission net runs off this clock.
+    var turnTs: Double?
+    /// The rollout's newest boundary record, when that record ENDED a turn rather than starting
+    /// one. Codex only; Claude writes nothing equivalent.
+    var turnOver: CodexRollout.Boundary?
+    /// The file's own mtime, from the same stat the fields above are cached against.
+    var mtime: Date = .distantPast
 }
 
 /// The state machine behind every session row and the menu bar icon.
 final class SessionEngine {
     // private so the compiler guards the seam: dropCache is the one sanctioned door in.
-    private var turnLineCache: [String: (size: UInt64, mtime: Date, interrupted: Bool, turnTs: Double?)] = [:]
+    private var turnLineCache: [String: (size: UInt64, mtime: Date, facts: TurnFacts)] = [:]
 
     /// A dead session's transcript leaves the cache with it — keyed by path, not id.
     func dropCache(forTranscript path: String) { turnLineCache[path] = nil }
@@ -103,7 +132,8 @@ final class SessionEngine {
             // transcript nets below this is a last resort, and a frozen amber dot outranks
             // every live session.
             let cap: Double = s.state == "permission" ? 1800 : (s.state == "tool" ? 3600 : 900)
-            let facts = s.transcript.isEmpty ? nil : turnFacts(ofFileAt: s.transcript)
+            let facts = s.transcript.isEmpty ? nil
+                                             : turnFacts(ofFileAt: s.transcript, provider: s.provider)
             if now - s.ts > cap {
                 // A streaming transcript is proof of life past the cap for a THINKING session:
                 // records append every ~1.7s median while the model streams, so a fresh mtime
@@ -121,6 +151,14 @@ final class SessionEngine {
             }
             if let facts {
                 if facts.interrupted { return "idle" }
+                // Codex states the end of a turn in the rollout itself, and that outranks whatever
+                // the last hook claimed was running: the turn is over even if Stop never arrived.
+                // It often does not — a hook Codex has not been trusted with is skipped silently,
+                // SessionEnd and Interrupt are killed after a second, and a turn that ends in an
+                // abort or an error need not pass through Stop at all. Without this net the row
+                // kept its spinner, its live timer and its share of the menu bar animation until
+                // the flat cap above expired, fifteen minutes later.
+                if let over = facts.turnOver, endsThisTurn(over, s) { return "idle" }
                 // While a permission prompt waits, the transcript is silent — the tool_use that
                 // opened it is already on disk. So a turn record younger than the prompt means
                 // the prompt was answered, whatever form the answer took: deny and Esc write
@@ -135,52 +173,91 @@ final class SessionEngine {
         return s.state == "done" ? "idle" : s.state
     }
 
-    // What the transcript's last turn line (a user/assistant message, ignoring the bookkeeping
-    // Claude Code appends after an interrupt) says about the session: the interrupt marker, the
-    // record's timestamp, and the file's own mtime (the streaming-proof above rides on it — one
-    // stat serves both questions). Marker and timestamp are computed when the file changes and
-    // cached — a sampling pass once put the raw per-tick read among the timer's top costs, and
-    // parsing the same unchanged line every tick is the same class of waste. One stat() per
-    // tick otherwise.
-    private func turnFacts(ofFileAt path: String) -> (interrupted: Bool, turnTs: Double?, mtime: Date) {
+    /// Whether a finished-turn record in the rollout is the turn this session's state file was
+    /// written during — the question "is the row still working?" reduces to.
+    ///
+    /// By id when both sides carry one, which is exact and immune to the single race a clock
+    /// comparison has: a prompt sent inside the same wall-clock second the previous turn finished
+    /// in. The hook stamps whole seconds and the rollout stamps milliseconds, so that second cannot
+    /// be told apart by time alone.
+    ///
+    /// The clock is the fallback for a build that stamps no turn id, and it deliberately takes no
+    /// safety margin. A margin here does not degrade gracefully: the boundary record and the
+    /// session's `ts` both stop moving once the turn ends, so a comparison that fails once fails
+    /// for good, and the row sits spinning for the whole cap — which is the exact failure this net
+    /// exists to end. The race it trades against costs a sub-second flicker that the next rollout
+    /// append corrects.
+    private func endsThisTurn(_ over: CodexRollout.Boundary, _ s: Session) -> Bool {
+        if !s.turnID.isEmpty, !over.turn.isEmpty { return over.turn == s.turnID }
+        return over.at > s.ts
+    }
+
+    // What the transcript says about the session, read once per file change and cached — a sampling
+    // pass once put the raw per-tick read among the timer's top costs, and re-parsing an unchanged
+    // file every tick is the same class of waste. One stat() per tick otherwise, which is also what
+    // carries the mtime the streaming-proof above rides on.
+    //
+    // Two parsers behind one call, because the two agents write nothing in common. Claude Code's
+    // turn records have to be mined for an interrupt marker and a timestamp; Codex's rollout states
+    // its turn boundaries outright (CodexRollout). Reading a rollout with Claude's parser is what
+    // this used to do, and it found nothing at all — see the header of CodexRollout.swift.
+    private func turnFacts(ofFileAt path: String, provider: String) -> TurnFacts {
         let attrs = try? FileManager.default.attributesOfItem(atPath: path)
         let size = (attrs?[.size] as? NSNumber)?.uint64Value ?? 0
         let mtime = attrs?[.modificationDate] as? Date ?? .distantPast
         if let hit = turnLineCache[path], hit.size == size, hit.mtime == mtime {
-            return (hit.interrupted, hit.turnTs, mtime)
+            var facts = hit.facts
+            facts.mtime = mtime
+            return facts
         }
-        let line = readLastTurnLine(ofFileAt: path)
-        let interrupted = line.map(Transcript.wasInterrupted) ?? false
-        let turnTs = line.flatMap(Transcript.turnTimestamp)
-        // A record that parses as a turn but carries no usable timestamp is format drift — the
-        // permission net below dies silently without it. Once per file change, not per tick, so
-        // Console gets a trace instead of "sessions sometimes sit amber for the whole cap".
-        if let line, turnTs == nil, Transcript.isTurnRecord(line) {
-            NSLog("ClaudeControlBar: turn record without a parseable timestamp — transcript format drift? \(path)")
+        var facts = TurnFacts(mtime: mtime)
+        if provider == "codex" {
+            // The newest boundary decides, and only one that ENDS a turn means the turn is over: a
+            // rollout whose last boundary is a start is a session mid-turn, however old the record.
+            if let newest = scanTail(ofFileAt: path, CodexRollout.boundary), newest.ends {
+                facts.turnOver = newest
+            }
+        } else {
+            let line = scanTail(ofFileAt: path) { line -> String? in
+                line.contains("\"type\":\"user\"") || line.contains("\"type\":\"assistant\"")
+                    ? String(line) : nil
+            }
+            facts.interrupted = line.map(Transcript.wasInterrupted) ?? false
+            facts.turnTs = line.flatMap(Transcript.turnTimestamp)
+            // A record that parses as a turn but carries no usable timestamp is format drift — the
+            // permission net dies silently without it. Once per file change, not per tick, so
+            // Console gets a trace instead of "sessions sometimes sit amber for the whole cap".
+            if let line, facts.turnTs == nil, Transcript.isTurnRecord(line) {
+                NSLog("ClaudeControlBar: turn record without a parseable timestamp — transcript format drift? \(path)")
+            }
         }
-        turnLineCache[path] = (size, mtime, interrupted, turnTs)
-        return (interrupted, turnTs, mtime)
+        turnLineCache[path] = (size, mtime, facts)
+        return facts
     }
 
-    private func readLastTurnLine(ofFileAt path: String) -> String? {
+    /// Walk a file's tail newest-line-first, handing each line to `pick` until it answers.
+    ///
+    /// Escalating windows, 8 KB first: a streaming transcript invalidates the cache on every append,
+    /// so the hot path must stay at the old price — the newest line there IS the record wanted. The
+    /// larger reads pay only when the tail is all bookkeeping: Claude Code appends it after an
+    /// interrupt in lines measured up to 112 KB, a Codex rollout's own records run larger still,
+    /// and any fixed window is a bet against the next release's line — so the ladder ends at a hard
+    /// ceiling instead. Lines reach `pick` as slices, so a scan that rejects a megabyte-long tool
+    /// result pays no copy for it.
+    private func scanTail<T>(ofFileAt path: String, _ pick: (Substring) -> T?) -> T? {
         guard let fh = FileHandle(forReadingAtPath: path) else { return nil }
         defer { try? fh.close() }
         let size = (try? fh.seekToEnd()) ?? 0
-        // Escalating windows, 8 KB first: a streaming transcript invalidates the cache on every
-        // append, so the hot path must stay at the old price — the last line there IS the turn
-        // record. The larger reads pay only when the tail is all bookkeeping: Claude Code appends
-        // it after an interrupt in lines measured up to 112 KB, and any fixed window is a bet
-        // against the next release's line, so the ladder ends at a hard ceiling instead.
         for chunk: UInt64 in [8_192, 262_144, 1_048_576] {
             try? fh.seek(toOffset: size > chunk ? size - chunk : 0)
             guard let data = try? fh.readToEnd() else { return nil }
             // Never the failable String(data:encoding:): a window cut mid-way through a multi-
             // byte character made it return nil for the ENTIRE chunk, and the cache then pinned
             // that nil for as long as the file sat still — a permission wait, by definition.
-            let s = String(decoding: data, as: UTF8.self)
-            if let line = s.split(separator: "\n").last(where: {
-                $0.contains("\"type\":\"user\"") || $0.contains("\"type\":\"assistant\"")
-            }) { return String(line) }
+            let text = String(decoding: data, as: UTF8.self)
+            for line in text.split(separator: "\n").reversed() {
+                if let hit = pick(line) { return hit }
+            }
             if size <= chunk { return nil }  // the whole file is read — there is nowhere left to look
         }
         return nil

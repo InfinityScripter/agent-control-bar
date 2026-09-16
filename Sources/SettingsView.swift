@@ -98,6 +98,15 @@ private struct GeneralSettings: View {
         + "OAuth token, which is sent to api.anthropic.com and nowhere else. With this off, the 5h "
         + "and 7d bars only move when a status line happens to write them."
 
+    // The one switch here that costs a macOS permission, so the footer says so before the switch is
+    // touched rather than after — the modal on enabling is the second telling, not the first.
+    private static let exactFocusFooter: String = "Off, a click on a session brings its terminal to "
+        + "the front, and macOS lands you on whichever window you used last. On, it jumps to the "
+        + "exact window and tab that session runs in.\n\n"
+        + "This needs to control your terminal, so macOS asks once on the next click. Terminal and "
+        + "iTerm only — every other terminal keeps the old behaviour, because none of them tells "
+        + "anyone which tab is which. Revoke it any time in Privacy & Security → Automation."
+
     // Worth spelling out, because "reads your Codex sessions" sounds like more than it is: the
     // numbers are already on disk, and nothing but them is looked at.
     private static let codexFooter: String = "Codex records how much of your OpenAI limits is gone "
@@ -108,6 +117,35 @@ private struct GeneralSettings: View {
         + "Asking Codex for the tool names starts each configured server, the way Codex itself "
         + "does — so with a slow server, turn this off and the servers stop being asked."
 
+    /// Whether Codex is running this app's hooks, and the two things a person can do about it.
+    ///
+    /// Here as well as in the panel, because the two answer different questions. The panel's block
+    /// appears only while sessions are missing and goes away the moment they are not — it is the
+    /// explanation for something being wrong. This row is the standing answer to "is it on?", which
+    /// is a thing to be able to check afterwards, and at leisure, rather than only in the minute it
+    /// broke. It is also the only place the state shows for somebody who approved on install and
+    /// never saw the block at all.
+    private var codexHooksRow: some View {
+        HStack {
+            switch store.codexHooksUntrusted {
+            case .none:
+                Label("Hook trust: not asked yet", systemImage: "questionmark.circle")
+            case .some(0):
+                Label("Hooks approved", systemImage: "checkmark.circle")
+            case .some(let n):
+                Label(n == 1 ? "1 hook not approved" : "\(n) hooks not approved",
+                      systemImage: "exclamationmark.triangle")
+            }
+            Spacer()
+            Button("Show file") { store.revealCodexHooks() }
+                .help("Opens ~/.codex/hooks.json in the Finder — the exact entries Codex asks you "
+                      + "to trust. They all run one script this app installed; it writes one small "
+                      + "file per session and reads nothing else.")
+            Button("Check") { store.recheckCodexHooks() }
+                .help("Asks Codex whether it trusts them now.")
+        }
+    }
+
     var body: some View {
         Form {
             Section("Menu bar") {
@@ -115,6 +153,13 @@ private struct GeneralSettings: View {
                 // switch reading "Show timer" that leaves timers visible reads as broken.
                 Toggle("Timer in menu bar", isOn: store.showTimer)
                 Toggle("Thinking words", isOn: store.thinkingWords)
+            }
+            Section {
+                Toggle("Exact terminal focus", isOn: store.exactTerminalFocus)
+            } header: {
+                Text("Sessions")
+            } footer: {
+                Text(Self.exactFocusFooter)
             }
             Section {
                 Toggle("Limits via Anthropic API", isOn: store.oauthLimits)
@@ -126,6 +171,7 @@ private struct GeneralSettings: View {
             Section {
                 Toggle("Codex limits", isOn: store.codexLimits)
                 Toggle("Codex MCP servers", isOn: store.codexServers)
+                if store.codexPresent { codexHooksRow }
             } header: {
                 Text("Codex")
             } footer: {
