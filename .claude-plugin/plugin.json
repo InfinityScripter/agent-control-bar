@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "claude-control-bar",
   "displayName": "Claude Control Bar",
-  "version": "0.17.2",
+  "version": "0.18.0",
   "description": "macOS menu bar app for Claude Code: live sessions with context-window usage, MCP servers with per-tool switches, and 5h/7d limit bars. Fork of m1ckc3s/claude-status-bar merged with InfinityScripter/claude-mcp-bar.",
   "author": {
     "name": "Talalaev M"
