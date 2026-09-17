@@ -89,9 +89,9 @@ const life = (evt) =>
 // Installed for BOTH channels, unlike Claude's: ~/.codex/hooks.json is the only place Codex
 // looks, so the plugin channel standing down here would leave every plugin user's Codex
 // sessions invisible. Nothing else about Codex is touched — in particular not config.toml,
-// where the hook TRUST lives. Codex shows the user a review screen for hooks it has not seen
-// before and records the approval itself; forging that hash would be defeating a safety
-// mechanism, so instead the user confirms once, and the README says so.
+// where the hook TRUST lives. This installer runs on every launch, and approving from here would
+// be the app deciding on the user's behalf; the approval comes from a click instead (`mcpbar.py
+// codex-hooks approve`), and Codex records it with the hash it computes itself.
 const codexHome = path.join(home, ".codex");
 const codexHooksPath = path.join(codexHome, "hooks.json");
 // Codex kills SessionEnd and Interrupt after one second (three at most) — our end hook only

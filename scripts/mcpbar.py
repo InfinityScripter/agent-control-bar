@@ -16,7 +16,7 @@ MCP-картину ведёт этот скрипт (mcp.json), рисует в�
     limits           спросить лимиты аккаунта у эндпоинта и переписать limits.json
     codex-limits     снять лимиты Codex со свежего rollout и переписать codex/limits.json
     codex-mcp        серверы MCP Codex: refresh | toggle-server | toggle-tool
-    codex-hooks      спросить Codex, каким нашим хукам он не доверяет
+    codex-hooks      спросить Codex, каким нашим хукам он не доверяет; approve — одобрить их
     doctor           проверить окружение и показать, что откуда берётся
 """
 
@@ -1836,11 +1836,21 @@ CODEX_APP_SERVER_TIMEOUT = 60
 
 
 def find_codex():
-    """Путь к бинарю `codex`, или "" — тем же перебором, что find_claude()."""
+    """Путь к бинарю `codex`, или "" — тем же перебором, что find_claude().
+
+    Последние из известных путей — бинарь внутри десктопного приложения (Codex.app, позже
+    ChatGPT.app): оно кладёт `codex` только к себе и в PATH его не добавляет, а скрипт
+    запускается приложением без PATH шелла. Висячая ссылка Homebrew на удалённый cask
+    `os.path.exists` не проходит и до запуска не доходит.
+    """
     for path in ("/opt/homebrew/bin/codex", "/usr/local/bin/codex",
-                 os.path.join(HOME, ".local", "bin", "codex")):
+                 os.path.join(HOME, ".local", "bin", "codex"),
+                 "/Applications/Codex.app/Contents/Resources/codex",
+                 "/Applications/ChatGPT.app/Contents/Resources/codex"):
         if os.path.exists(path):
             return path
+    import shutil
+
     return shutil.which("codex") or ""
 
 
@@ -2212,14 +2222,15 @@ def codex_hooks_list():
     return rows, None
 
 
-def codex_untrusted_ours(groups):
-    """Сколько НАШИХ включённых хуков Codex считает неодобренными.
+def codex_hooks_waiting(groups):
+    """НАШИ включённые хуки, которые Codex не запустит, пока их не одобрят.
 
-    Только свои: чужой неодобренный хук — сознательный выбор человека, и подсказка про
-    наши из-за него была бы враньём. Только включённые: выключенный не запустится и с
-    доверием, так что он не объясняет пустую вкладку.
+    Только свои: чужой неодобренный хук — сознательный выбор человека, и ни подсказка, ни
+    кнопка одобрения его не касаются. Только включённые: выключенный не запустится и с
+    доверием. `modified` — хук, одобренный раньше, чья команда с тех пор поменялась (так
+    бывает после обновления приложения): Codex пропускает его так же, как неодобренный.
     """
-    count = 0
+    waiting = []
     for group in groups or []:
         hooks = group.get("hooks") if isinstance(group, dict) else None
         for hook in hooks if isinstance(hooks, list) else []:
@@ -2227,9 +2238,14 @@ def codex_untrusted_ours(groups):
                 continue
             if not our_hook_command(hook.get("command")):
                 continue
-            if hook.get("trustStatus") == "untrusted":
-                count += 1
-    return count
+            if hook.get("trustStatus") in ("untrusted", "modified"):
+                waiting.append(hook)
+    return waiting
+
+
+def codex_untrusted_ours(groups):
+    """Сколько НАШИХ включённых хуков Codex пропускает за отсутствием одобрения."""
+    return len(codex_hooks_waiting(groups))
 
 
 def fetch_codex_hooks():
@@ -2245,6 +2261,30 @@ def fetch_codex_hooks():
     untrusted = codex_untrusted_ours(groups)
     write_json(CODEX_HOOKS, {"ts": int(time.time()), "untrusted": untrusted})
     return t("codex.hooks", n=untrusted)
+
+
+def approve_codex_hooks():
+    """Одобрить в Codex НАШИ ждущие хуки → переспросить Codex и переписать codex/hooks.json.
+
+    Только по нажатию кнопки человеком, никогда при запуске: одобрение остаётся его решением,
+    кнопка лишь передаёт его, не заставляя искать экран одобрения в самом Codex. Запись делает
+    сам Codex — тот же `config/batchWrite` в `hooks.state`, что шлёт кнопка доверия в его
+    приложении, — и хеш берётся из его же `hooks/list`: свой хеш мы не считаем, так что
+    одобрено ровно то, что Codex показал бы на своём экране.
+    """
+    if not os.path.isdir(CODEX):
+        return t("codex.absent")
+    groups, error = codex_hooks_list()
+    if error:
+        return error
+    trust = {hook["key"]: {"trusted_hash": hook["currentHash"]}
+             for hook in codex_hooks_waiting(groups)
+             if isinstance(hook.get("key"), str) and isinstance(hook.get("currentHash"), str)}
+    if trust:
+        error = codex_config_write([("hooks.state", trust)])
+        if error:
+            return error
+    return fetch_codex_hooks()
 
 
 # ──────────────────────────────────────────────────────────── контекстное окно
@@ -2754,7 +2794,7 @@ def main(argv):
     elif command == "codex-limits":
         print(fetch_codex_limits())
     elif command == "codex-hooks":
-        print(fetch_codex_hooks())
+        print(approve_codex_hooks() if rest[:1] == ["approve"] else fetch_codex_hooks())
     elif command == "codex-mcp":
         # Своё слово после команды, как у statusline: три действия над одним файлом, и
         # отдельные команды верхнего уровня для них читались бы как отдельные подсистемы.

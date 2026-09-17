@@ -63,7 +63,9 @@ No icon?
 
 Codex has a hook system of its own, and the app uses it the same way it uses Claude Code's. On install it merges eight entries into `~/.codex/hooks.json`; hooks you put there yourself are left untouched.
 
-**Codex runs no hook it has not been told to trust.** The next time you start Codex it shows a review screen for the entries it has not seen before. Approve them once and Codex sessions appear in the panel beside Claude's. Until then Codex writes down no session at all — the Sessions tab says exactly that, rather than looking like Codex isn't running.
+**Codex runs no hook it has not been told to trust.** Approve them once — with **Approve** in the panel or in **Settings → Codex**, with **Install hooks again** in **Settings → About**, or on the review screen Codex itself shows — and Codex sessions appear in the panel beside Claude's. The app approves only on your click, never on its own at launch, and only its own eight entries: Codex records the approval with the hash it computes itself, exactly as its review screen would. Until then Codex writes down no session at all — the Sessions tab says exactly that, rather than looking like Codex isn't running.
+
+Codex's desktop app lists hooks under **Settings → Hooks** only for the projects open in it, so with no project open that page reads *No hooks found* even while `~/.codex/hooks.json` holds this app's entries.
 
 Approving means saying yes to eight shell commands, so here is what is behind them:
 
@@ -76,7 +78,7 @@ Approving means saying yes to eight shell commands, so here is what is behind th
 | **What they send** | Nothing. The hooks make no network request of any kind. |
 | **Dependencies** | None — Node's own `fs`/`os`/`path`/`child_process`, no npm packages. |
 
-The panel's own block has the two buttons for this moment: **What gets approved** opens `~/.codex/hooks.json` in the Finder so you can read the real entries before deciding, and **Check again** asks Codex whether it trusts them now — worth a click right after approving, instead of waiting for the app to notice by itself.
+The panel's own block has the two buttons for this moment: **What gets approved** opens `~/.codex/hooks.json` in the Finder so you can read the real entries before deciding, and **Approve** has Codex record the approval, then asks it again. With nothing left to approve it only asks again, which is also the way to check an approval given inside Codex.
 
 Afterwards the standing answer lives in **Settings → Codex**: *Hooks approved*, *N hooks not approved*, or *not asked yet* when Codex has not been reachable to answer. To take the trust back, remove this app's entries from `~/.codex/hooks.json` — or run the uninstall script, which removes them for you — and Codex will ask again if they ever reappear.
 
