@@ -64,13 +64,13 @@ struct PanelSessionsTab: View {
                     .help("Opens ~/.codex/hooks.json in the Finder — the exact file Codex is "
                           + "asking about. Every entry runs one script this app installed, and "
                           + "that script writes one small file per session and reads nothing else.")
-                Button(store.snapshot.codexHooksChecking ? "Checking…" : "Check again") {
-                    store.checkCodexHooks()
+                Button(store.snapshot.codexHooksChecking ? "Approving…" : "Approve") {
+                    store.approveCodexHooks()
                 }
                 .buttonStyle(PanelButtonStyle())
                 .disabled(store.snapshot.codexHooksChecking)
-                .help("Asks Codex whether it trusts them now. Worth a click right after approving; "
-                      + "the app also asks by itself whenever Codex rewrites its config.")
+                .help("Has Codex record its approval of this app's hooks — only these, with the "
+                      + "hash Codex computes itself — then asks it again.")
             }
             .padding(.top, 2)
         }
@@ -85,8 +85,8 @@ struct PanelSessionsTab: View {
         let n = untrusted == 1 ? "1 hook" : "\(untrusted) hooks"
         let head: String = "Codex skips any hook it has not been told to trust, and \(n) of this "
             + "app's are still waiting — so it writes down no session at all.\n"
-        let tail: String = "Start Codex once in a terminal and approve them on the review screen "
-            + "it shows. The approval is Codex's to record, so it cannot be given from here."
+        let tail: String = "Approve has Codex record the same approval its own review screen "
+            + "would, for these entries only. Read them first with What gets approved."
         return head + tail
     }
 

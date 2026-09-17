@@ -141,8 +141,9 @@ private struct GeneralSettings: View {
                 .help("Opens ~/.codex/hooks.json in the Finder — the exact entries Codex asks you "
                       + "to trust. They all run one script this app installed; it writes one small "
                       + "file per session and reads nothing else.")
-            Button("Check") { store.recheckCodexHooks() }
-                .help("Asks Codex whether it trusts them now.")
+            Button("Approve") { store.approveCodexHooks() }
+                .help("Has Codex record its approval of this app's hooks — only these, with the "
+                      + "hash Codex computes itself — then asks it again.")
         }
     }
 
@@ -315,7 +316,9 @@ private struct AboutSettings: View {
         + "small Node scripts Claude Code and Codex run on every prompt and tool call. This copy "
         + "writes them into ~/.claude/settings.json and ~/.codex/hooks.json each time it starts, "
         + "then checks that the node they call actually starts. While either fails, it tries again "
-        + "every few minutes and says why here and in the panel."
+        + "every few minutes and says why here and in the panel.\n\n"
+        + "Codex skips any hook until it is approved, so the button also approves this app's "
+        + "hooks in Codex. Only a click does that, never a launch."
 
     /// The cause is selectable here and not in the panel: this is a normal window, and a path or a
     /// library name is exactly what someone wants to paste into a terminal or a bug report.

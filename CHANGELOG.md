@@ -7,6 +7,28 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [Unreleased]
+
+### Changed
+- **Codex's hooks can be approved from the app.** Codex runs no hook it has not been told to
+  trust, and the only way to approve this app's eight was Codex's own review screen — which the
+  desktop app does not put in front of you: its Settings → Hooks lists hooks only for projects
+  open in it, and with none open it reads *No hooks found*. **Approve** in the panel's Codex block
+  and in Settings → Codex, and **Install hooks again** in Settings → About, now approve them.
+  Only on a click, never at launch, and only this app's own enabled entries: Codex records the
+  approval itself through the same `config/batchWrite` its own trust button sends, with the hash
+  from its own `hooks/list`, so nothing is approved that its review screen would not have shown.
+  A hook approved before and changed since (a new command after an update) counts as waiting too
+  — Codex skips it just the same, and *Hooks approved* about it was wrong.
+
+### Fixed
+- **Every question to Codex failed on a Mac where Codex came with its desktop app.** The script
+  looked for `codex` in Homebrew and `~/.local/bin`, then called `shutil.which` without importing
+  `shutil`, so it died with `NameError` before asking anything — and the desktop app keeps its
+  `codex` inside `ChatGPT.app`, where nothing looked. The hook-trust notice therefore never
+  appeared, and Codex's MCP servers never reached the MCP tab. The app bundles are searched now,
+  and a missing binary is an answer rather than a crash.
+
 ## [0.18.0] - 2026-09-16
 
 ### Added

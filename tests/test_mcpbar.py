@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
 
@@ -2244,7 +2245,7 @@ class CodexHooks(unittest.TestCase):
         self._dir = tempfile.TemporaryDirectory()
         self.saved = {k: getattr(mcpbar, k)
                       for k in ("CODEX", "CODEX_ROOT", "CODEX_HOOKS", "ROOT",
-                                "codex_hooks_list")}
+                                "codex_hooks_list", "codex_rpc")}
         mcpbar.CODEX = os.path.join(self._dir.name, ".codex")
         self.root = os.path.join(self._dir.name, "control-bar")
         mcpbar.ROOT = self.root
@@ -2326,6 +2327,89 @@ class CodexHooks(unittest.TestCase):
         mcpbar.fetch_codex_hooks()
         with open(mcpbar.CODEX_HOOKS) as fh:
             self.assertEqual(json.load(fh)["untrusted"], 1)
+
+    def test_изменённый_после_одобрения_тоже_ждёт(self):
+        """`modified` — хук, одобренный раньше, чья команда с тех пор поменялась: так бывает
+        после обновления приложения. Codex снова его пропускает, и «одобрено» про него — неправда."""
+        self.assertEqual(mcpbar.codex_untrusted_ours(self.groups(self.ours("modified"))), 1)
+
+    def fake_app_server(self, before, after, write_error=None):
+        """Подмена app-server: `hooks/list` отвечает `before`, а после записи доверия — `after`."""
+        calls = []
+
+        def rpc(method, params=None, timeout=30):
+            calls.append((method, params))
+            if method == "config/batchWrite":
+                return (None, write_error) if write_error else ({}, None)
+            wrote = any(m == "config/batchWrite" for m, _ in calls)
+            return {"data": after if wrote else before}, None
+
+        mcpbar.codex_rpc = rpc
+        return calls
+
+    def test_одобрение_пишет_хеш_codex_только_своим_ждущим(self):
+        """Хеш берётся из ответа Codex, а не считается нами, и пишется тем же `config/batchWrite`
+        в `hooks.state`, что шлёт кнопка доверия в самом Codex. Чужой хук, уже одобренный и
+        выключенный — не трогаются: одобряется ровно то, о чём была кнопка."""
+        os.makedirs(mcpbar.CODEX, exist_ok=True)
+        waiting = dict(self.ours("untrusted"), key="hooks.json:pre_tool_use:0:0",
+                       currentHash="sha256:aa")
+        changed = dict(self.ours("modified", "stop"), key="hooks.json:stop:0:0",
+                       currentHash="sha256:bb")
+        done = dict(self.ours("trusted", "sessionStart"), key="k3", currentHash="sha256:cc")
+        off = dict(self.ours("untrusted", "sessionEnd"), enabled=False, key="k4",
+                   currentHash="sha256:dd")
+        alien = {"eventName": "preToolUse", "command": "/usr/local/bin/somebody-else",
+                 "enabled": True, "trustStatus": "untrusted", "key": "k5",
+                 "currentHash": "sha256:ee"}
+        calls = self.fake_app_server(
+            self.groups(waiting, changed, done, off, alien),
+            self.groups(dict(waiting, trustStatus="trusted"), dict(changed, trustStatus="trusted"),
+                        done, off, alien))
+        mcpbar.approve_codex_hooks()
+        writes = [params for method, params in calls if method == "config/batchWrite"]
+        self.assertEqual(writes, [{"edits": [{"keyPath": "hooks.state", "value": {
+            "hooks.json:pre_tool_use:0:0": {"trusted_hash": "sha256:aa"},
+            "hooks.json:stop:0:0": {"trusted_hash": "sha256:bb"},
+        }, "mergeStrategy": "upsert"}]}])
+        with open(mcpbar.CODEX_HOOKS) as fh:
+            self.assertEqual(json.load(fh)["untrusted"], 0,
+                             "счёт — это новый ответ Codex после записи, а не наша догадка")
+
+    def test_нечего_одобрять_конфиг_не_трогаем(self):
+        """Запись меняет mtime config.toml, а по нему приложение решает спросить Codex снова —
+        пустая запись на каждый клик заставляла бы спрашивать впустую."""
+        os.makedirs(mcpbar.CODEX, exist_ok=True)
+        done = dict(self.ours("trusted"), key="k", currentHash="sha256:aa")
+        calls = self.fake_app_server(self.groups(done), self.groups(done))
+        mcpbar.approve_codex_hooks()
+        self.assertNotIn("config/batchWrite", [method for method, _ in calls])
+
+    def test_отказ_записи_не_выдаётся_за_одобрение(self):
+        os.makedirs(mcpbar.CODEX, exist_ok=True)
+        waiting = dict(self.ours("untrusted"), key="k", currentHash="sha256:aa")
+        self.fake_app_server(self.groups(waiting),
+                             self.groups(dict(waiting, trustStatus="trusted")),
+                             write_error="config is locked")
+        self.assertEqual(mcpbar.approve_codex_hooks(), "config is locked")
+        self.assertFalse(os.path.exists(mcpbar.CODEX_HOOKS))
+
+
+class FindCodex(unittest.TestCase):
+    """С поиска бинаря начинается любой вопрос к Codex: серверы, хуки, доверие. Приложение
+    запускает скрипт без PATH из шелла пользователя, а Codex, поставленный десктопным
+    приложением, лежит только внутри этого приложения."""
+
+    def test_codex_из_десктопного_приложения(self):
+        inside = "/Applications/ChatGPT.app/Contents/Resources/codex"
+        with mock.patch("os.path.exists", lambda path: path == inside), \
+                mock.patch.dict(os.environ, {"PATH": ""}):
+            self.assertEqual(mcpbar.find_codex(), inside)
+
+    def test_нигде_нет_это_пустая_строка_а_не_падение(self):
+        with mock.patch("os.path.exists", lambda path: False), \
+                mock.patch.dict(os.environ, {"PATH": ""}):
+            self.assertEqual(mcpbar.find_codex(), "")
 
 
 class CodexMCP(unittest.TestCase):

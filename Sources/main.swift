@@ -31,8 +31,8 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// session file — so a count above zero means Codex is writing down less than it would, and
     /// with the whole set unapproved it writes down nothing at all.
     var codexHooksUntrusted = 0
-    /// True while the panel's own "Check again" is in flight, so the button can say so. Not a
-    /// general busy flag: the periodic ask is invisible on purpose and must not flicker a button.
+    /// True while an Approve click is in flight, so the button can say so. Not a general busy
+    /// flag: the periodic ask is invisible on purpose and must not flicker a button.
     var codexHooksChecking = false
     /// Whether Codex has ever answered about the hooks on this run. Separate from the count above
     /// because zero has two meanings otherwise — "all approved" and "never asked" — and Settings
@@ -524,7 +524,11 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// never read how it ended, and leave the next attempt to the next launch. A node that died in
     /// dyld therefore looked like a finished install, and the Sessions tab said "No session
     /// running" for as long as the app stayed up — hours — with sessions plainly running.
-    func checkHooks() {
+    ///
+    /// `thenApproveCodex` is the Settings button and nothing else: a launch or a retry never
+    /// approves anything in Codex. It waits for the installer, so what gets approved is the
+    /// hooks.json this install left behind rather than the one it was about to replace.
+    func checkHooks(thenApproveCodex: Bool = false) {
         // A build run out of build/ keeps its hands off settings.json, as before; it simply has no
         // verdict to show, and Settings says why.
         guard isInstalledCopy, !hookCheckRunning else { return }
@@ -562,6 +566,9 @@ final class StatusController: NSObject, NSWindowDelegate {
                     self.hookFailures = 0
                 }
                 self.refreshCounts()
+                if thenApproveCodex, FileManager.default.fileExists(atPath: self.codexHome) {
+                    self.approveCodexHooks()
+                }
             }
         }
     }
@@ -822,23 +829,29 @@ final class StatusController: NSObject, NSWindowDelegate {
         }
     }
 
-    /// Ask Codex about the hooks again, now, because the person reading the panel says they have
-    /// just approved them.
+    /// Approve this app's own hooks in Codex, then ask Codex again — because the person reading the
+    /// panel or Settings has just pressed the button that says so.
+    ///
+    /// Only ever from a click. Codex asks for approval because hooks run outside its sandbox, and
+    /// a launch that approved by itself would be this app deciding that on the user's behalf; the
+    /// click is the user deciding it. Codex records the approval itself, with the hash it computed
+    /// (see approve_codex_hooks in mcpbar.py), so what is approved is exactly what its own review
+    /// screen would have shown. With nothing waiting it writes nothing and only asks again, which
+    /// is also how someone who approved inside Codex checks that it took.
     ///
     /// Deliberately past askCodexAboutHooks's mtime gate. That gate exists so a handful of clicks
     /// in the MCP tab cannot spawn a `codex app-server` each, and it answers "nothing changed" for
-    /// the one case this button is for: a user who approved in a Codex that has not written its
-    /// config back yet, or who wants to see for themselves that it took. A button that answered
-    /// "nothing to do" would read as the click having done nothing.
-    func recheckCodexHooks() {
+    /// a Codex that has not written its config back yet. A button that answered "nothing to do"
+    /// would read as the click having done nothing.
+    func approveCodexHooks() {
         guard !codexHooksChecking else { return }
         hooksWillChange()
         codexHooksChecking = true
         refreshCounts()
-        runQuietCommand("codex-hooks") { [weak self] in
+        runQuietCommand("codex-hooks", "approve") { [weak self] in
             guard let self else { return }
             // The next tick re-reads codex/hooks.json through its own mtime gate; clearing the
-            // flag here is what turns the button back from "Checking…" to its own name.
+            // flag here is what turns the button back from "Approving…" to its own name.
             self.hooksWillChange()
             self.codexHooksChecking = false
             self.codexTrustInputs = ""   // the gate has been overtaken, so let it re-measure
@@ -846,10 +859,8 @@ final class StatusController: NSObject, NSWindowDelegate {
         }
     }
 
-    /// Open ~/.codex/hooks.json in the Finder, selected. The one thing this app can honestly do
-    /// about a trust decision that belongs to the user: show them the exact file Codex is asking
-    /// them to approve, before they approve it. Everything else here — running Codex, answering
-    /// its prompt, writing the trust hash — would be this app approving its own hooks.
+    /// Open ~/.codex/hooks.json in the Finder, selected: the exact file Codex is asking the user to
+    /// approve, to read before pressing Approve rather than after.
     @objc func revealCodexHooks() {
         let path = (codexHome as NSString).appendingPathComponent("hooks.json")
         guard FileManager.default.fileExists(atPath: path) else {

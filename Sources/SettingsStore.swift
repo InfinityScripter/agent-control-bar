@@ -70,7 +70,7 @@ final class SettingsStore: ObservableObject {
     /// having looked is the one wrong thing this row could say.
     var codexHooksUntrusted: Int? { controller?.codexHooksAnswered == true
         ? controller?.codexHooksUntrusted : nil }
-    func recheckCodexHooks() { controller?.recheckCodexHooks() }
+    func approveCodexHooks() { controller?.approveCodexHooks() }
     func revealCodexHooks() { controller?.revealCodexHooks() }
 
     /// Whether the ping row is shown at all: a build with no receiver, or a machine whose
@@ -134,7 +134,7 @@ final class SettingsStore: ObservableObject {
     var hooksManaged: Bool { controller?.isInstalledCopy ?? false }
     var hooksHealth: HookHealth { controller?.hookHealth ?? .unchecked }
     var hooksChecking: Bool { controller?.hookCheckRunning ?? false }
-    func checkHooks() { controller?.checkHooks() }
+    func checkHooks() { controller?.checkHooks(thenApproveCodex: true) }
 }
 
 // Applying a setting: the value, the UserDefaults key it is remembered under, and the side effect
