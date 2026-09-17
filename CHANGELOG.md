@@ -7,7 +7,7 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
-## [Unreleased]
+## [0.19.0] - 2026-09-17
 
 ### Changed
 - **Codex's hooks can be approved from the app.** Codex runs no hook it has not been told to
