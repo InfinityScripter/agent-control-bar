@@ -22,6 +22,11 @@ final class PanelStore: ObservableObject {
     /// The rows whose detail is expanded, by row id. Cleared when the panel closes.
     @Published var expanded: Set<String> = []
 
+    /// The chosen pet's frames. Not in the snapshot and not published: a decoded picture is not a
+    /// value to compare 2.5 times a second, and what actually changes — which pet was picked — is
+    /// `snapshot.petID`, whose change is what redraws the rows.
+    private(set) var petAtlas: PetAtlas?
+
     /// What the cached MCP half was built from. Rebuilding it is by far the most expensive thing
     /// a refresh can do — every server and every tool, ~1100 allocations on a machine with a dozen
     /// servers — and at 2.5 Hz almost every refresh would rebuild a picture that had not moved,
@@ -52,6 +57,7 @@ final class PanelStore: ObservableObject {
             mcpCache = PanelMCP(controller)
             mcpKey = key
         }
+        petAtlas = controller.petAtlas()
         let next = PanelSnapshot(controller, mcp: mcpCache, update: stagedUpdate(controller))
         if next != snapshot { snapshot = next }
     }
@@ -255,6 +261,9 @@ struct PanelSnapshot: Equatable {
     /// How the strip stacks the groups, and which one the switcher is showing.
     var limitsLayout: PanelLimitsLayout = .rows
     var limitsProvider = "claude"
+    /// Which pet the session rows draw, or "" for none. In the snapshot rather than read from the
+    /// setting at the row, so the whole panel changes pets in one redraw instead of row by row.
+    var petID = ""
     var mcp = PanelMCP()
     var update: PanelUpdate?
     var notificationsDenied = false
@@ -438,6 +447,7 @@ extension PanelSnapshot {
         (limitGroups, limitsNote) = c.panelLimitGroups(now: now)
         limitsLayout = c.limitsLayout
         limitsProvider = c.limitsProvider
+        petID = c.petID
         self.mcp = mcp
         self.update = update
         notificationsDenied = c.notificationsDenied

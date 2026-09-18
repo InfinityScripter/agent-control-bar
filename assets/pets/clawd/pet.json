@@ -1,0 +1,6 @@
+{
+  "id": "clawd",
+  "displayName": "Clawd",
+  "description": "The menu bar crab, in the panel.",
+  "spritesheetPath": "spritesheet.png"
+}

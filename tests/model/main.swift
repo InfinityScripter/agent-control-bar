@@ -1828,5 +1828,139 @@ check(!HookInstall.checkDueOnOpen(problem: false, noSessions: false, sinceLastCh
 try? FileManager.default.removeItem(atPath: hookDir)
 
 
+// MARK: pets
+//
+// The sprite atlas is somebody else's format: Codex writes pets into ~/.codex/pets/ and a whole
+// gallery of third-party ones targets the same layout. So the checks here are mostly about
+// refusing the unfamiliar quietly — an atlas whose size we do not recognise, a manifest that is
+// not JSON, a folder with no image in it. Every one of those has to come back nil and leave the
+// other pets alone, because the alternative is an app that stops drawing when the format moves on.
+
+let petDir = NSTemporaryDirectory() + "ccb-pet-test/"
+try? FileManager.default.removeItem(atPath: petDir)
+try? FileManager.default.createDirectory(atPath: petDir, withIntermediateDirectories: true)
+
+/// A blank transparent atlas of a given size — the checks care about the dimensions, not the art.
+func writeAtlas(_ width: Int, _ height: Int, to path: String) {
+    let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+                              bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                              colorSpaceName: .deviceRGB, bytesPerRow: width * 4, bitsPerPixel: 32)!
+    try! rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: path))
+}
+
+@discardableResult
+func writePet(_ name: String, in folder: String = petDir,
+              manifest: String, atlas: (Int, Int)?) -> String {
+    let dir = folder + name + "/"
+    try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    try! manifest.write(toFile: dir + "pet.json", atomically: true, encoding: .utf8)
+    if let (w, h) = atlas { writeAtlas(w, h, to: dir + "spritesheet.png") }
+    return dir
+}
+
+func petManifest(_ id: String?, name: String) -> String {
+    let idLine = id.map { "\"id\": \"\($0)\", " } ?? ""
+    return "{\(idLine)\"displayName\": \"\(name)\", \"spritesheetPath\": \"spritesheet.png\"}"
+}
+
+check(PetFormat.matching(width: 1536, height: 2288)?.version == 2, "the tall atlas is the v2 format")
+check(PetFormat.matching(width: 1536, height: 2288)?.framesByRow.count == 11,
+      "and it describes eleven rows")
+check(PetFormat.matching(width: 1536, height: 1872)?.version == 1, "the short one is v1")
+check(PetFormat.matching(width: 1536, height: 1872)?.framesByRow.count == 9,
+      "with the two look rows missing")
+check(PetFormat.matching(width: 1536, height: 2000) == nil,
+      "a size nobody has published is not guessed at")
+
+// The cell grid is what every frame rectangle is cut from, so an off-by-one here is a pet drawn
+// with a slice of its neighbour attached. Row 7 column 3 of v2 is 3*192 across and 7*208 down.
+let v2 = PetFormat.matching(width: 1536, height: 2288)!
+check(v2.rect(row: .running, column: 3) == CGRect(x: 576, y: 1456, width: 192, height: 208),
+      "a frame rectangle is its cell, counted from the top left")
+check(v2.frames(for: .idle).count == 6, "idle is six frames long")
+check(v2.frames(for: .runningRight).count == 8, "and a run is eight")
+check(v2.frames(for: .idle).allSatisfy { $0.duration > 0 },
+      "every frame is held for some time, or the animation never advances")
+check(v2.frames(for: .idle).last!.duration > v2.frames(for: .idle)[1].duration,
+      "the last frame rests longer than the middle of the loop")
+// The panel wakes ten times a second; a duration that is not a whole number of those ticks is
+// shown for a length nobody chose, rounded one way or the other by where the loop happens to sit.
+check(v2.frames(for: .idle).allSatisfy { (($0.duration * 10).rounded() - $0.duration * 10).magnitude < 0.0001 },
+      "and every duration is a whole number of panel ticks")
+
+// Idle is five frames at 0.4 and a last one at 0.6, which is 2.6 seconds all told.
+let idleLoop = PetLoop(images: [], durations: v2.frames(for: .idle).map(\.duration))
+check(idleLoop.index(at: 0) == 0, "a loop starts on its first frame")
+check(idleLoop.index(at: 0.3) == 0, "and stays there for as long as the frame is held")
+check(idleLoop.index(at: 0.5) == 1, "then moves on")
+check(idleLoop.index(at: 2.5) == 5, "the last frame is reached")
+check(idleLoop.index(at: 2.7) == 0, "and the loop starts over")
+// -3 seconds is 2.2 seconds into the loop two cycles earlier, and must name that same frame —
+// asserting a particular number here instead would pin the test to the current timings rather
+// than to the property, which is that the clock wraps in both directions.
+check(idleLoop.index(at: -3) == idleLoop.index(at: -3 + 2.6 * 2),
+      "a clock reading before the start wraps rather than indexing off the end")
+check(PetLoop(images: [], durations: []).index(at: 3) == 0,
+      "an empty loop never indexes out of bounds")
+
+check(PetRow.forSessionState("permission") == .waiting, "a session that needs you is waiting")
+check(PetRow.forSessionState("thinking") == .running, "a thinking session is working")
+check(PetRow.forSessionState("tool") == .running, "so is one running a tool")
+check(PetRow.forSessionState("idle") == .idle, "a resting session rests")
+check(PetRow.forSessionState("something-new") == .idle,
+      "and a state the hooks have not taught us yet rests rather than crashes")
+
+let goodDir = writePet("good", manifest: petManifest("good", name: "Good Pet"), atlas: (1536, 2288))
+let goodPet = Pet.load(directory: goodDir)
+check(goodPet?.id == "good", "a well-formed pet folder loads")
+check(goodPet?.displayName == "Good Pet", "with the name its manifest gives it")
+check(goodPet?.format.version == 2, "and the format its image size implies")
+
+writePet("torn", manifest: "{not json at all", atlas: (1536, 2288))
+check(Pet.load(directory: petDir + "torn/") == nil, "a manifest that is not JSON is skipped")
+
+writePet("odd-size", manifest: petManifest("odd-size", name: "Odd"), atlas: (800, 600))
+check(Pet.load(directory: petDir + "odd-size/") == nil, "an atlas of an unknown size is skipped")
+
+writePet("no-art", manifest: petManifest("no-art", name: "No Art"), atlas: nil)
+check(Pet.load(directory: petDir + "no-art/") == nil, "a folder with no atlas in it is skipped")
+
+// The id is what the setting stores, so a manifest that forgets it still has to produce a stable
+// one: the folder name is the only thing the gallery CLIs guarantee.
+writePet("nameless", manifest: petManifest(nil, name: "Nameless"), atlas: (1536, 2288))
+check(Pet.load(directory: petDir + "nameless/")?.id == "nameless",
+      "a pet with no id in its manifest is known by its folder")
+
+let found = Pet.installed(inPetsFolder: petDir)
+check(found.count == 2, "scanning a folder returns the pets that load and ignores the rest")
+check(found.map(\.id) == ["good", "nameless"], "in a stable order, so the picker does not shuffle")
+check(Pet.installed(inPetsFolder: petDir + "does-not-exist/").isEmpty,
+      "and a missing pets folder is simply no pets, not an error")
+
+// Two folders, ours and Codex's. What matters is what happens when they disagree: the id is what
+// the setting stores, so one id has to mean one pet, and it has to keep meaning ours.
+let codexPetDir = NSTemporaryDirectory() + "ccb-pet-codex/"
+try? FileManager.default.removeItem(atPath: codexPetDir)
+try? FileManager.default.createDirectory(atPath: codexPetDir, withIntermediateDirectories: true)
+writePet("good", in: codexPetDir, manifest: petManifest("good", name: "Impostor"), atlas: (1536, 2288))
+writePet("hoots", in: codexPetDir, manifest: petManifest("hoots", name: "Hoots"), atlas: (1536, 2288))
+
+let library = Pet.library(bundled: petDir, codex: codexPetDir)
+check(library.map(\.id) == ["good", "nameless", "hoots"], "ours come first, then the Codex ones")
+check(library.first(where: { $0.id == "good" })?.displayName == "Good Pet",
+      "and a Codex pet cannot take over an id of ours")
+check(Pet.library(bundled: nil, codex: codexPetDir).map(\.id) == ["good", "hoots"],
+      "with no bundled folder the Codex ones stand alone")
+
+check(Pet.chosen("hoots", from: library)?.id == "hoots", "the saved id picks its pet")
+check(Pet.chosen("", from: library) == nil, "an empty id is pets switched off, not a fallback")
+check(Pet.chosen("deleted-yesterday", from: library)?.id == "good",
+      "an id whose pet is gone falls back to the first, so no row loses its marker")
+check(Pet.chosen("anything", from: []) == nil, "and with no pets at all there is nothing to draw")
+
+try? FileManager.default.removeItem(atPath: codexPetDir)
+try? FileManager.default.removeItem(atPath: petDir)
+
+
 print(failures == 0 ? "\nall model checks passed" : "\n\(failures) failed")
 exit(failures == 0 ? 0 : 1)

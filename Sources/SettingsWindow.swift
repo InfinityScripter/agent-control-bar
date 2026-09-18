@@ -14,6 +14,10 @@ extension StatusController {
     }
 
     @objc func openSettingsWindow() {
+        // The pets folder is somebody else's — Codex and its galleries write into it while this
+        // app runs — and this is the one screen that lists it, so it is re-read here rather than
+        // on a timer or once at launch.
+        reloadPetLibrary()
         let window = settingsWindow ?? makeSettingsWindow()
         settingsWindow = window
         // An accessory app has no Dock tile and cannot be brought to the front the ordinary way:
