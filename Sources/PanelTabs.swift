@@ -154,7 +154,7 @@ struct PanelSessionRow: View {
             HStack(spacing: 8) {
                 Button { store.openSession(session) } label: {
                     HStack(alignment: .top, spacing: 8) {
-                        marker.padding(.top, 4)
+                        marker
                         // The figure and the badge sit beside the NAME, not beside the pair of
                         // lines. Centred across both they took their width out of the subtitle
                         // too, and the clock at the end of it was the first thing to go:
@@ -220,12 +220,21 @@ struct PanelSessionRow: View {
             + (session.pct.map { ", context \($0)%" } ?? ""))
     }
 
+    /// What stands at the head of the row. A pet says more than the dot and the spinner together —
+    /// it animates the session's own state, so a row that needs you and a row that is working look
+    /// different at a glance rather than differing by the colour of a 7pt circle. The dot and the
+    /// spinner stay as the fallback for when there is no pet to draw at all.
+    /// Each variant places itself on the name's line: a 7pt dot needs lifting, a pet carries its
+    /// own margin inside its cell. The row asks for "the marker" and does not learn how any of
+    /// them is padded, or a third kind would add a third branch out here as well as in here.
     @ViewBuilder
     private var marker: some View {
-        if session.working {
-            PanelSpinner()
+        if let atlas = store.petAtlas {
+            PetView(atlas: atlas, state: session.eff)
+        } else if session.working {
+            PanelSpinner().padding(.top, 4)
         } else {
-            Circle().fill(tint).frame(width: 7, height: 7)
+            Circle().fill(tint).frame(width: 7, height: 7).padding(.top, 4)
         }
     }
 }

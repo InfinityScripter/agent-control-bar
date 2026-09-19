@@ -78,6 +78,9 @@ cp scripts/mcpbar.py "$STAGE_APP/Contents/Resources/scripts/"
 cp assets/AppIcon.icns "$STAGE_APP/Contents/Resources/AppIcon.icns"
 cp CHANGELOG.md "$STAGE_APP/Contents/Resources/CHANGELOG.md"  # the menu's "What's new" reads it
 cp assets/completion.mp3 "$STAGE_APP/Contents/Resources/completion.mp3"
+# The pets the app ships with, in the same folder shape Codex uses for the ones a user installs
+# (pet.json beside its atlas), so one reader serves both sources.
+cp -R assets/pets "$STAGE_APP/Contents/Resources/pets"
 
 # --- Signing / notarization ---
 # For a clean (no Gatekeeper warning) release you need, set up once on this Mac:

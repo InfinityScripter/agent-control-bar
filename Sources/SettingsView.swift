@@ -196,6 +196,12 @@ private struct GeneralSettings: View {
 private struct AppearanceSettings: View {
     @ObservedObject var store: SettingsStore
 
+    private static let petFooter: String =
+        "A small animated character at the head of each session row: it rests while the session "
+        + "is idle, works while the session works, and looks up when the session needs you. "
+        + "Pets installed for Codex in ~/.codex/pets are listed here too — the list is re-read "
+        + "each time this window opens."
+
     var body: some View {
         Form {
             Section {
@@ -214,6 +220,18 @@ private struct AppearanceSettings: View {
                 Text("System draws the icon as a template — black on a light menu bar, white on a "
                      + "dark one — the way every other menu bar icon behaves. Orange keeps the "
                      + "brand colour on both.")
+            }
+            Section {
+                Picker("Pet", selection: store.pet) {
+                    Text("None").tag("")
+                    ForEach(store.petChoices, id: \.id) { choice in
+                        Text(choice.name).tag(choice.id)
+                    }
+                }
+            } header: {
+                Text("Session rows")
+            } footer: {
+                Text(Self.petFooter)
             }
             Section {
                 Picker("Layout", selection: store.limitsLayout) {

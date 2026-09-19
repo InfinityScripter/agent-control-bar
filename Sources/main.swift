@@ -189,6 +189,12 @@ final class StatusController: NSObject, NSWindowDelegate {
         }
     }
     var animStyle: AnimStyle = .crab
+    /// Which pet the session rows draw, by pet id, or "" for none. A plain string and not an enum
+    /// because most of the ids come from ~/.codex/pets, which the user fills in themselves.
+    var petID = "clawd"
+    private var petLibraryCache: [Pet]?
+    private var petAtlasCache: PetAtlas?
+    private var petAtlasID: String?
     var showTimer = false
     var iconSystem = false // false = brand Orange; true = adaptive black/white (template image)
     var useThinkingWords = true     // rotate a playful verb ("Manifesting…") in place of "Thinking…"
@@ -295,6 +301,7 @@ final class StatusController: NSObject, NSWindowDelegate {
         if d.object(forKey: "soundThreshold") != nil { soundThreshold = d.double(forKey: "soundThreshold") }
         if let s = d.string(forKey: "needsYouSound") { needsYouSound = s }
         if let s = d.string(forKey: "animStyle"), let st = AnimStyle(rawValue: s) { animStyle = st }
+        if let s = d.string(forKey: "petID") { petID = s }   // "" is a real value here: pets off
         if let s = d.string(forKey: "motionLevel"), let m = Motion.Level(rawValue: s) { Motion.level = m }
         // No `statusItem.menu`: with one set, AppKit swallows the click to open the menu and the
         // button's own action never fires. The panel is a window of ours, so the click has to
@@ -875,6 +882,39 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// thing that could move was the text already in them. A window has no such rule: the store
     /// re-reads, and only a real difference redraws anything.
     func refreshCounts() { if panelIsOpen { panelStore.refresh() } }
+
+    // MARK: pets
+    //
+    // Both folders are read here rather than in the panel, for the reason every other path is:
+    // main.swift owns where things live, models parse what it hands them, and the views draw the
+    // result. The pets folder sits beside codexHome so a Codex that moves takes its pets with it.
+
+    /// The pets on offer. Cached because the panel asks on every refresh; dropped when the
+    /// Settings window opens, which is the only place the whole list is shown and therefore the
+    /// only moment a pet installed while the app was running needs to appear.
+    func petLibrary() -> [Pet] {
+        if let cached = petLibraryCache { return cached }
+        let library = Pet.library(
+            bundled: Bundle.main.resourceURL?.appendingPathComponent("pets").path,
+            codex: (codexHome as NSString).appendingPathComponent("pets"))
+        petLibraryCache = library
+        return library
+    }
+
+    /// The chosen pet's atlas, decoded on first use and kept until the choice changes. Only the
+    /// chosen one is ever decoded: an atlas is a megabyte-scale picture, and a folder of gallery
+    /// pets would otherwise all sit in memory for the sake of the single one being drawn.
+    func petAtlas() -> PetAtlas? {
+        if petAtlasID == petID { return petAtlasCache }
+        petAtlasID = petID
+        petAtlasCache = Pet.chosen(petID, from: petLibrary()).flatMap(PetAtlas.init)
+        return petAtlasCache
+    }
+
+    func reloadPetLibrary() {
+        petLibraryCache = nil
+        petAtlasID = nil
+    }
 
     /// Which model holds a provider's servers. One place, so a new provider cannot be half-wired.
     func model(of provider: String) -> MCPModel { provider == "codex" ? codexMCP : mcp }

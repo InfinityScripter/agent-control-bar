@@ -10,7 +10,7 @@
       "name": "claude-control-bar",
       "displayName": "Claude Control Bar",
       "source": "./",
-      "version": "0.19.0",
+      "version": "0.20.0",
       "description": "Live sessions with context-window usage, MCP server and per-tool switches, and 5h/7d limit bars — in the macOS menu bar.",
       "license": "MIT",
       "homepage": "https://github.com/InfinityScripter/claude-control-bar"

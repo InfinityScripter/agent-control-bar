@@ -79,6 +79,14 @@ final class SettingsStore: ObservableObject {
     var analyticsBlockedByEnvironment: Bool {
         ProcessInfo.processInfo.environment[AnalyticsPing.optOutVariable] != nil
     }
+    var pet: Binding<String> {
+        bind({ $0.petID }, { $0.applyPet($1) }, or: "")
+    }
+    /// What the pet picker lists. Names and ids only — the view never touches the loader, and
+    /// nothing here decodes a picture.
+    var petChoices: [(id: String, name: String)] {
+        controller?.petLibrary().map { ($0.id, $0.displayName) } ?? []
+    }
     var animStyle: Binding<StatusController.AnimStyle> {
         bind({ $0.animStyle }, { $0.applyAnimStyle($1) }, or: .crab)
     }
@@ -252,6 +260,12 @@ extension StatusController {
     func applyLimitsProvider(_ provider: String) {
         limitsProvider = provider
         UserDefaults.standard.set(provider, forKey: "limitsProvider")
+    }
+
+    func applyPet(_ id: String) {
+        petID = id
+        UserDefaults.standard.set(id, forKey: "petID")
+        refreshCounts()   // the rows are drawn from the snapshot, which carries the pet
     }
 
     func applyAnimStyle(_ style: AnimStyle) {
