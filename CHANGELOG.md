@@ -7,6 +7,23 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.20.0] - 2026-09-19
+
+### Added
+- **A pet at the head of each session row.** Instead of a dot and a spinner, every session in the
+  panel now has a small animated character, and what it does is what that session is doing: it
+  rests while the session is idle, works while the session works, and looks up when the session
+  needs you. The one that ships is the menu bar's own crab, drawn from the same frames, so the two
+  can never fall out of step. Pick it — or switch it off — in **Settings → Appearance → Session
+  rows**.
+- **Pets installed for Codex show up too.** The sprite format is the one Codex uses, so anything in
+  `~/.codex/pets` appears in the same picker, whether it came from Codex's own `hatch-pet` or from
+  one of the community galleries. The list is re-read every time the Settings window opens, so a
+  pet installed while the app is running needs no restart. A pet whose sprite sheet is a size this
+  app does not know is skipped on its own, without disturbing the others.
+- The animation stops where every other one in the app stops: **Motion: Off** in Settings, or the
+  system's Reduce Motion, leaves the pet standing still rather than removing it.
+
 ## [0.19.0] - 2026-09-17
 
 ### Changed
