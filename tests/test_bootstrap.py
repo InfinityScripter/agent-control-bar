@@ -232,12 +232,19 @@ class BuildTimeout(unittest.TestCase):
         bootstrap.build(os.path.join(self._dir.name, "out.app"), timeout=1)
         with open(pidfile) as fh:
             pid = int(fh.read().strip())
-        # Группа убита SIGKILL'ом — внука-«sleep 30» быть не должно.
-        try:
-            os.kill(pid, 9)
-            self.fail("внук сборки пережил таймаут")
-        except ProcessLookupError:
-            pass
+        # Группа убита SIGKILL'ом — внука-«sleep 30» быть не должно. Ждём, а не спрашиваем
+        # мгновенно: build() дожидается только своего прямого ребёнка (bash), а внук после
+        # смерти родителя достаётся launchd, и до того как тот его пожнёт, зомби продолжает
+        # отвечать на os.kill успехом. На macOS-раннере GitHub эта щель и давала флейк.
+        deadline = time.monotonic() + 2
+        while True:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            if time.monotonic() > deadline:
+                self.fail("внук сборки пережил таймаут")
+            time.sleep(0.01)
 
 
 class WorkingNode(unittest.TestCase):

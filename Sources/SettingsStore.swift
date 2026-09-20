@@ -82,10 +82,11 @@ final class SettingsStore: ObservableObject {
     var pet: Binding<String> {
         bind({ $0.petID }, { $0.applyPet($1) }, or: "")
     }
-    /// What the pet picker lists. Names and ids only — the view never touches the loader, and
-    /// nothing here decodes a picture.
-    var petChoices: [(id: String, name: String)] {
-        controller?.petLibrary().map { ($0.id, $0.displayName) } ?? []
+    /// What the pet picker shows: each pet with its frames, so the choice is the animal itself
+    /// rather than its name. The pictures are the controller's and are given back when the
+    /// Settings window closes — see petPreviews() there.
+    var petChoices: [(pet: Pet, atlas: PetAtlas?)] {
+        controller?.petPreviews() ?? []
     }
     var animStyle: Binding<StatusController.AnimStyle> {
         bind({ $0.animStyle }, { $0.applyAnimStyle($1) }, or: .crab)

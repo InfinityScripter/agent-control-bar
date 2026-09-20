@@ -96,5 +96,7 @@ extension StatusController {
     func windowWillClose(_ notification: Notification) {
         guard (notification.object as? NSWindow) === settingsWindow else { return }
         NSApp.setActivationPolicy(.accessory)
+        // The pet picker draws every pet, so it holds every pet's frames. The panel needs one.
+        releasePetPreviews()
     }
 }

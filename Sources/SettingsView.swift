@@ -222,12 +222,7 @@ private struct AppearanceSettings: View {
                      + "brand colour on both.")
             }
             Section {
-                Picker("Pet", selection: store.pet) {
-                    Text("None").tag("")
-                    ForEach(store.petChoices, id: \.id) { choice in
-                        Text(choice.name).tag(choice.id)
-                    }
-                }
+                PetPicker(store: store)
             } header: {
                 Text("Session rows")
             } footer: {
