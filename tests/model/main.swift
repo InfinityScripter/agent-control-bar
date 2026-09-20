@@ -1945,11 +1945,11 @@ try? FileManager.default.createDirectory(atPath: codexPetDir, withIntermediateDi
 writePet("good", in: codexPetDir, manifest: petManifest("good", name: "Impostor"), atlas: (1536, 2288))
 writePet("hoots", in: codexPetDir, manifest: petManifest("hoots", name: "Hoots"), atlas: (1536, 2288))
 
-let library = Pet.library(bundled: petDir, codex: codexPetDir)
+let library = Pet.library(bundled: petDir, codex: codexPetDir, archive: nil)
 check(library.map(\.id) == ["good", "nameless", "hoots"], "ours come first, then the Codex ones")
 check(library.first(where: { $0.id == "good" })?.displayName == "Good Pet",
       "and a Codex pet cannot take over an id of ours")
-check(Pet.library(bundled: nil, codex: codexPetDir).map(\.id) == ["good", "hoots"],
+check(Pet.library(bundled: nil, codex: codexPetDir, archive: nil).map(\.id) == ["good", "hoots"],
       "with no bundled folder the Codex ones stand alone")
 
 check(Pet.chosen("hoots", from: library)?.id == "hoots", "the saved id picks its pet")
@@ -1959,6 +1959,97 @@ check(Pet.chosen("deleted-yesterday", from: library)?.id == "good",
 check(Pet.chosen("anything", from: []) == nil, "and with no pets at all there is nothing to draw")
 
 try? FileManager.default.removeItem(atPath: codexPetDir)
+
+// Pets that belong to an installed app rather than to a folder.
+//
+// ChatGPT.app keeps the Codex companions inside its Electron archive, so there is nothing loose
+// for the folder reader to find. These checks build a miniature archive of the same shape — a
+// length-prefixed JSON index, then the files end to end — and are mostly about what happens when
+// it is not the shape we expected, because the only thing keeping a stranger's packaging from
+// breaking the picker is that every surprise ends in "no pets".
+
+/// Builds an archive the way an Electron app does: four header words, the JSON index padded to a
+/// four-byte boundary, then every file's bytes in index order.
+func writeArchive(_ entries: [(path: String, bytes: Data)], to path: String) {
+    var files: [String: Any] = [:]
+    var payload = Data()
+    for entry in entries {
+        files[entry.path] = ["size": entry.bytes.count, "offset": "\(payload.count)"]
+        payload.append(entry.bytes)
+    }
+    let index = try! JSONSerialization.data(withJSONObject: ["files": ["assets": ["files": files]]])
+    let padding = (4 - index.count % 4) % 4
+    var out = Data()
+    for word in [4, 4 + 4 + index.count + padding, 4 + index.count + padding, index.count] {
+        withUnsafeBytes(of: UInt32(word).littleEndian) { out.append(contentsOf: $0) }
+    }
+    out.append(index)
+    out.append(Data(repeating: 0, count: padding))
+    out.append(payload)
+    try! out.write(to: URL(fileURLWithPath: path))
+}
+
+func atlasBytes(_ width: Int, _ height: Int) -> Data {
+    let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+                              bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                              colorSpaceName: .deviceRGB, bytesPerRow: width * 4, bitsPerPixel: 32)!
+    return rep.representation(using: .png, properties: [:])!
+}
+
+let archiveDir = NSTemporaryDirectory() + "ccb-pet-archive/"
+try? FileManager.default.removeItem(atPath: archiveDir)
+try? FileManager.default.createDirectory(atPath: archiveDir, withIntermediateDirectories: true)
+let archive = archiveDir + "app.asar"
+
+writeArchive([
+    // The hash in the middle of the name changes with every build of the app it came from, which
+    // is the whole reason the archive is read rather than any path being remembered.
+    ("hoots-spritesheet-v8-21cacd193ace.webp", atlasBytes(1536, 2288)),
+    ("null-signal-spritesheet-v7-1e7dbf89200f.webp", atlasBytes(1536, 1872)),
+    ("some-other-art-v2-abc.webp", atlasBytes(1536, 2288)),
+    ("rocky-spritesheet-v5-97b5d14cdd54.webp", atlasBytes(64, 64)),
+], to: archive)
+
+let packed = PetArchive.pets(inAsar: archive)
+check(packed.map(\.id) == ["hoots", "null-signal"],
+      "the archive gives up its pets, by the name in front of the hash")
+check(!packed.contains { $0.id.contains("some-other-art") },
+      "and leaves art that is not a sprite sheet alone")
+check(!packed.contains { $0.id == "rocky" },
+      "a sheet whose size we do not know is skipped, like any other unknown atlas")
+check(packed.first?.displayName == "Hoots", "an id becomes a name a person would recognise")
+check(packed.first(where: { $0.id == "null-signal" })?.displayName == "Null Signal",
+      "including the ones spelled with a dash")
+check(packed.first?.format.version == 2, "the format still comes from the picture's own size")
+
+// The frames have to come out of the middle of the archive, not out of a file — an offset that is
+// off by even a byte gives a picture that will not decode, which is the failure this catches.
+check(PetAtlas(packed.first!)?.loop(for: .idle).images.count == 6,
+      "and the frames cut out of the archive are real pictures")
+
+check(PetArchive.pets(inAsar: archiveDir + "no-such.asar").isEmpty,
+      "a machine without that app simply has fewer pets")
+try! Data("not an archive at all, just some bytes".utf8)
+    .write(to: URL(fileURLWithPath: archiveDir + "junk.asar"))
+check(PetArchive.pets(inAsar: archiveDir + "junk.asar").isEmpty,
+      "and a file that is not an archive is no pets rather than a crash")
+// A header claiming an index far larger than the file is the shape a truncated download takes.
+var lying = Data()
+for word in [4, 1_000_000, 999_000, 998_000] {
+    withUnsafeBytes(of: UInt32(word).littleEndian) { lying.append(contentsOf: $0) }
+}
+try! lying.write(to: URL(fileURLWithPath: archiveDir + "lying.asar"))
+check(PetArchive.pets(inAsar: archiveDir + "lying.asar").isEmpty,
+      "a header that promises more than the file holds is refused, not read past")
+
+// Ours, then Codex's folder, then the app's own — one id still means one pet.
+writePet("hoots", in: petDir, manifest: petManifest("hoots", name: "Our Hoots"), atlas: (1536, 2288))
+let withArchive = Pet.library(bundled: petDir, codex: codexPetDir, archive: archive)
+check(withArchive.filter { $0.id == "hoots" }.count == 1, "the app's pets cannot double up an id")
+check(withArchive.first(where: { $0.id == "hoots" })?.displayName == "Our Hoots",
+      "and ours still wins it")
+check(withArchive.contains { $0.id == "null-signal" }, "while the rest of them arrive")
+try? FileManager.default.removeItem(atPath: archiveDir)
 try? FileManager.default.removeItem(atPath: petDir)
 
 

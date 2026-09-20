@@ -100,11 +100,49 @@ struct PetFormat {
     }
 }
 
-/// One installed pet: its manifest, and the atlas beside it.
+/// Where a pet's atlas actually is.
+///
+/// A pet in a folder is a file. A pet that belongs to an installed app is a stretch of bytes
+/// inside that app's own archive — read in place, never copied anywhere: the pictures belong to
+/// the application that installed them, and this app only puts them on screen.
+enum PetArt {
+    case file(String)
+    case packed(archive: String, offset: UInt64, size: Int)
+
+    /// The atlas's bytes, read on demand and held by nobody. The library keeps a manifest's worth
+    /// of metadata for every pet and the frames of only the chosen one; a megabyte of picture per
+    /// pet sitting in that list is exactly what this avoids.
+    func data() -> Data? {
+        switch self {
+        case .file(let path):
+            return FileManager.default.contents(atPath: path)
+        case .packed(let archive, let offset, let size):
+            guard let handle = FileHandle(forReadingAtPath: archive) else { return nil }
+            defer { try? handle.close() }
+            guard (try? handle.seek(toOffset: offset)) != nil,
+                  let bytes = try? handle.read(upToCount: size), bytes.count == size
+            else { return nil }
+            return bytes
+        }
+    }
+
+    /// An image reader over those bytes. A file is opened by URL so that asking only for the
+    /// picture's size reads the header rather than the whole megabyte.
+    func imageSource() -> CGImageSource? {
+        switch self {
+        case .file(let path):
+            return CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil)
+        case .packed:
+            return data().flatMap { CGImageSourceCreateWithData($0 as CFData, nil) }
+        }
+    }
+}
+
+/// One pet: its name, and where its atlas is.
 struct Pet {
     let id: String
     let displayName: String
-    let sheetPath: String
+    let art: PetArt
     let format: PetFormat
 
     /// Reads one pet folder: `pet.json` plus the atlas it names. Returns nil on anything at all
@@ -125,15 +163,25 @@ struct Pet {
         guard !id.isEmpty else { return nil }
 
         let sheetName = manifest["spritesheetPath"] as? String ?? "spritesheet.webp"
-        let sheetPath = sheetName.hasPrefix("/") ? sheetName : dir + sheetName
-        guard let size = atlasPixelSize(sheetPath),
-              let format = PetFormat.matching(width: size.width, height: size.height)
-        else { return nil }
+        let art = PetArt.file(sheetName.hasPrefix("/") ? sheetName : dir + sheetName)
+        guard let format = format(of: art) else { return nil }
 
         return Pet(id: id,
                    displayName: (manifest["displayName"] as? String) ?? id,
-                   sheetPath: sheetPath,
+                   art: art,
                    format: format)
+    }
+
+    /// A pet with no manifest of its own, named by whatever the art was called.
+    static func unpacked(id: String, art: PetArt) -> Pet? {
+        guard !id.isEmpty, let format = format(of: art) else { return nil }
+        // "null-signal" is a file name, not something to show a person. Each word gets a capital,
+        // which is as far as guessing should go: inventing a prettier name for somebody else's
+        // pet would mean keeping a list of their pets, and that list would go stale.
+        let name = id.split(separator: "-")
+            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+            .joined(separator: " ")
+        return Pet(id: id, displayName: name, art: art, format: format)
     }
 
     /// Every pet in a folder, by id, skipping the ones that do not load. A missing folder is no
@@ -144,13 +192,17 @@ struct Pet {
         return names.sorted().compactMap { load(directory: dir + $0) }
     }
 
-    /// The pets on offer: the ones the app ships with, then the ones installed for Codex. Ours
-    /// first, and a Codex pet answering to an id we already use does not replace it — the id is
-    /// what the setting stores, and two pets under one id would make the picker unstable.
-    static func library(bundled: String?, codex: String) -> [Pet] {
+    /// The pets on offer, in the order they are offered: the ones this app ships with, then the
+    /// ones installed into Codex's own pets folder, then the ones that came inside an installed
+    /// app's archive. Earlier wins — the id is what the setting stores, and two pets under one id
+    /// would make the picker unstable — so ours can never be displaced by somebody else's.
+    static func library(bundled: String?, codex: String, archive: String?) -> [Pet] {
         let ours = bundled.map { installed(inPetsFolder: $0) } ?? []
         var seen = Set(ours.map(\.id))
-        return ours + installed(inPetsFolder: codex).filter { seen.insert($0.id).inserted }
+        let theirs = installed(inPetsFolder: codex).filter { seen.insert($0.id).inserted }
+        let packed = (archive.map { PetArchive.pets(inAsar: $0) } ?? [])
+            .filter { seen.insert($0.id).inserted }
+        return ours + theirs + packed
     }
 
     /// The pet a saved id names. An empty id is the user switching pets off. Any other id falls
@@ -161,16 +213,16 @@ struct Pet {
         return library.first { $0.id == id } ?? library.first
     }
 
-    /// The atlas's size in real pixels, read from the file's header without decoding the image.
-    /// It has to be pixels: NSImage reports a size in points, so an atlas saved at 144 dpi would
-    /// measure two-thirds of its true width and match no known format.
-    private static func atlasPixelSize(_ path: String) -> (width: Int, height: Int)? {
-        guard let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+    /// Which layout this art is, from its size in real pixels — read from the picture's header
+    /// rather than by decoding it. It has to be pixels: NSImage reports a size in points, so an
+    /// atlas saved at 144 dpi would measure two-thirds of its true width and match no format.
+    private static func format(of art: PetArt) -> PetFormat? {
+        guard let src = art.imageSource(),
               let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
               let w = props[kCGImagePropertyPixelWidth] as? Int,
               let h = props[kCGImagePropertyPixelHeight] as? Int
         else { return nil }
-        return (w, h)
+        return PetFormat.matching(width: w, height: h)
     }
 }
 
@@ -213,7 +265,7 @@ final class PetAtlas {
     private var cut: [PetRow: PetLoop] = [:]
 
     init?(_ pet: Pet) {
-        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: pet.sheetPath) as CFURL, nil),
+        guard let source = pet.art.imageSource(),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
         self.pet = pet
         self.sheet = image

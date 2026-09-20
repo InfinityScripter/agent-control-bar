@@ -112,6 +112,28 @@ The sprite is lit from the top left — a lighter rim on top, a darker one under
 
 Server and tool switches apply to new sessions: Claude Code assembles the tool list at session start, so sessions that are already open keep their old set.
 
+### Session pets
+
+The menu bar icon says how busy everything is at once. A **pet** says it one session at a time: a small animated character at the head of each session row in the panel, playing that session's own state.
+
+| Session | What the pet does |
+| --- | --- |
+| Idle | Rests |
+| Thinking, or running a tool | Works |
+| Waiting for your permission | Looks up |
+
+Pick one in **Settings → Appearance → Session rows**. The chooser shows the pets themselves rather than a list of names, each one animating, because a name like *Null Signal* tells you nothing about what will turn up beside your sessions. **None** puts back the dot and the spinner.
+
+Three places are looked in, and the first one to claim a name keeps it:
+
+1. **This app.** One pet ships with it — Clawd, the menu bar crab, drawn from the very same frames, so the two can never fall out of step.
+2. **`~/.codex/pets`.** Codex's own pets folder. Anything installed there shows up, whether it came from Codex's `hatch-pet` or from one of the community galleries ([awesome-codex-pets](https://github.com/BeiXiao/awesome-codex-pets), [petdex](https://petdex.dev)). The folder is re-read every time the Settings window opens, so a pet installed while the app is running needs no restart.
+3. **The ChatGPT desktop app, if you have it.** It carries the Codex companions inside itself, and they are read out of it where it sits — nothing is copied, and nothing of theirs is shipped in this repository. Remove that app and those pets go with it.
+
+Making your own is the same sprite sheet Codex uses: a transparent PNG or WebP, 192 × 208 cells, eight columns, one row per animation (idle, running right, running left, waving, jumping, failed, waiting, running, review). Either published size works — 1536 × 1872 for nine rows, or 1536 × 2288 for eleven. Put it in `~/.codex/pets/<name>/` beside a `pet.json` naming it, and it appears in the chooser. A sheet at any other size is skipped on its own and leaves the rest alone, which is what keeps a change to that format from taking the panel down with it. `tools/pet-sheet` builds this app's own sheet from the crab frames and is the worked example.
+
+The animation follows the **Motion** setting like everything else in the panel: *Off*, or macOS's own Reduce Motion, leaves the pet standing still rather than removing it. It runs only while the panel is open.
+
 ### Settings
 
 **Settings** at the bottom of the panel, or ⌘, — a window with five pages.
@@ -130,6 +152,7 @@ Server and tool switches apply to new sessions: Claude Code assembles the tool l
 
 - **Animation** — Crab Walking (default), Claude Spark, or Claude Code, the terminal glyph spinner.
 - **Color** — Orange, or System for an adaptive black/white icon.
+- **Session rows** — which pet stands at the head of each session row, or *None* for the plain dot and spinner. See [Session pets](#session-pets).
 - **Limits strip** — how the strip shows two providers. *Two rows* (default) stacks Claude and Codex, each under its own name and next reset. *Switcher* gives one the full width and puts the other behind a tab, with a hairline of its fullest window under the tab name. With one provider the strip is a single row either way.
 
 **Motion** — how much the panel itself moves. *Off* stops every animation; *Subtle* (default) moves the panel, its cards and its switches; *Expressive* adds a staggered entrance for the rows in a list. macOS's own Reduce Motion is honoured on top of the choice: movement becomes a crossfade rather than nothing at all, so a change of state is still visible.
