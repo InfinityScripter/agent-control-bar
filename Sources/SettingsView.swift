@@ -198,9 +198,11 @@ private struct AppearanceSettings: View {
 
     private static let petFooter: String =
         "A small animated character at the head of each session row: it rests while the session "
-        + "is idle, works while the session works, and looks up when the session needs you. "
-        + "Pets installed for Codex in ~/.codex/pets are listed here too — the list is re-read "
-        + "each time this window opens."
+        + "is idle, works while the session works, and looks up when the session needs you.\n\n"
+        + "Pets you installed for Codex in ~/.codex/pets are listed here, and so are the ones the "
+        + "ChatGPT desktop app brought with it — those are read out of that app where it sits and "
+        + "are not copied anywhere, so they are here only while it is installed. The list is "
+        + "re-read each time this window opens."
 
     var body: some View {
         Form {

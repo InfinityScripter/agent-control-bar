@@ -905,7 +905,8 @@ final class StatusController: NSObject, NSWindowDelegate {
         if let cached = petLibraryCache { return cached }
         let library = Pet.library(
             bundled: Bundle.main.resourceURL?.appendingPathComponent("pets").path,
-            codex: (codexHome as NSString).appendingPathComponent("pets"))
+            codex: (codexHome as NSString).appendingPathComponent("pets"),
+            archive: codexAppArchive)
         petLibraryCache = library
         return library
     }
@@ -923,6 +924,20 @@ final class StatusController: NSObject, NSWindowDelegate {
     func reloadPetLibrary() {
         petLibraryCache = nil
         petAtlasID = nil
+    }
+
+    /// The archive of the desktop app that carries the Codex companions, when it is installed.
+    ///
+    /// Known locations rather than a Launch Services lookup, the same list `mcpbar.py` keeps for
+    /// finding `codex` itself: that lookup answers from a cache which goes on naming a path long
+    /// after the bundle moved. Nothing here is copied — the pets are read out of the app in place,
+    /// and on a Mac without it there are simply fewer of them.
+    var codexAppArchive: String? {
+        let personal = NSHomeDirectory() + "/Applications"
+        return ["/Applications/ChatGPT.app", "/Applications/Codex.app",
+                personal + "/ChatGPT.app", personal + "/Codex.app"]
+            .map { $0 + "/Contents/Resources/app.asar" }
+            .first { FileManager.default.fileExists(atPath: $0) }
     }
 
     /// Every pet with its frames, for the picker that shows them rather than naming them.
