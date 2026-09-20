@@ -7,6 +7,19 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.22.0] - 2026-09-20
+
+### Added
+- **The Codex pets show up, if you have the ChatGPT desktop app.** That app carries nine
+  companions — Codex, Dewey, Fireball, Hoots, Rocky, Seedy, Stacky, BSOD and Null Signal — inside
+  itself, so there is nothing loose on disk for anything to find. They are now read out of it where
+  it sits and listed in **Settings → Appearance → Session rows** alongside our crab and anything in
+  `~/.codex/pets`. Nothing is copied and none of that artwork ships with this app: remove the
+  ChatGPT app and those pets go with it. A pet this app already has keeps its name, so the crab
+  cannot be displaced.
+- The README now has a **Session pets** section: what a pet does for each session state, the three
+  places pets are looked for, and the sprite-sheet sizes to use if you want to draw your own.
+
 ## [0.21.0] - 2026-09-20
 
 ### Changed
