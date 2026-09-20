@@ -22,8 +22,10 @@ struct PetView: View {
 
     /// The height of the CELL, not of the visible animal. Our own crab fills about half of its
     /// cell's height — it is a wide, short thing in a portrait cell — so a figure that reads at a
-    /// glance needs a cell about twice as tall as the pixels you end up seeing.
-    private static let height: CGFloat = 32
+    /// glance needs a cell about twice as tall as the pixels you end up seeing. A session row asks
+    /// for the default; the picker in Settings asks for a larger one, because there the animal is
+    /// the thing being chosen rather than a marker beside a name.
+    var height: CGFloat = 32
 
     private var loop: PetLoop { atlas.loop(for: PetRow.forSessionState(state)) }
 
@@ -51,7 +53,66 @@ struct PetView: View {
                     .interpolation(.none).resizable().scaledToFit()
             }
         }
-        .frame(width: Self.height * CGFloat(cell.cellWidth) / CGFloat(cell.cellHeight),
-               height: Self.height)
+        .frame(width: height * CGFloat(cell.cellWidth) / CGFloat(cell.cellHeight),
+               height: height)
+    }
+}
+
+/// The pet chooser in Settings: the animals themselves, in a row, with the chosen one ringed.
+///
+/// A dropdown of names was the first version of this, and it answered the wrong question. The
+/// names come from other people's manifests — "Hoots", "Null Signal", whatever a gallery called
+/// its pet — so reading one tells you nothing about what will appear beside your sessions, and
+/// the only way to find out was to close the window and look. Here the choice IS the picture,
+/// and every one of them is animating while you decide.
+struct PetPicker: View {
+    @ObservedObject var store: SettingsStore
+    /// Wide enough for the cell plus its ring and its name underneath.
+    private static let cell: CGFloat = 72
+
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: Self.cell), spacing: 6)],
+                  alignment: .leading, spacing: 6) {
+            // The pets are shown at work rather than at rest: it is the liveliest thing each one
+            // does, so it is what tells them apart at a glance.
+            choice(id: "", name: "None", picked: store.pet.wrappedValue.isEmpty) {
+                // What a row falls back to without a pet, drawn at the size it really appears, so
+                // "None" shows its outcome instead of describing it.
+                Circle().fill(.secondary.opacity(0.45)).frame(width: 7, height: 7)
+            }
+            ForEach(store.petChoices, id: \.pet.id) { entry in
+                choice(id: entry.pet.id, name: entry.pet.displayName,
+                       picked: store.pet.wrappedValue == entry.pet.id) {
+                    if let atlas = entry.atlas {
+                        PetView(atlas: atlas, state: "thinking", height: 44)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func choice<Content: View>(id: String, name: String, picked: Bool,
+                                       @ViewBuilder content: () -> Content) -> some View {
+        Button { store.pet.wrappedValue = id } label: {
+            VStack(spacing: 2) {
+                ZStack { content() }
+                    .frame(width: Self.cell - 8, height: 48)
+                Text(name)
+                    .font(.system(size: 10))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .foregroundStyle(picked ? .primary : .secondary)
+            }
+            .frame(width: Self.cell)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(picked ? Color.accentColor : .clear, lineWidth: 2))
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help(picked ? "\(name) — the pet your session rows are using" : "Use \(name)")
+        .accessibilityAddTraits(picked ? [.isButton, .isSelected] : .isButton)
     }
 }

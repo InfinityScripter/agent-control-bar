@@ -195,6 +195,7 @@ final class StatusController: NSObject, NSWindowDelegate {
     private var petLibraryCache: [Pet]?
     private var petAtlasCache: PetAtlas?
     private var petAtlasID: String?
+    private var petPreviewCache: [(pet: Pet, atlas: PetAtlas?)] = []
     var showTimer = false
     var iconSystem = false // false = brand Orange; true = adaptive black/white (template image)
     var useThinkingWords = true     // rotate a playful verb ("Manifesting…") in place of "Thinking…"
@@ -348,6 +349,14 @@ final class StatusController: NSObject, NSWindowDelegate {
                 // button does nothing at all.
                 NSApp.activate(ignoringOtherApps: true)
                 self?.statusItem.button?.performClick(nil)
+            }
+        // CONTROL_BAR_DIAGNOSE=settings opens the Settings window by itself, for the same reason
+        // `menu` opens the panel: neither can be reached from outside the app. The window is only
+        // ever raised from the panel's own button, so a change to a settings screen could not be
+        // looked at without a person sitting at the machine to click it.
+        } else if ProcessInfo.processInfo.environment["CONTROL_BAR_DIAGNOSE"] == "settings" {
+            Timer.scheduledTimer(withTimeInterval: 3, repeats: false) { [weak self] _ in
+                self?.openSettingsWindow()
             }
         // CONTROL_BAR_DIAGNOSE=toggle answers "does clicking the icon close the panel?" without
         // clicking it — which is the only way to ask, for the same reason CONTROL_BAR_UPDATE_NOW
@@ -915,6 +924,21 @@ final class StatusController: NSObject, NSWindowDelegate {
         petLibraryCache = nil
         petAtlasID = nil
     }
+
+    /// Every pet with its frames, for the picker that shows them rather than naming them.
+    ///
+    /// This is the one place that decodes more than the chosen pet, because showing the choice is
+    /// the whole point of it — so it is also the one place that has to give the memory back. The
+    /// pictures live exactly as long as the Settings window: `releasePetPreviews()` runs when that
+    /// window closes, leaving only the atlas the panel is drawing.
+    func petPreviews() -> [(pet: Pet, atlas: PetAtlas?)] {
+        if petPreviewCache.isEmpty {
+            petPreviewCache = petLibrary().map { ($0, PetAtlas($0)) }
+        }
+        return petPreviewCache
+    }
+
+    func releasePetPreviews() { petPreviewCache = [] }
 
     /// Which model holds a provider's servers. One place, so a new provider cannot be half-wired.
     func model(of provider: String) -> MCPModel { provider == "codex" ? codexMCP : mcp }
