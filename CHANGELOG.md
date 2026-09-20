@@ -7,6 +7,21 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.21.0] - 2026-09-20
+
+### Changed
+- **The pet is now chosen by looking at it.** Where **Settings → Appearance → Session rows** used
+  to be a dropdown of names, it is now a row of the pets themselves, each one animating, with the
+  one you are using ringed. The names come from other people's manifests — *Hoots*, *Null Signal*,
+  whatever a gallery called its pet — so reading one told you nothing about what would turn up
+  beside your sessions, and the only way to find out was to close the window and look. **None**
+  shows the grey dot a row falls back to, at the size it really appears, instead of describing it.
+
+### Fixed
+- A test of the build timeout could fail on its own, without anything being wrong, when a process
+  it was watching had not yet been cleared away by the system. It now waits for that rather than
+  asking once.
+
 ## [0.20.0] - 2026-09-19
 
 ### Added
