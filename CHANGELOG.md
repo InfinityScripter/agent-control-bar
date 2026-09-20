@@ -7,6 +7,29 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.23.0] - 2026-09-20
+
+### Added
+- **Any pet can now be the menu bar icon.** **Settings → Appearance → Menu bar icon** is no longer
+  a dropdown of three names but a chooser of pictures: Crab Walking, Claude Spark and Claude Code
+  first, then every pet the app can find, each one playing at exactly the size the bar will show
+  it — because a character drawn for a panel row can turn out to be unreadable at eighteen points,
+  and the chooser is the place to find that out. A pet up there shows the same three things a pet
+  in a row does: resting, working, waiting for you. The crab stays the default, because it is the
+  only icon that says *how many* sessions are working rather than merely that some are.
+- **Claude rows and Codex rows get their own pets.** Where the ChatGPT desktop app is installed,
+  Codex rows start out with the Codex companion and Claude rows with the crab, so a list holding
+  both agents can be told apart without reading it. Both are chosen in **Settings → Appearance**;
+  the Codex chooser is absent on a Mac with no Codex on it. Switching pets off keeps them off —
+  a Mac where they were never on does not get half of them back.
+
+### Changed
+- A pet is drawn in its own colours, so the **Color** setting does not apply while one is chosen
+  and says so instead of appearing to do nothing. Orange and System fill a single shape with a
+  single colour, which leaves nothing of a painted sprite.
+- A pet that goes away — the ChatGPT app removed, the folder deleted — leaves the bar drawing the
+  crab, and the choice is kept, so the pet comes back when its app does.
+
 ## [0.22.0] - 2026-09-20
 
 ### Added
