@@ -58,6 +58,81 @@ struct PetView: View {
     }
 }
 
+/// A list of pictures played at a fixed tick, which is how everything the menu bar draws is
+/// handed around: the durations were spent when the frames were built, so what is left is one
+/// picture per tenth of a second and an index into it.
+///
+/// The same exception to Motion.swift that PetView is, for the same reason, with the same escape:
+/// switching motion off leaves the first frame rather than an empty space.
+struct TickedFrames: View {
+    let frames: [NSImage]
+    let height: CGFloat
+
+    var body: some View {
+        if Motion.moves, frames.count > 1 {
+            TimelineView(.periodic(from: Date(timeIntervalSinceReferenceDate: 0),
+                                   by: 1 / PetIconFrames.fps)) {
+                picture(at: $0.date.timeIntervalSinceReferenceDate)
+            }
+        } else {
+            picture(at: 0)
+        }
+    }
+
+    private func picture(at seconds: Double) -> some View {
+        let step = Int((seconds * PetIconFrames.fps).rounded(.down))
+        let frame = frames.isEmpty ? nil : frames[((step % frames.count) + frames.count) % frames.count]
+        return Group {
+            if let frame {
+                // .none for the same reason the panel's pets use it: these are pixels drawn at a
+                // size, and smoothing them turns a small animal into a smudge.
+                Image(nsImage: frame).interpolation(.none).resizable().scaledToFit()
+            }
+        }
+        .frame(height: height)
+    }
+}
+
+/// One ringed, named choice in a picker. Shared by the three pickers in Settings — the menu bar
+/// icon and the two session-row pets — so that picking a picture looks and behaves the same way
+/// wherever it is done.
+struct PickerCell<Content: View>: View {
+    let name: String
+    let picked: Bool
+    /// What the tooltip says about the one already in use, e.g. "the pet your Claude rows use".
+    let role: String
+    let choose: () -> Void
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        Button(action: choose) {
+            VStack(spacing: 2) {
+                ZStack { content }
+                    .frame(width: pickerCellWidth - 8, height: 48)
+                Text(name)
+                    .font(.system(size: 10))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .foregroundStyle(picked ? .primary : .secondary)
+            }
+            .frame(width: pickerCellWidth)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(picked ? Color.accentColor : .clear, lineWidth: 2))
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help(picked ? "\(name) — \(role)" : "Use \(name)")
+        .accessibilityAddTraits(picked ? [.isButton, .isSelected] : .isButton)
+    }
+}
+
+/// Wide enough for the picture plus its ring and its name underneath, and the step the three
+/// pickers lay their grids out on.
+private let pickerCellWidth: CGFloat = 72
+private let pickerColumns = [GridItem(.adaptive(minimum: pickerCellWidth), spacing: 6)]
+
 /// The pet chooser in Settings: the animals themselves, in a row, with the chosen one ringed.
 ///
 /// A dropdown of names was the first version of this, and it answered the wrong question. The
@@ -67,22 +142,24 @@ struct PetView: View {
 /// and every one of them is animating while you decide.
 struct PetPicker: View {
     @ObservedObject var store: SettingsStore
-    /// Wide enough for the cell plus its ring and its name underneath.
-    private static let cell: CGFloat = 72
+    /// Which rows this picker is choosing for — the binding, and the words the tooltip uses.
+    let selection: Binding<String>
+    let role: String
 
     var body: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: Self.cell), spacing: 6)],
-                  alignment: .leading, spacing: 6) {
+        LazyVGrid(columns: pickerColumns, alignment: .leading, spacing: 6) {
             // The pets are shown at work rather than at rest: it is the liveliest thing each one
             // does, so it is what tells them apart at a glance.
-            choice(id: "", name: "None", picked: store.pet.wrappedValue.isEmpty) {
+            PickerCell(name: "None", picked: selection.wrappedValue.isEmpty, role: role,
+                       choose: { selection.wrappedValue = "" }) {
                 // What a row falls back to without a pet, drawn at the size it really appears, so
                 // "None" shows its outcome instead of describing it.
                 Circle().fill(.secondary.opacity(0.45)).frame(width: 7, height: 7)
             }
             ForEach(store.petChoices, id: \.pet.id) { entry in
-                choice(id: entry.pet.id, name: entry.pet.displayName,
-                       picked: store.pet.wrappedValue == entry.pet.id) {
+                PickerCell(name: entry.pet.displayName,
+                           picked: selection.wrappedValue == entry.pet.id, role: role,
+                           choose: { selection.wrappedValue = entry.pet.id }) {
                     if let atlas = entry.atlas {
                         PetView(atlas: atlas, state: "thinking", height: 44)
                     }
@@ -90,29 +167,27 @@ struct PetPicker: View {
             }
         }
     }
+}
 
-    @ViewBuilder
-    private func choice<Content: View>(id: String, name: String, picked: Bool,
-                                       @ViewBuilder content: () -> Content) -> some View {
-        Button { store.pet.wrappedValue = id } label: {
-            VStack(spacing: 2) {
-                ZStack { content() }
-                    .frame(width: Self.cell - 8, height: 48)
-                Text(name)
-                    .font(.system(size: 10))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .foregroundStyle(picked ? .primary : .secondary)
+/// The menu bar chooser: the three styles the app draws itself, then every pet, each one playing
+/// at the size the bar will show it.
+///
+/// Eighteen points is small, and that is the point of showing it that way: a pet drawn for a panel
+/// row can turn out to be unreadable up there, and the picker is where that is worth finding out
+/// rather than after closing the window.
+struct MenuBarIconPicker: View {
+    @ObservedObject var store: SettingsStore
+    private static let role = "the icon in your menu bar"
+
+    var body: some View {
+        LazyVGrid(columns: pickerColumns, alignment: .leading, spacing: 6) {
+            ForEach(store.iconChoices, id: \.icon.raw) { choice in
+                PickerCell(name: choice.name, picked: store.animStyle.wrappedValue == choice.icon,
+                           role: Self.role,
+                           choose: { store.animStyle.wrappedValue = choice.icon }) {
+                    TickedFrames(frames: choice.frames, height: 18)
+                }
             }
-            .frame(width: Self.cell)
-            .padding(.vertical, 4)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(picked ? Color.accentColor : .clear, lineWidth: 2))
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
-        .buttonStyle(.plain)
-        .help(picked ? "\(name) — the pet your session rows are using" : "Use \(name)")
-        .accessibilityAddTraits(picked ? [.isButton, .isSelected] : .isButton)
     }
 }

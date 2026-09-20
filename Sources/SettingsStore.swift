@@ -82,15 +82,28 @@ final class SettingsStore: ObservableObject {
     var pet: Binding<String> {
         bind({ $0.petID }, { $0.applyPet($1) }, or: "")
     }
+    /// The pet for rows belonging to Codex. Its own setting, so someone running both agents can
+    /// tell the two kinds of row apart without reading a word.
+    var codexPet: Binding<String> {
+        bind({ $0.codexPetID }, { $0.applyPet($1, provider: "codex") }, or: "")
+    }
     /// What the pet picker shows: each pet with its frames, so the choice is the animal itself
     /// rather than its name. The pictures are the controller's and are given back when the
     /// Settings window closes — see petPreviews() there.
     var petChoices: [(pet: Pet, atlas: PetAtlas?)] {
         controller?.petPreviews() ?? []
     }
-    var animStyle: Binding<StatusController.AnimStyle> {
+    /// The same for the menu bar, where the choice includes the three styles the app draws itself
+    /// and every picture is the size the bar will actually show.
+    var iconChoices: [(icon: MenuBarIcon, name: String, frames: [NSImage])] {
+        controller?.iconChoicePreviews() ?? []
+    }
+    var animStyle: Binding<MenuBarIcon> {
         bind({ $0.animStyle }, { $0.applyAnimStyle($1) }, or: .crab)
     }
+    /// Whether the Color setting below does anything: a pet is a painted sprite and is always
+    /// drawn as itself, so the switch would be a control that visibly does nothing.
+    var iconIsPet: Bool { controller?.animStyle.isPet ?? false }
     var iconSystem: Binding<Bool> {
         bind({ $0.iconSystem }, { $0.applyIconSystem($1) }, or: false)
     }
@@ -263,15 +276,20 @@ extension StatusController {
         UserDefaults.standard.set(provider, forKey: "limitsProvider")
     }
 
-    func applyPet(_ id: String) {
-        petID = id
-        UserDefaults.standard.set(id, forKey: "petID")
-        refreshCounts()   // the rows are drawn from the snapshot, which carries the pet
+    func applyPet(_ id: String, provider: String = "claude") {
+        if provider == "codex" {
+            codexPetID = id
+            UserDefaults.standard.set(id, forKey: "codexPetID")
+        } else {
+            petID = id
+            UserDefaults.standard.set(id, forKey: "petID")
+        }
+        refreshCounts()   // the rows are drawn from the snapshot, which carries the pets
     }
 
-    func applyAnimStyle(_ style: AnimStyle) {
+    func applyAnimStyle(_ style: MenuBarIcon) {
         animStyle = style
-        UserDefaults.standard.set(style.rawValue, forKey: "animStyle")
+        UserDefaults.standard.set(style.raw, forKey: "animStyle")
         animTimer?.invalidate(); animTimer = nil   // recreated at the new style's fps by render()
         frameIdx = 0
         evaluate()
