@@ -229,7 +229,7 @@ struct PanelSessionRow: View {
     /// them is padded, or a third kind would add a third branch out here as well as in here.
     @ViewBuilder
     private var marker: some View {
-        if let atlas = store.petAtlas {
+        if let atlas = store.petAtlas(of: session.provider) {
             PetView(atlas: atlas, state: session.eff)
         } else if session.working {
             PanelSpinner().padding(.top, 4)

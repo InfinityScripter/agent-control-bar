@@ -196,6 +196,21 @@ private struct GeneralSettings: View {
 private struct AppearanceSettings: View {
     @ObservedObject var store: SettingsStore
 
+    private static let colorFooter: String =
+        "System draws the icon as a template — black on a light menu bar, white on a dark one — "
+        + "the way every other menu bar icon behaves. Orange keeps the brand colour on both."
+
+    private static let petIconFooter: String =
+        "A pet is drawn in its own colours, so the Color setting does not apply to it: the two "
+        + "drawn styles are a single shape that can be filled with one colour, and a painted "
+        + "sprite has nothing left of itself once it is flattened into one.\n\n"
+        + "A pet shows the same three things the crab does — resting, working, waiting for you — "
+        + "but it has one animation for working rather than the crab's four degrees of busy."
+
+    private static let codexPetFooter: String =
+        "Codex rows get their own pet, so a list holding both agents can be read without reading "
+        + "it. The Codex companion is the default where the ChatGPT app is installed."
+
     private static let petFooter: String =
         "A small animated character at the head of each session row: it rests while the session "
         + "is idle, works while the session works, and looks up when the session needs you.\n\n"
@@ -207,28 +222,33 @@ private struct AppearanceSettings: View {
     var body: some View {
         Form {
             Section {
-                Picker("Animation", selection: store.animStyle) {
-                    ForEach(StatusController.AnimStyle.allCases, id: \.self) { style in
-                        Text(style.title).tag(style)
-                    }
-                }
+                MenuBarIconPicker(store: store)
                 Picker("Color", selection: store.iconSystem) {
                     Text("Orange").tag(false)
                     Text("System").tag(true)
                 }
+                .disabled(store.iconIsPet)
             } header: {
                 Text("Menu bar icon")
             } footer: {
-                Text("System draws the icon as a template — black on a light menu bar, white on a "
-                     + "dark one — the way every other menu bar icon behaves. Orange keeps the "
-                     + "brand colour on both.")
+                Text(store.iconIsPet ? Self.petIconFooter : Self.colorFooter)
             }
             Section {
-                PetPicker(store: store)
+                PetPicker(store: store, selection: store.pet, role: "the pet your Claude rows use")
             } header: {
-                Text("Session rows")
+                Text(store.codexPresent ? "Claude session rows" : "Session rows")
             } footer: {
                 Text(Self.petFooter)
+            }
+            if store.codexPresent {
+                Section {
+                    PetPicker(store: store, selection: store.codexPet,
+                              role: "the pet your Codex rows use")
+                } header: {
+                    Text("Codex session rows")
+                } footer: {
+                    Text(Self.codexPetFooter)
+                }
             }
             Section {
                 Picker("Layout", selection: store.limitsLayout) {

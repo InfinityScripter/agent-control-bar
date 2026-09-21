@@ -175,27 +175,25 @@ final class StatusController: NSObject, NSWindowDelegate {
     let frames: [NSImage] = StatusController.loadFrames()
     let spriteFPS: Double = 9 // tune: 8 frames per loop -> ~0.9s/cycle
 
-    enum AnimStyle: String, CaseIterable {
-        case web, code, crab
-
-        /// What the Settings picker calls each one. Kept beside the cases so a style cannot be
-        /// added without deciding what it is named.
-        var title: String {
-            switch self {
-            case .web:  return "Claude Spark"
-            case .code: return "Claude Code"
-            case .crab: return "Crab Walking"
-            }
-        }
-    }
-    var animStyle: AnimStyle = .crab
+    /// What the menu bar is drawing: one of the three styles we draw ourselves, or a pet. The type
+    /// is in Sources/Model/PetIcon.swift, with the rules about what an unreadable setting means.
+    var animStyle: MenuBarIcon = .crab
     /// Which pet the session rows draw, by pet id, or "" for none. A plain string and not an enum
     /// because most of the ids come from ~/.codex/pets, which the user fills in themselves.
     var petID = "clawd"
+    /// The same, for rows belonging to Codex. Two settings and not one: the companions are the
+    /// other agent's own, and somebody running both wants to tell the two apart in the list at a
+    /// glance — which is exactly what one pet for both would take away.
+    var codexPetID = StatusController.codexDefaultPet
+    /// What a Mac with the ChatGPT app calls the Codex mascot. Only a default: with that app
+    /// absent the id resolves to nothing in particular and the usual fallback picks a pet.
+    static let codexDefaultPet = "codex"
     private var petLibraryCache: [Pet]?
-    private var petAtlasCache: PetAtlas?
-    private var petAtlasID: String?
+    private var petAtlasCache: [String: PetAtlas?] = [:]
     private var petPreviewCache: [(pet: Pet, atlas: PetAtlas?)] = []
+    private var iconPreviewCache: [(icon: MenuBarIcon, name: String, frames: [NSImage])] = []
+    private var petIconCache: PetIconFrames?
+    private var petIconID: String?
     var showTimer = false
     var iconSystem = false // false = brand Orange; true = adaptive black/white (template image)
     var useThinkingWords = true     // rotate a playful verb ("Manifesting…") in place of "Thinking…"
@@ -272,18 +270,34 @@ final class StatusController: NSObject, NSWindowDelegate {
     var crabMood: CrabMood = .sleeping
     var crabWorking = 0   // sessions working right now; sets the tempo inside a mood
     var fps: Double {
-        switch animStyle {
+        if petIconTicks != nil { return PetIconFrames.fps }
+        switch drawnIcon {
         case .web: return spriteFPS
         case .code: return Double(codeGlyphs.count * codeSub) / codeCycle
-        case .crab: return crabMood.framesPerSecond(working: crabWorking)
+        case .crab, .pet: return crabMood.framesPerSecond(working: crabWorking)
         }
     }
     var frameCount: Int {
-        switch animStyle {
+        if let ticks = petIconTicks { return ticks.count }
+        switch drawnIcon {
         case .web: return max(1, frames.count)
         case .code: return codeGlyphs.count * codeSub
-        case .crab: return max(1, crabFrameSet.frames(for: crabMood).count)
+        case .crab, .pet: return max(1, crabFrameSet.frames(for: crabMood).count)
         }
+    }
+
+    /// The icon actually on screen. A pet whose pictures are gone — the app that carried it was
+    /// uninstalled, the folder was deleted — falls back to the crab, and every question about the
+    /// icon has to be answered about the thing being drawn rather than about the saved choice.
+    /// The choice itself is left alone, so the pet comes back if its app does.
+    var drawnIcon: MenuBarIcon { animStyle.isPet && petIconTicks == nil ? .crab : animStyle }
+
+    /// The menu bar pet's pictures for the state showing now, or nil when the bar is not drawing
+    /// a pet at all. One picture per tick, so stepping through them needs no durations.
+    var petIconTicks: [NSImage]? {
+        guard animStyle.isPet, let built = petIconFrames() else { return nil }
+        let ticks = built.frames(for: crabMood.petRow)
+        return ticks.isEmpty ? nil : ticks
     }
 
     override init() {
@@ -301,8 +315,12 @@ final class StatusController: NSObject, NSWindowDelegate {
         if d.object(forKey: "analytics") != nil { analytics = d.bool(forKey: "analytics") }
         if d.object(forKey: "soundThreshold") != nil { soundThreshold = d.double(forKey: "soundThreshold") }
         if let s = d.string(forKey: "needsYouSound") { needsYouSound = s }
-        if let s = d.string(forKey: "animStyle"), let st = AnimStyle(rawValue: s) { animStyle = st }
+        if let s = d.string(forKey: "animStyle") { animStyle = MenuBarIcon(raw: s) }
         if let s = d.string(forKey: "petID") { petID = s }   // "" is a real value here: pets off
+        // Never chosen: a Mac that has been showing pets gets the Codex mascot for Codex rows,
+        // and one where they were switched off keeps them off. Turning a setting off and finding
+        // half of it back on after an update is the one outcome this must not produce.
+        codexPetID = d.string(forKey: "codexPetID") ?? (petID.isEmpty ? "" : Self.codexDefaultPet)
         if let s = d.string(forKey: "motionLevel"), let m = Motion.Level(rawValue: s) { Motion.level = m }
         // No `statusItem.menu`: with one set, AppKit swallows the click to open the menu and the
         // button's own action never fires. The panel is a window of ours, so the click has to
@@ -911,19 +929,43 @@ final class StatusController: NSObject, NSWindowDelegate {
         return library
     }
 
-    /// The chosen pet's atlas, decoded on first use and kept until the choice changes. Only the
-    /// chosen one is ever decoded: an atlas is a megabyte-scale picture, and a folder of gallery
-    /// pets would otherwise all sit in memory for the sake of the single one being drawn.
-    func petAtlas() -> PetAtlas? {
-        if petAtlasID == petID { return petAtlasCache }
-        petAtlasID = petID
-        petAtlasCache = Pet.chosen(petID, from: petLibrary()).flatMap(PetAtlas.init)
-        return petAtlasCache
+    /// Which pet a provider's rows draw.
+    func petID(of provider: String) -> String { provider == "codex" ? codexPetID : petID }
+
+    /// A chosen pet's atlas, decoded on first use and kept until the choice changes. Only the
+    /// chosen ones are ever decoded: an atlas is a megabyte-scale picture, and a folder of gallery
+    /// pets would otherwise all sit in memory for the sake of the one or two being drawn. Keyed by
+    /// id rather than by provider, so the common case — both agents showing the same pet — decodes
+    /// it once and both lists of rows draw the same pictures.
+    ///
+    /// The dictionary holds an optional: "we looked and there is nothing" has to be told apart
+    /// from "we have not looked", or a pet whose art will not decode is decoded again on every
+    /// refresh of a panel that asks 2.5 times a second.
+    func petAtlas(of provider: String) -> PetAtlas? {
+        let id = petID(of: provider)
+        if let cached = petAtlasCache[id] { return cached }
+        // Only the ids in use are kept. Clicking down a picker of twenty pets changes the setting
+        // twenty times, and each one asked for its sheet; without this the last nineteen stay.
+        petAtlasCache = petAtlasCache.filter { $0.key == petID || $0.key == codexPetID }
+        let atlas = Pet.chosen(id, from: petLibrary()).flatMap(PetAtlas.init)
+        petAtlasCache[id] = atlas
+        return atlas
+    }
+
+    /// The menu bar pet, cut down to the bar's own size. Built once per pick and kept: it is a
+    /// couple of dozen pictures 18 points tall, and building it costs a decode of the whole sheet.
+    func petIconFrames() -> PetIconFrames? {
+        guard case .pet(let id) = animStyle else { return nil }
+        if petIconID == id { return petIconCache }
+        petIconID = id
+        petIconCache = Pet.chosen(id, from: petLibrary()).flatMap { PetIconFrames($0) }
+        return petIconCache
     }
 
     func reloadPetLibrary() {
         petLibraryCache = nil
-        petAtlasID = nil
+        petAtlasCache = [:]
+        petIconID = nil
     }
 
     /// The archive of the desktop app that carries the Codex companions, when it is installed.
@@ -953,7 +995,37 @@ final class StatusController: NSObject, NSWindowDelegate {
         return petPreviewCache
     }
 
-    func releasePetPreviews() { petPreviewCache = [] }
+    /// Every menu bar choice with the pictures it would put in the bar, at the size the bar draws
+    /// them and one picture per tick of the bar's own clock.
+    ///
+    /// The picker animates all of them for the same reason the pet picker does: a pet's name comes
+    /// out of somebody else's manifest and says nothing about what will appear up there. The two
+    /// tempos below are approximate — the spark runs at nine frames a second and the glyphs tween
+    /// their size — because the picker has to answer "which one is this", not reproduce the bar.
+    func iconChoicePreviews() -> [(icon: MenuBarIcon, name: String, frames: [NSImage])] {
+        if iconPreviewCache.isEmpty {
+            let colour = iconColor
+            iconPreviewCache = [
+                (.web, MenuBarIcon.web.title,
+                 frames.indices.map { tint(frames, color: colour, frame: $0) }),
+                (.code, MenuBarIcon.code.title,
+                 (0..<codeGlyphs.count).flatMap {
+                     repeatElement(codeIcon(color: colour, glyph: $0, scale: 1), count: 8) }),
+                (.crab, MenuBarIcon.crab.title,
+                 crabFrameSet.frames(for: .walking).indices.map {
+                     crabIcon(color: colour, frame: $0, mood: .walking) }),
+            ]
+            iconPreviewCache += petLibrary().compactMap { pet in
+                PetIconFrames(pet).map { (.pet(pet.id), pet.displayName, $0.frames(for: .idle)) }
+            }
+        }
+        return iconPreviewCache
+    }
+
+    func releasePetPreviews() {
+        petPreviewCache = []
+        iconPreviewCache = []
+    }
 
     /// Which model holds a provider's servers. One place, so a new provider cannot be half-wired.
     func model(of provider: String) -> MCPModel { provider == "codex" ? codexMCP : mcp }
@@ -1502,7 +1574,8 @@ final class StatusController: NSObject, NSWindowDelegate {
         switch lead.eff {
         case "permission":
             render(label: statusText(lead, eff: lead.eff), color: crabRenderColor,
-                   animate: animStyle == .crab || crabMood != .sleeping, startedAt: 0, badge: true)
+                   animate: drawnIcon.restsInMotion || crabMood != .sleeping,
+                   startedAt: 0, badge: true)
         case "thinking", "tool":
             render(label: statusText(lead, eff: lead.eff), color: crabRenderColor, animate: true, startedAt: lead.startedAt)
         default:
@@ -1511,18 +1584,27 @@ final class StatusController: NSObject, NSWindowDelegate {
     }
 
     var crabRenderColor: NSColor? {
-        animStyle == .crab && crabMood.keepsColorInSystem ? brand : iconColor
+        drawnIcon == .crab && crabMood.keepsColorInSystem ? brand : iconColor
     }
 
     func setCrabMood(_ mood: CrabMood, working: Int) {
         let tempoChanged = mood.framesPerSecond(working: working) != crabMood.framesPerSecond(working: crabWorking)
         crabWorking = working
         guard mood != crabMood || tempoChanged else { return }
-        let moodChanged = mood != crabMood
+        let previous = crabMood
         crabMood = mood
-        guard animStyle == .crab else { return }
-        animTimer?.invalidate(); animTimer = nil   // recreated at the new tempo by render()
-        guard moodChanged else { return }
+        switch drawnIcon {
+        case .web, .code:
+            return                                     // one picture, nothing to restart
+        case .crab:
+            animTimer?.invalidate(); animTimer = nil   // recreated at the new tempo by render()
+            guard mood != previous else { return }
+        case .pet:
+            // A pet runs every animation at the same tick, so the timer can keep going. But four
+            // of the six moods draw the same one, and restarting a walk that was already walking
+            // is a visible stutter standing for no change at all.
+            guard mood.petRow != previous.petRow else { return }
+        }
         frameIdx = 0
         iconCacheKey = ""
         iconCache.removeAll()
@@ -1530,7 +1612,7 @@ final class StatusController: NSObject, NSWindowDelegate {
     }
 
     func renderResting() {
-        render(label: "", color: crabRenderColor, animate: animStyle == .crab, startedAt: 0)
+        render(label: "", color: crabRenderColor, animate: drawnIcon.restsInMotion, startedAt: 0)
     }
 
 

@@ -818,10 +818,12 @@ let appSources = ((try? FileManager.default.contentsOfDirectory(atPath: repoRoot
     .compactMap { try? String(contentsOfFile: repoRoot + "/Sources/" + $0, encoding: .utf8) }
 if !appSources.isEmpty {
     let mainSource = appSources.joined(separator: "\n")
-    check(mainSource.contains("var animStyle: AnimStyle = .crab"),
+    check(mainSource.contains("var animStyle: MenuBarIcon = .crab"),
           "Crab is the default animation when no preference was saved")
     check(mainSource.contains("d.string(forKey: \"animStyle\")"),
           "a saved animation preference still overrides the Crab default")
+    check(mainSource.contains("d.string(forKey: \"codexPetID\") ?? (petID.isEmpty"),
+          "a Codex pet nobody has chosen follows whether pets are on at all")
     check(mainSource.contains("\"Needs you\"") && !mainSource.contains("Awaiting permission"),
           "permission uses the short Needs you status-bar label")
     check(mainSource.contains("badge: true") && !mainSource.contains("dot: true"),
@@ -2051,6 +2053,159 @@ check(withArchive.first(where: { $0.id == "hoots" })?.displayName == "Our Hoots"
 check(withArchive.contains { $0.id == "null-signal" }, "while the rest of them arrive")
 try? FileManager.default.removeItem(atPath: archiveDir)
 try? FileManager.default.removeItem(atPath: petDir)
+
+
+// MARK: the menu bar's own icon
+//
+// The bar's choice is one value rather than a style plus an id kept beside it: with two values a
+// setting can be saved half-written, and the picker would have a state ("a pet, but which one")
+// that draws nothing. Anything the file does not spell correctly is the crab, because the icon is
+// the app's only visible surface when the panel is closed — there is no blank to fall back to.
+
+check(MenuBarIcon(raw: "web") == .web, "a saved drawn style reads back as itself")
+check(MenuBarIcon(raw: "code") == .code, "each of them")
+check(MenuBarIcon(raw: "crab") == .crab, "including the default")
+check(MenuBarIcon(raw: "pet:hoots") == .pet("hoots"), "and a pet reads back with its id")
+check(MenuBarIcon.pet("hoots").raw == "pet:hoots", "which is written the same way round")
+check(MenuBarIcon.crab.raw == "crab", "while a drawn style is just its name")
+check(MenuBarIcon(raw: "pet:") == .crab, "a pet with no id is not a pet")
+check(MenuBarIcon(raw: "") == .crab, "an empty setting is the crab")
+check(MenuBarIcon(raw: "walrus") == .crab, "and so is a style this version has never heard of")
+check(MenuBarIcon(raw: "pet:one:two") == .pet("one:two"),
+      "an id with a colon in it stays whole, since the ids are other people's folder names")
+
+check(!MenuBarIcon.pet("hoots").title.isEmpty && !MenuBarIcon.crab.title.isEmpty,
+      "every icon can name itself in the picker")
+
+// The bar knows one thing about what is happening: the crab's mood. A pet has one animation per
+// state instead of six moods, so the four busy moods land on the same one — which is why the
+// variant below, and not the mood, is what decides that a cached picture is stale.
+check(CrabMood.sleeping.petRow == .idle, "nothing running: the pet rests")
+check(CrabMood.waitingPermission.petRow == .waiting, "a session needing you: the pet waits")
+check(CrabMood.cigar.petRow == .running, "one working session already has the pet working")
+check([CrabMood.walking, .overheated, .onFire].allSatisfy { $0.petRow == .running },
+      "and the busier moods share that one animation")
+
+check(MenuBarIcon.crab.variant(mood: .onFire) == CrabMood.onFire.rawValue,
+      "the crab's picture changes with its mood")
+check(MenuBarIcon.pet("hoots").variant(mood: .onFire)
+        == MenuBarIcon.pet("hoots").variant(mood: .walking),
+      "a pet's does not change between two moods it draws the same way")
+check(MenuBarIcon.pet("hoots").variant(mood: .onFire)
+        != MenuBarIcon.pet("hoots").variant(mood: .sleeping),
+      "but it does when the animation itself changes")
+check(MenuBarIcon.web.variant(mood: .onFire).isEmpty,
+      "and a drawn style has no second picture to tell apart")
+
+// MARK: a pet cut down to the menu bar
+//
+// The panel gives a pet a 32pt row and lets it fill the cell it was drawn in; the bar has 18
+// points and the animal occupies about half of its cell's height. So the transparent margin is
+// measured and dropped. The measurement is taken across every animation the bar can show at once:
+// trimmed per animation, a pet changes size the moment a session starts working, and an icon that
+// resizes reads as the bar jumping rather than as the pet moving.
+
+let iconPetDir = NSTemporaryDirectory() + "ccb-pet-icon/"
+try? FileManager.default.removeItem(atPath: iconPetDir)
+try? FileManager.default.createDirectory(atPath: iconPetDir, withIntermediateDirectories: true)
+
+/// A v2 atlas with a solid block inside the named cells. `x`/`y` are counted from the cell's own
+/// top left, the way the format counts, so a mark can be placed where the art would be.
+func writeMarkedAtlas(_ marks: [(row: PetRow, x: Int, y: Int, w: Int, h: Int)], to path: String) {
+    let format = PetFormat.v2
+    let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: format.width,
+                              pixelsHigh: format.height, bitsPerSample: 8, samplesPerPixel: 4,
+                              hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                              bytesPerRow: format.width * 4, bitsPerPixel: 32)!
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    NSColor.red.setFill()
+    for mark in marks {
+        for column in 0..<format.frames(for: mark.row).count {
+            let cell = format.rect(row: mark.row, column: column)
+            // The atlas is addressed from the top down and this context draws from the bottom up.
+            NSRect(x: cell.minX + CGFloat(mark.x),
+                   y: CGFloat(format.height) - (cell.minY + CGFloat(mark.y + mark.h)),
+                   width: CGFloat(mark.w), height: CGFloat(mark.h)).fill()
+        }
+    }
+    NSGraphicsContext.restoreGraphicsState()
+    try! rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: path))
+}
+
+// Deliberately three different blocks: the widest is in the running row and the tallest in the
+// idle one, so a trim taken from either row alone would be visibly wrong.
+// Together they cover x 40…159 and y 70…129 — 120 across by 60 down, which is 2:1.
+let iconDir = iconPetDir + "marked/"
+try? FileManager.default.createDirectory(atPath: iconDir, withIntermediateDirectories: true)
+try! petManifest("marked", name: "Marked").write(toFile: iconDir + "pet.json",
+                                                 atomically: true, encoding: .utf8)
+writeMarkedAtlas([(.idle, 70, 70, 40, 60), (.running, 40, 80, 120, 30), (.waiting, 80, 90, 20, 20)],
+                 to: iconDir + "spritesheet.png")
+
+/// Whether anything was drawn at that point of a finished icon, counted from the TOP left the way
+/// a picture is read rather than the way it is drawn.
+func iconHasInk(_ image: NSImage, x: Int, y: Int) -> Bool {
+    guard let rep = image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)),
+          x >= 0, y >= 0, x < rep.pixelsWide, y < rep.pixelsHigh else { return false }
+    return (rep.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.1
+}
+
+let markedPet = Pet.load(directory: iconDir)
+check(markedPet != nil, "the marked atlas loads as a pet at all")
+let barFrames = PetIconFrames(markedPet!, height: 18)
+check(barFrames != nil, "a pet with art in it can be cut down to the bar")
+
+if let barFrames {
+    let idle = barFrames.frames(for: .idle)
+    let running = barFrames.frames(for: .running)
+    let waiting = barFrames.frames(for: .waiting)
+    check(!idle.isEmpty && !running.isEmpty && !waiting.isEmpty,
+          "every animation the bar can ask for was cut")
+    let sizes = Set((idle + running + waiting).map { "\($0.size)" })
+    check(sizes.count == 1,
+          "one size across every animation, or the icon resizes when a session starts working")
+    check(idle.first?.size.height == 18, "cut to the height the bar has room for")
+    // 120 across by 60 down is 2:1, so 18 points tall is 36 across. Asserted as the ratio the
+    // marks describe rather than as a number typed in: the point is that the margin went.
+    check((idle.first.map { $0.size.width / $0.size.height } ?? 0) == 2,
+          "and as wide as the art it found, not as wide as the cell it sat in")
+
+    // The bar steps through a fixed list ten times a second, so a frame held for four tenths is
+    // four entries. The totals below are the format's own durations, not numbers chosen here.
+    func ticks(_ row: PetRow) -> Int {
+        Int((PetFormat.v2.frames(for: row).map(\.duration).reduce(0, +) * PetIconFrames.fps).rounded())
+    }
+    check(idle.count == ticks(.idle), "a resting loop lasts as long as its durations add up to")
+    check(running.count == ticks(.running), "and so does a working one")
+    check(idle.count != running.count, "which are not the same length, or the check proves nothing")
+
+    // A trim is two numbers — where the art starts and how tall it is — and getting the first one
+    // upside down still produces a picture of the right size, with the animal half out of frame.
+    // The marks were placed so each edge of the shared box belongs to a known animation: the tall
+    // block in the resting row reaches the top and the bottom, the wide one in the working row
+    // reaches both sides. So after a tight trim each of them has to touch its own edges.
+    let width = Int(idle.first?.size.width ?? 0), tall = Int(idle.first?.size.height ?? 0)
+    check((0..<width).contains { iconHasInk(idle[0], x: $0, y: 0) },
+          "the resting pet reaches the top of its icon")
+    check((0..<width).contains { iconHasInk(idle[0], x: $0, y: tall - 1) },
+          "and the bottom, so the trim is not measured upside down")
+    check((0..<tall).contains { iconHasInk(running[0], x: 0, y: $0) },
+          "the working pet reaches the left edge")
+    check((0..<tall).contains { iconHasInk(running[0], x: width - 1, y: $0) },
+          "and the right one, so nothing was cut off the side")
+    check(!(0..<width).contains { iconHasInk(running[0], x: $0, y: 0) },
+          "while the row that does not reach the top does not suddenly fill it")
+}
+
+// A pet whose rows are empty has no margin to measure, and dividing by that height is how an
+// icon ends up infinitely wide. Nothing to draw has to come back as nothing to draw.
+let blankDir = writePet("blank", in: iconPetDir, manifest: petManifest("blank", name: "Blank"),
+                        atlas: (1536, 2288))
+check(PetIconFrames(Pet.load(directory: blankDir)!, height: 18) == nil,
+      "a pet with nothing drawn in it cannot become an icon")
+
+try? FileManager.default.removeItem(atPath: iconPetDir)
 
 
 print(failures == 0 ? "\nall model checks passed" : "\n\(failures) failed")

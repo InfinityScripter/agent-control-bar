@@ -48,8 +48,8 @@ extension StatusController {
     /// Everything that can change what a frame looks like is in the key — the appearance included,
     /// because a cached image must not outlive a switch between a light and a dark menu bar.
     func cachedIcon(frame: Int) -> NSImage? {
-        let key = [animStyle.rawValue,
-                   animStyle == .crab ? crabMood.rawValue : "",
+        let key = [drawnIcon.raw,
+                   drawnIcon.variant(mood: crabMood),
                    activeBadge ? "badge" : "",
                    activeColor.map { "\($0)" } ?? "template",
                    currentGauge().signature,
@@ -103,8 +103,9 @@ extension StatusController {
     }
 
     func iconImage(color: NSColor?, frame: Int) -> NSImage {
-        if animStyle == .web { return tint(frames, color: color, frame: frame) }
-        if animStyle == .crab { return crabIcon(color: color, frame: frame) }
+        if let pet = petIcon(frame: frame) { return pet }
+        if drawnIcon == .web { return tint(frames, color: color, frame: frame) }
+        if drawnIcon == .crab { return crabIcon(color: color, frame: frame) }
         let i = (frame / codeSub) % codeGlyphs.count
         let local = (CGFloat(frame % codeSub) + 0.5) / CGFloat(codeSub) // 0…1 within this glyph
         // Scale envelope per glyph: rise, hold at peak, fall, so each lands before the swap.
@@ -167,15 +168,30 @@ extension StatusController {
     }
 
     func restingIcon(color: NSColor?) -> NSImage {
-        if animStyle == .crab { return crabIcon(color: color, frame: 0) }
+        if let pet = petIcon(frame: 0) { return pet }
+        if drawnIcon == .crab { return crabIcon(color: color, frame: 0) }
         return tint(logoSet.isEmpty ? frames : logoSet, color: color, frame: 0)
+    }
+
+    /// The menu bar pet's picture for this step, or nil when the bar is not drawing one.
+    ///
+    /// No colour argument: the two drawn styles are a single shape that the System setting turns
+    /// black or white with the menu bar, and a pet is a painted sprite with nothing left of itself
+    /// once it is flattened into one colour. So a pet is always itself, and the Color setting says
+    /// as much rather than silently doing nothing.
+    func petIcon(frame: Int) -> NSImage? {
+        guard let ticks = petIconTicks, !ticks.isEmpty else { return nil }
+        return ticks[frame % ticks.count]
     }
 
     // nil color (System) => adaptive shaded template (see adaptiveCrabFrame in CrabRender.swift);
     // non-nil (Orange) => the original full-color sprite, drawn as-is.
-    func crabIcon(color: NSColor?, frame: Int) -> NSImage {
-        let fullColor = crabFrameSet.frames(for: crabMood)
-        let pool = color == nil ? (crabTemplateFrames[crabMood] ?? fullColor) : fullColor
+    /// `mood` is the one showing now unless the caller names another, which the Settings picker
+    /// does: there the crab walks whatever the machine happens to be doing.
+    func crabIcon(color: NSColor?, frame: Int, mood asked: CrabMood? = nil) -> NSImage {
+        let mood = asked ?? crabMood
+        let fullColor = crabFrameSet.frames(for: mood)
+        let pool = color == nil ? (crabTemplateFrames[mood] ?? fullColor) : fullColor
         guard !pool.isEmpty else { return NSImage(size: NSSize(width: 18, height: 18)) }
         let src = pool[frame % pool.count]
         let rep = src.representations.first

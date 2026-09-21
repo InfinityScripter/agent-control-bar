@@ -112,6 +112,14 @@ The sprite is lit from the top left — a lighter rim on top, a darker one under
 
 Server and tool switches apply to new sessions: Claude Code assembles the tool list at session start, so sessions that are already open keep their old set.
 
+### The menu bar icon
+
+**Settings → Appearance → Menu bar icon** is a chooser of pictures rather than a list of names: the three animations this app draws itself — Crab Walking, Claude Spark and Claude Code — followed by every pet it can find, each one playing at exactly the size the menu bar will show it. Eighteen points is small, and seeing it that small is the point: a character drawn for a panel row can turn out to be unreadable up there, and the chooser is where that is worth finding out.
+
+A pet in the bar shows the same three things a pet in a row does — resting, working, waiting for you — where the crab has six moods for the same job. The crab still says *how many* sessions are working; a pet says only that some are. That is a real difference, and it is why the crab remains the default.
+
+A pet is always drawn in its own colours, so the **Color** setting does not apply to one: Orange and System fill a single shape with a single colour, and a painted sprite has nothing left of itself once flattened into one. If the pet you chose goes away — you removed the ChatGPT app, or deleted the folder — the bar falls back to the crab and your choice is kept, so the pet returns when it does.
+
 ### Session pets
 
 The menu bar icon says how busy everything is at once. A **pet** says it one session at a time: a small animated character at the head of each session row in the panel, playing that session's own state.
@@ -123,6 +131,10 @@ The menu bar icon says how busy everything is at once. A **pet** says it one ses
 | Waiting for your permission | Looks up |
 
 Pick one in **Settings → Appearance → Session rows**. The chooser shows the pets themselves rather than a list of names, each one animating, because a name like *Null Signal* tells you nothing about what will turn up beside your sessions. **None** puts back the dot and the spinner.
+
+Claude rows and Codex rows are chosen separately, so a list holding both agents can be told apart without reading it. Where the ChatGPT desktop app is installed, Codex rows start out with the Codex companion; Claude rows start out with the crab. There is no Codex chooser on a Mac with no Codex on it.
+
+A pet can also stand in the menu bar itself — see [The menu bar icon](#the-menu-bar-icon).
 
 Three places are looked in, and the first one to claim a name keeps it:
 
@@ -150,9 +162,9 @@ The animation follows the **Motion** setting like everything else in the panel: 
 
 **Appearance**
 
-- **Animation** — Crab Walking (default), Claude Spark, or Claude Code, the terminal glyph spinner.
-- **Color** — Orange, or System for an adaptive black/white icon.
-- **Session rows** — which pet stands at the head of each session row, or *None* for the plain dot and spinner. See [Session pets](#session-pets).
+- **Menu bar icon** — Crab Walking (default), Claude Spark, Claude Code (the terminal glyph spinner), or any pet, each shown at the size the bar draws it. See [The menu bar icon](#the-menu-bar-icon).
+- **Color** — Orange, or System for an adaptive black/white icon. It does not apply to a pet, which is always drawn in its own colours.
+- **Session rows** — which pet stands at the head of each session row, or *None* for the plain dot and spinner. Claude rows and Codex rows are chosen separately. See [Session pets](#session-pets).
 - **Limits strip** — how the strip shows two providers. *Two rows* (default) stacks Claude and Codex, each under its own name and next reset. *Switcher* gives one the full width and puts the other behind a tab, with a hairline of its fullest window under the tab name. With one provider the strip is a single row either way.
 
 **Motion** — how much the panel itself moves. *Off* stops every animation; *Subtle* (default) moves the panel, its cards and its switches; *Expressive* adds a staggered entrance for the rows in a list. macOS's own Reduce Motion is honoured on top of the choice: movement becomes a crossfade rather than nothing at all, so a change of state is still visible.
