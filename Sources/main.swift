@@ -127,6 +127,9 @@ final class StatusController: NSObject, NSWindowDelegate {
     var updateBuild: Process?           // the in-flight source build; Quit terminates it (see quit())
     var updateDownload: URLSessionDownloadTask?  // the in-flight DMG download; Quit cancels it
     var updateStage: String?            // "Downloading… 43%" / "Installing…" while selfUpdating; nil otherwise
+    var updateCheckRunning = false      // About's "Check now" reads "Checking…" and waits meanwhile
+    var updateCheckedAt: Date?          // the last check GitHub answered with a release, this run
+    var updateCheckProblem: String?     // why the last check found no release; nil once one did
     weak var whatsNewInstallButton: NSButton?     // the open "What's new" window's button, same reason
     // Never `xcrun --find`: querying xcrun with no developer tools installed pops the system's
     // "install the command line developer tools?" dialog — from a menu bar app, out of nowhere.

@@ -40,6 +40,24 @@ enum UpdateFeed {
         return nil
     }
 
+    /// Why a releases/latest request named no release, in words for the About page.
+    ///
+    /// GitHub refuses in JSON too, so a missing `tag_name` alone would hide the reason. The one
+    /// refusal worth its own words is the rate limit: 60 unauthenticated requests an hour per
+    /// address, which a shared office network spends without this app. Its message is replaced
+    /// rather than shown, because it carries the address GitHub saw, and this text is selectable
+    /// for pasting into a bug report.
+    static func checkProblem(status: Int, answer: [String: Any]?, error: Error?) -> String {
+        if let error { return "No answer from GitHub: \(error.localizedDescription)" }
+        let message = (answer?["message"] as? String) ?? ""
+        if message.localizedCaseInsensitiveContains("rate limit") {
+            return "GitHub allows 60 checks an hour from one network, and this one has used them up. "
+                + "Try again later."
+        }
+        return message.isEmpty ? "GitHub answered \(status) without a release in it"
+                               : "GitHub answered \(status): \(message)"
+    }
+
     static func sha256Hex(of data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }

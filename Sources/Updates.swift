@@ -46,12 +46,18 @@ extension StatusController {
         // is already in trouble. An attempt is what the throttle counts; the outcome is separate.
         d.set(now, forKey: "lastUpdateCheck")
         guard let url = URL(string: releaseAPIURL) else { return }
+        hooksWillChange()
+        updateCheckRunning = true
         var req = URLRequest(url: url)
         req.setValue("ClaudeControlBar", forHTTPHeaderField: "User-Agent") // GitHub API requires a UA
-        URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
-            guard let data = data,
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let tag = obj["tag_name"] as? String else { return }
+        URLSession.shared.dataTask(with: req) { [weak self] data, response, error in
+            let obj = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            guard let obj, let tag = obj["tag_name"] as? String else {
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                self?.updateCheckFinished(problem: UpdateFeed.checkProblem(status: status, answer: obj,
+                                                                           error: error))
+                return
+            }
             let ver = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
             UserDefaults.standard.set(ver, forKey: "latestVersion")
             // The release body rides in the same response — the "What's new in X" row shows
@@ -75,6 +81,7 @@ extension StatusController {
                 self.notify(title: "Claude Control Bar \(ver) is available",
                             body: "The panel has \u{201C}What\u{2019}s new in \(ver)\u{201D} and the update.")
             }
+            self?.updateCheckFinished(problem: nil)
         }.resume()
         guard let brewURL = URL(string: brewCaskAPIURL) else { return }
         URLSession.shared.dataTask(with: URLRequest(url: brewURL)) { data, _, _ in
@@ -83,6 +90,19 @@ extension StatusController {
                   let ver = obj["version"] as? String else { return }
             UserDefaults.standard.set(ver, forKey: "brewCaskVersion")
         }.resume()
+    }
+
+    /// The About page reads the check's outcome at draw time, so it has to be told when one ends:
+    /// without this, a press that found a new version went on saying "up to date" until something
+    /// unrelated redrew the window, and a refused check said nothing at all.
+    func updateCheckFinished(problem: String?) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.hooksWillChange()
+            self.updateCheckRunning = false
+            self.updateCheckProblem = problem
+            if problem == nil { self.updateCheckedAt = Date() }
+        }
     }
 
     // Numeric component-wise compare so "0.0.10" > "0.0.9".

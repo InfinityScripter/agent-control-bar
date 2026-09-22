@@ -414,11 +414,26 @@ private struct AboutSettings: View {
                         LabeledContent("Update with", value: store.brewUpgradeCommand)
                             .textSelection(.enabled)
                     }
-                } else {
+                } else if store.updateProblem == nil {
                     Label("This copy is up to date", systemImage: "checkmark.circle")
                         .foregroundStyle(.secondary)
                 }
-                Button("Check now") { store.checkForUpdate() }
+                // Shown even beside a newer version already known: that version is still true,
+                // but the press did not reach GitHub, and saying nothing is what made the button
+                // look dead.
+                if let problem = store.updateProblem {
+                    Label("Couldn\u{2019}t check for updates", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(problem)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                if let checked = store.updateCheckedAt {
+                    LabeledContent("Last checked",
+                                   value: checked.formatted(.dateTime.month(.abbreviated).day().hour().minute()))
+                }
+                Button(store.updateChecking ? "Checking\u{2026}" : "Check now") { store.checkForUpdate() }
+                    .disabled(store.updateChecking)
             } header: {
                 Text("Updates")
             } footer: {
