@@ -7,6 +7,19 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.23.1] - 2026-09-22
+
+### Fixed
+- **Check now in Settings → About answers.** A press that found a new version left the page saying
+  *This copy is up to date* until something else redrew the window, and the one-time system
+  notification was the only sign that the press had done anything. The page now follows the
+  check: the button reads *Checking…* while it runs, the section switches to the new version the
+  moment GitHub answers, and a *Last checked* line says when a check last got through.
+- **A check that fails says why.** An answer that named no release was dropped, so a refusal
+  looked exactly like being up to date. About now shows the reason: what macOS reported when
+  nothing came back, and GitHub's limit of 60 checks an hour from one network — easy to spend on a
+  shared office connection — as that, in plain words.
+
 ## [0.23.0] - 2026-09-20
 
 ### Added
