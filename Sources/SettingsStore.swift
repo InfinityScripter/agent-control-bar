@@ -124,7 +124,8 @@ final class SettingsStore: ObservableObject {
     //
     // Read-only, and read at draw time rather than stored: the version cannot change under an open
     // window, and the update state is the panel's job to report live — this page only has to say
-    // where this copy stands when someone comes looking for it.
+    // where this copy stands when someone comes looking for it. The one thing it follows live is
+    // a check, since "Check now" is pressed here: the controller announces its start and its end.
 
     var appName: String { controller?.appName ?? "Claude Control Bar" }
     var version: String { controller?.currentVersion ?? "0" }
@@ -145,6 +146,9 @@ final class SettingsStore: ObservableObject {
     func showWhatsNew() { controller?.showWhatsNewCurrent() }
     func showLatestNotes() { controller?.showWhatsNewLatest() }
     func checkForUpdate() { controller?.checkForUpdate(force: true) }
+    var updateChecking: Bool { controller?.updateCheckRunning ?? false }
+    var updateCheckedAt: Date? { controller?.updateCheckedAt }
+    var updateProblem: String? { controller?.updateCheckProblem }
 
     // MARK: Hooks
     //

@@ -1290,6 +1290,25 @@ check(UpdateFeed.verify(file: dmgTmp, against: UpdateFeed.ReleaseAsset(url: good
       "no digest advertised: the size check alone stands")
 try? FileManager.default.removeItem(at: dmgTmp)
 
+// A check that found no release says why, on the About page, instead of nothing.
+let rateLimited = UpdateFeed.checkProblem(status: 403, answer: [
+    "message": "API rate limit exceeded for 203.0.113.7. (But here's the good news: Authenticated "
+        + "requests get a higher rate limit. Check out the documentation for more details.)",
+    "documentation_url": "https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting",
+], error: nil)
+check(rateLimited.contains("60"), "a rate-limit refusal names GitHub's hourly allowance: \(rateLimited)")
+check(!rateLimited.contains("203.0.113.7"),
+      "the refusal does not carry the address GitHub saw into a text meant for bug reports")
+let offline = UpdateFeed.checkProblem(status: 0, answer: nil, error: URLError(.notConnectedToInternet))
+check(offline.contains(URLError(.notConnectedToInternet).localizedDescription),
+      "a request that never got an answer says what the system said: \(offline)")
+let notFound = UpdateFeed.checkProblem(status: 404, answer: ["message": "Not Found"], error: nil)
+check(notFound.contains("404") && notFound.contains("Not Found"),
+      "any other refusal keeps its status and GitHub's own words: \(notFound)")
+let noTag = UpdateFeed.checkProblem(status: 200, answer: ["name": "x"], error: nil)
+check(!noTag.isEmpty && !noTag.localizedCaseInsensitiveContains("rate limit"),
+      "an answer without a release in it is reported as that: \(noTag)")
+
 // MARK: Needs-you sound — one cue per prompt, and none when the prompt is already on screen
 
 check(NeedsYouSound.shouldCue(prevState: "tool", state: "permission", effective: "permission",
