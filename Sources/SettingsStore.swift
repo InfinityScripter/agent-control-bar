@@ -62,7 +62,7 @@ final class SettingsStore: ObservableObject {
     /// on most machines, and a settings window that explains a problem the reader cannot have is
     /// worse than one that stays quiet.
     var codexPresent: Bool {
-        controller.map { FileManager.default.fileExists(atPath: $0.codexHome) } ?? false
+        controller?.codexInstalled ?? false
     }
     /// How many of this app's hooks Codex is still skipping, and whether an answer has been had at
     /// all. Nil means Codex has not been asked yet — a fresh launch, or a Codex that did not
@@ -199,7 +199,7 @@ extension StatusController {
     func applyCodexServers(_ on: Bool) {
         codexServers = on
         UserDefaults.standard.set(on, forKey: "codexServers")
-        if on, FileManager.default.fileExists(atPath: codexHome) {
+        if on, codexInstalled {
             runQuietCommand(.mcpRefresh(provider: "codex"))
         }
         refreshCounts()
@@ -216,7 +216,7 @@ extension StatusController {
         codexLimitsMTime = nil
         // The same gate pollLimits applies: switching this on where Codex has never run should
         // not spawn a process to be told there is nothing to read.
-        if on, FileManager.default.fileExists(atPath: codexSessionsDir) {
+        if on, codexHasRun {
             runQuietCommand(.limits(provider: "codex"))
         }
         loadCodexLimits()

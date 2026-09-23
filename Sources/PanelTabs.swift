@@ -167,8 +167,8 @@ struct PanelSessionRow: View {
                                 // the line below, and the row already carries two figures.
                                 // Claude rows get none — in a panel with no Codex in it there is
                                 // nothing to tell apart, and a pill on every row is just noise.
-                                if session.provider == "codex" {
-                                    Image(systemName: "chevron.left.forwardslash.chevron.right")
+                                if session.provider == Provider.codex.id {
+                                    Image(systemName: Provider.codex.glyph)
                                         .font(.system(size: 9, weight: .semibold))
                                         .foregroundStyle(.secondary)
                                         .help("An OpenAI Codex session")

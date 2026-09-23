@@ -4,12 +4,6 @@ import UserNotifications
 final class StatusController: NSObject, NSWindowDelegate {
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let root = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/control-bar")
-    let stateDir = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/control-bar/state.d")
-    /// Codex's sessions, written by the same two hooks with `--provider codex`. A directory of
-    /// its own rather than a shared one: the Claude contract already has two writers and its own
-    /// reap rules, and a stray Codex file in state.d would be cleaned up by rules meant for
-    /// somebody else.
-    let codexStateDir = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/control-bar/codex/state.d")
     let claudeDesktopBundleID = "com.anthropic.claudefordesktop"
 
     // MARK: MCP + limits
@@ -124,6 +118,11 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// Codex's own directory. Its presence is the whole test for "is Codex installed here" —
     /// asked afresh rather than cached, so installing Codex later needs no restart.
     let codexHome = (NSHomeDirectory() as NSString).appendingPathComponent(".codex")
+    /// Codex is installed: its servers and hooks can be asked about.
+    var codexInstalled: Bool { FileManager.default.fileExists(atPath: codexHome) }
+    /// Codex has run at least once: only then is there a session file to read limits out of. A
+    /// separate gate from codexInstalled, because an install that never ran has none.
+    var codexHasRun: Bool { FileManager.default.fileExists(atPath: codexSessionsDir) }
     var selfUpdating = false            // one update at a time (DMG install or source build)
     var updateBuild: Process?           // the in-flight source build; Quit terminates it (see quit())
     var updateDownload: URLSessionDownloadTask?  // the in-flight DMG download; Quit cancels it
@@ -602,7 +601,7 @@ final class StatusController: NSObject, NSWindowDelegate {
                     self.hookFailures = 0
                 }
                 self.refreshCounts()
-                if thenApproveCodex, FileManager.default.fileExists(atPath: self.codexHome) {
+                if thenApproveCodex, self.codexInstalled {
                     self.approveCodexHooks()
                 }
             }
@@ -751,7 +750,7 @@ final class StatusController: NSObject, NSWindowDelegate {
         // the same reason: this one starts every configured Codex server to ask it for its tools,
         // which is the expensive thing a second queued check would repeat for nothing. Gated on
         // the switch AND on Codex being installed, so a Mac without it spawns nothing.
-        if codexServers, FileManager.default.fileExists(atPath: codexHome) {
+        if codexServers, codexInstalled {
             runQuietCommand(.mcpRefresh(provider: "codex"))
         }
         // Asked on the same occasions, and not gated on either Codex switch: this one explains an
@@ -790,7 +789,7 @@ final class StatusController: NSObject, NSWindowDelegate {
         // The stat is worth it: without it a Mac that has never run Codex — most of them — would
         // spawn a process every five minutes to be told there is nothing to read. Asked afresh
         // each poll, so installing Codex later is picked up without a restart.
-        if codexLimits, FileManager.default.fileExists(atPath: codexSessionsDir) {
+        if codexLimits, codexHasRun {
             runQuietCommand(.limits(provider: "codex"))
         }
     }
@@ -1084,9 +1083,8 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// The file where THIS agent's servers are configured. The button used to be a fixed path to
     /// settings.json, which for a Codex row opens a file that has nothing to do with it.
     func openConfig(of provider: String) {
-        let path = provider == "codex" ? ".codex/config.toml" : ".claude/settings.json"
         NSWorkspace.shared.open(URL(fileURLWithPath:
-            (NSHomeDirectory() as NSString).appendingPathComponent(path)))
+            Provider.named(provider).configFile(home: NSHomeDirectory())))
     }
 
     func loadLimits() {
@@ -1123,7 +1121,7 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// our own answer file is missing, so a deleted one is re-made rather than waited for. No the
     /// rest of the time: nothing else can change the answer, and the question costs a process.
     func askCodexAboutHooks() -> Bool {
-        guard FileManager.default.fileExists(atPath: codexHome) else { return false }
+        guard codexInstalled else { return false }
         let answered = (root as NSString).appendingPathComponent("codex/hooks.json")
         guard FileManager.default.fileExists(atPath: answered) else { return true }
         let stamps = ["hooks.json", "config.toml"].map { name -> String in
@@ -1332,18 +1330,13 @@ final class StatusController: NSObject, NSWindowDelegate {
 
     var limitsBoard: LimitsBoard { LimitsBoard(claude: limits?.set, codex: codexWindows) }
 
-    // Every agent's state directory, in the order their rows are keyed. The provider string is
-    // the one written into the files themselves — see Session.provider.
-    var stateDirs: [(provider: String, path: String)] {
-        [("claude", stateDir), ("codex", codexStateDir)]
-    }
-
     // The session files currently on disk, both agents' (ignores the .tmp files mid-write).
     // Keyed "<provider>:<id>", because the two agents mint their ids independently and the
     // dictionaries below must not be able to mix them up.
     func stateFiles() -> [(key: String, path: String, provider: String, id: String)] {
-        stateDirs.flatMap { provider, dir in
-            ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? [])
+        Provider.all.flatMap { agent in
+            let provider = agent.id, dir = agent.stateDir(home: NSHomeDirectory())
+            return ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? [])
                 .filter { $0.hasSuffix(".json") }
                 .map { name in
                     let id = (name as NSString).deletingPathExtension
@@ -1357,7 +1350,7 @@ final class StatusController: NSObject, NSWindowDelegate {
     // Where a session's own file lives — the one place that turns a session back into a path,
     // so the reap in evaluate() cannot delete out of the wrong agent's directory.
     func statePath(of s: Session) -> String {
-        let dir = s.provider == "codex" ? codexStateDir : stateDir
+        let dir = Provider.named(s.provider).stateDir(home: NSHomeDirectory())
         return (dir as NSString).appendingPathComponent(s.id + ".json")
     }
 

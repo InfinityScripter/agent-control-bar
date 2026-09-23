@@ -2407,6 +2407,21 @@ do {
     check(LimitsBoard.showing("claude", among: []) == nil, "nothing to show, nothing picked")
 }
 
+// What tells the two agents apart. The reap deletes files by stateDir, so a wrong directory here
+// deletes another agent's sessions — which is why the paths are pinned rather than trusted.
+check(Provider.all.map(\.id) == ["claude", "codex"], "both agents, Claude first")
+check(Provider.named("codex").stateDir(home: "/h") == "/h/.claude/control-bar/codex/state.d",
+      "Codex sessions live in their own directory")
+check(Provider.named("claude").stateDir(home: "/h") == "/h/.claude/control-bar/state.d",
+      "Claude's stay where the hooks always wrote them")
+check(Provider.named("").id == "claude" && Provider.named("other").id == "claude",
+      "a file without a known provider is Claude's, as every pre-Codex file is")
+check(Provider.named("codex").configFile(home: "/h") == "/h/.codex/config.toml"
+        && Provider.claude.configFile(home: "/h") == "/h/.claude/settings.json",
+      "each agent's servers open in its own config file")
+check(Provider.codex.title == "Codex" && Provider.claude.glyph == "sparkle",
+      "names and glyphs come from one place")
+
 // The Swift → mcpbar.py command line. main() in mcpbar.py reads these words positionally, and an
 // older script reads the tool rule as its only argument — so the spelling is the contract, pinned
 // word for word rather than rebuilt from the same code that produced it.

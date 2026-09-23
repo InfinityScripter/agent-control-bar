@@ -103,7 +103,7 @@ extension StatusController {
                                     : "Limits are switched off in Settings")
         }
         let groups = sources.map { entry -> PanelLimitGroup in
-            let codex = entry.set.provider == "codex"
+            let agent = Provider.named(entry.set.provider)
             // Account windows first, the model's own window last: 5h and 7d are what every plan
             // has, Fable is a slice of the week only some plans carry. A window the writer did not
             // report is skipped, not zeroed — the model hands over only the windows it read.
@@ -118,8 +118,7 @@ extension StatusController {
             let worst = LimitsSet.worst(entry.windows)
                 .flatMap { pick in entry.windows.firstIndex { $0.key == pick.key } }
                 .map { rows[$0] }
-            return PanelLimitGroup(provider: entry.set.provider, title: codex ? "Codex" : "Claude",
-                                   glyph: codex ? "chevron.left.forwardslash.chevron.right" : "sparkle",
+            return PanelLimitGroup(provider: agent.id, title: agent.title, glyph: agent.glyph,
                                    limits: rows,
                                    resets: soonest.map { Self.until($0) },
                                    age: Self.age(of: entry.set.ts, now: now),
