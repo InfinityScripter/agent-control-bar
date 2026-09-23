@@ -7,6 +7,14 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.23.3] - 2026-09-23
+
+### Changed
+- **Opening the panel brings fresh limits.** The figures were asked for again only when they were
+  over ten minutes old, so the panel often opened on numbers five to ten minutes stale. Every open
+  now asks: Claude's figures at most once a minute, however often the panel is opened, and Codex's
+  on every open.
+
 ## [0.23.2] - 2026-09-23
 
 ### Fixed
