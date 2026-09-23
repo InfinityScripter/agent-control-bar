@@ -91,20 +91,9 @@ extension StatusController {
     /// empty bar reads as "you have not used this", which is not what "not installed", "not
     /// signed in" or "last measured a week ago" mean.
     func panelLimitGroups(now: Double) -> ([PanelLimitGroup], String) {
-        var sources: [(set: LimitsSet, windows: [NamedWindow], title: String, glyph: String)] = []
-        // `drawable` rather than the windows as written: a window whose reset has passed since it
-        // was measured reads as empty. Its old percentage is about a window that is over, and
-        // for the five minutes before the next poll lands it was drawn as if it were current.
-        if let claude = limits?.set, !claude.isEmpty {
-            sources.append((claude, claude.drawable(at: now), "Claude", "sparkle"))
-        }
-        if let codex = codexWindows {
-            let rows = codex.drawable(at: now)
-            if !rows.isEmpty {
-                sources.append((codex, rows, "Codex",
-                                "chevron.left.forwardslash.chevron.right"))
-            }
-        }
+        // Which providers appear, and with which windows, is decided in the model — see
+        // LimitsBoard. What is left here is how the panel names and dates them.
+        let sources = limitsBoard.shown(at: now)
         guard !sources.isEmpty else {
             // Empty means the poll has not succeeded yet: switched off in Settings, or Claude Code
             // is not signed in through the browser OAuth flow (a `setup-token` login lacks the
@@ -114,6 +103,7 @@ extension StatusController {
                                     : "Limits are switched off in Settings")
         }
         let groups = sources.map { entry -> PanelLimitGroup in
+            let agent = Provider.named(entry.set.provider)
             // Account windows first, the model's own window last: 5h and 7d are what every plan
             // has, Fable is a slice of the week only some plans carry. A window the writer did not
             // report is skipped, not zeroed — the model hands over only the windows it read.
@@ -128,8 +118,8 @@ extension StatusController {
             let worst = LimitsSet.worst(entry.windows)
                 .flatMap { pick in entry.windows.firstIndex { $0.key == pick.key } }
                 .map { rows[$0] }
-            return PanelLimitGroup(provider: entry.set.provider, title: entry.title,
-                                   glyph: entry.glyph, limits: rows,
+            return PanelLimitGroup(provider: agent.id, title: agent.title, glyph: agent.glyph,
+                                   limits: rows,
                                    resets: soonest.map { Self.until($0) },
                                    age: Self.age(of: entry.set.ts, now: now),
                                    plan: entry.set.plan, worst: worst)
@@ -183,18 +173,8 @@ extension StatusController {
     /// out: in rows, a second header, a second row of cells and the gap between them; in the
     /// switcher, the tabs above the one row of cells that is already counted.
     var panelStripExtra: CGFloat {
-        guard limitProviderCount > 1 else { return 0 }
+        guard limitsBoard.shown(at: Date().timeIntervalSince1970).count > 1 else { return 0 }
         return limitsLayout == .rows ? 80 : 40
-    }
-
-    /// How many providers have figures right now, asked cheaply: `panelLimitGroups` builds every
-    /// row and is already called once per refresh, and the cap has no use for any of that.
-    private var limitProviderCount: Int {
-        var count = 0
-        if let limits, !limits.isEmpty { count += 1 }
-        if let codexWindows,
-           !codexWindows.drawable(at: Date().timeIntervalSince1970).isEmpty { count += 1 }
-        return count
     }
 
     /// The banner, the limits strip, the tabs and the footer, plus the gap under the menu bar.

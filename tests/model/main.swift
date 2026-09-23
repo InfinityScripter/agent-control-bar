@@ -624,6 +624,22 @@ if !FileManager.default.fileExists(atPath: seamPath) {
     check(seam.waitingAuth == ["needs-oauth"], "the waiting-for-auth list crosses over")
 }
 
+// The same border for Claude's limits.json, written by the real statusline.py during the python
+// suite (LimitsWriters in tests/test_statusline.py, which also holds mcpbar.py to the same record).
+let limitsSeamPath = FileManager.default.currentDirectoryPath + "/build/seam/limits.json"
+if let data = FileManager.default.contents(atPath: limitsSeamPath),
+   let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+    let seamLimits = Limits(json: root)
+    check(seamLimits?.fiveHour == LimitWindow(used: 4, resets: 1_790_164_800),
+          "a fractional percentage and an ISO reset arrive as numbers the app can read")
+    check(seamLimits?.sevenDay?.used == 69, "the weekly window crosses over")
+    check(seamLimits?.source == "statusline" && (seamLimits?.ts ?? 0) > 0,
+          "the reserved keys stay the record's own, not windows")
+} else {
+    check(false, "limits seam fixture missing at \(limitsSeamPath) — run the python suite first "
+        + "(/usr/bin/python3 -m unittest discover -s tests), it writes build/seam/limits.json")
+}
+
 // MARK: Changelog — the "What's new" source
 
 let changelogFixture = """
@@ -2225,6 +2241,208 @@ check(PetIconFrames(Pet.load(directory: blankDir)!, height: 18) == nil,
       "a pet with nothing drawn in it cannot become an icon")
 
 try? FileManager.default.removeItem(atPath: iconPetDir)
+
+// The session lifecycle around SessionEngine: reading files, reaping, the chime and "needs you"
+// edges, same-named projects, the lead session. It used to live in StatusController, tangled
+// with the disk, timers and NSWorkspace, and the per-session side tables were cleared in three
+// places that had to stay in step.
+do {
+    let now = 1_800_000_000.0
+    let mtime = Date(timeIntervalSince1970: 1)
+    var disk: [String: [String: Any]] = [:]
+    var reads = 0
+    func file(_ provider: String, _ id: String, at stamp: Date = mtime) -> SessionBoard.File {
+        SessionBoard.File(key: provider + ":" + id, path: "/\(provider)/\(id).json",
+                          provider: provider, id: id, mtime: stamp)
+    }
+    func read(_ path: String) -> [String: Any]? { reads += 1; return disk[path] }
+    var alive: Set<Int32> = [11, 12, 13]
+    var rules = SessionBoard.Rules(soundThreshold: 60, stalePruneAge: 900,
+                                   thinkingWords: ["Pondering", "Musing"], needsYou: true)
+
+    let board = SessionBoard(engine: SessionEngine())
+    disk["/claude/a.json"] = ["state": "thinking", "project": "myrepo", "cwd": "/work/myrepo",
+                              "pid": 11, "ts": now, "startedAt": now - 120, "provider": "codex"]
+    disk["/claude/b.json"] = ["state": "idle", "project": "myrepo", "cwd": "/tmp/myrepo",
+                              "pid": 12, "ts": now]
+    board.reload([file("claude", "a"), file("claude", "b")], read: read) { cwd in
+        cwd == "/work/myrepo" ? "main" : ""
+    }
+    check(board.sessions.count == 2 && board.fileCount == 2, "two session files, two sessions")
+    check(board.sessions["claude:a"]?.provider == "claude",
+          "the directory settles the provider, not what the file claims")
+    check(board.sessions["claude:a"]?.branch == "main", "the branch comes with the read")
+    board.reload([file("claude", "a"), file("claude", "b")], read: read) { _ in "" }
+    check(reads == 2, "an unchanged mtime is not read again: \(reads) reads")
+
+    var tick = board.tick(now: now, rules: rules, pidAlive: { alive.contains($0) }, frontmost: { nil })
+    check(board.sessions["claude:a"]?.displayName == "work/myrepo",
+          "two clones of one repo are told apart by their parent folder")
+    check(board.sessions["claude:b"]?.displayName == "tmp/myrepo", "and so is the other one")
+    check(tick.lead?.id == "a", "a working session leads an idle one")
+    let word = board.word(for: "claude:a")
+    check(word != nil && rules.thinkingWords.contains(word!), "entering thinking picks a word")
+    _ = board.tick(now: now + 1, rules: rules, pidAlive: { alive.contains($0) }, frontmost: { nil })
+    check(board.word(for: "claude:a") == word, "and keeps it while the session stays thinking")
+
+    // The turn ends after two minutes, over the one-minute threshold: one chime, once.
+    disk["/claude/a.json"] = ["state": "done", "project": "myrepo", "cwd": "/work/myrepo",
+                              "pid": 11, "ts": now + 2]
+    let later = Date(timeIntervalSince1970: 2)
+    board.reload([file("claude", "a", at: later), file("claude", "b")], read: read) { _ in "" }
+    tick = board.tick(now: now + 2, rules: rules, pidAlive: { alive.contains($0) }, frontmost: { nil })
+    check(tick.chime, "a turn longer than the threshold chimes when it finishes")
+    tick = board.tick(now: now + 3, rules: rules, pidAlive: { alive.contains($0) }, frontmost: { nil })
+    check(!tick.chime, "and only on the edge, not on every tick after it")
+
+    // Needs you: only on the edge, and not when the session's own terminal is in front.
+    disk["/claude/c.json"] = ["state": "permission", "project": "other", "cwd": "/x/other",
+                              "pid": 13, "ts": now, "term_bundle": "com.apple.Terminal"]
+    board.reload([file("claude", "a", at: later), file("claude", "b"), file("claude", "c")],
+                 read: read) { _ in "" }
+    tick = board.tick(now: now + 4, rules: rules, pidAlive: { alive.contains($0) },
+                      frontmost: { "com.apple.Terminal" })
+    check(!tick.needsYou, "no cue when the terminal asking is already in front")
+    disk["/claude/c.json"]?["ts"] = now + 5
+    board.reload([file("claude", "a", at: later), file("claude", "b"),
+                  file("claude", "c", at: Date(timeIntervalSince1970: 3))], read: read) { _ in "" }
+    check(!board.tick(now: now + 5, rules: rules, pidAlive: { alive.contains($0) },
+                      frontmost: { "com.other" }).needsYou,
+          "a permission already seen is not an edge the second time")
+    check(board.tick(now: now + 5, rules: rules, pidAlive: { alive.contains($0) },
+                     frontmost: { nil }).lead?.id == "c",
+          "a session waiting for permission leads everything else")
+
+    // A dead process is reaped: the session goes, its path comes back to be deleted, and nothing
+    // about it is remembered — the same file showing up again is read afresh.
+    alive.remove(11)
+    tick = board.tick(now: now + 6, rules: rules, pidAlive: { alive.contains($0) }, frontmost: { nil })
+    check(tick.reaped.map(\.key) == ["claude:a"], "a session whose process died is reaped")
+    check(board.sessions["claude:a"] == nil && board.word(for: "claude:a") == nil,
+          "and its side tables go with it")
+    check(board.sessions["claude:b"]?.displayName == "myrepo",
+          "the survivor of two clones drops its qualifier")
+    let before = reads
+    board.reload([file("claude", "a", at: later), file("claude", "b"),
+                  file("claude", "c", at: Date(timeIntervalSince1970: 3))], read: read) { _ in "" }
+    check(reads == before + 1, "a reaped file that is still there is read again, not trusted")
+    _ = board.tick(now: now + 6, rules: rules, pidAlive: { alive.contains($0) }, frontmost: { nil })
+
+    // A file gone from disk takes its session with it.
+    board.reload([file("claude", "c", at: Date(timeIntervalSince1970: 3))], read: read) { _ in "" }
+    check(board.sessions.keys.sorted() == ["claude:c"] && board.fileCount == 1,
+          "a deleted file drops its session")
+
+    // No pid (a pre-upgrade file): pruned by idle age instead, and only when the rule is on.
+    disk["/claude/old.json"] = ["state": "idle", "project": "p", "ts": now - 1000]
+    board.reload([file("claude", "c", at: Date(timeIntervalSince1970: 3)), file("claude", "old")],
+                 read: read) { _ in "" }
+    rules.stalePruneAge = 0
+    check(board.tick(now: now, rules: rules, pidAlive: { alive.contains($0) }, frontmost: { nil })
+            .reaped.isEmpty, "with the idle prune off, a pid-less session stays")
+    rules.stalePruneAge = 900
+    check(board.tick(now: now, rules: rules, pidAlive: { alive.contains($0) }, frontmost: { nil })
+            .reaped.map(\.id) == ["old"], "past the idle age, a pid-less session is pruned")
+
+    // Sessions without a cwd do not force a qualifier onto a genuinely unique name.
+    disk["/claude/n1.json"] = ["state": "idle", "project": "solo", "cwd": "/a/solo", "pid": 13, "ts": now]
+    disk["/claude/n2.json"] = ["state": "idle", "project": "solo", "pid": 13, "ts": now]
+    board.reload([file("claude", "n1"), file("claude", "n2")], read: read) { _ in "" }
+    _ = board.tick(now: now, rules: rules, pidAlive: { alive.contains($0) }, frontmost: { nil })
+    check(board.sessions["claude:n1"]?.displayName == "solo",
+          "a session with no cwd is not a second location")
+}
+
+// Which provider's limits the icon and the strip show. These rules used to be written three times
+// outside the model — the icon, the strip and the height reserved for it — and the two fixes in
+// this area were both on those seams, not in the windows themselves.
+do {
+    let now = 1_800_000_000.0
+    func win(_ key: String, _ used: Int, minutes: Int?, resets: Double?) -> NamedWindow {
+        NamedWindow(key: key, title: key, badge: nil, minutes: minutes,
+                    window: LimitWindow(used: used, resets: resets))
+    }
+    let claude = LimitsSet(provider: "claude", windows: [
+        win("five_hour", 40, minutes: 300, resets: now + 3600),
+        win("seven_day", 70, minutes: 10080, resets: now + 86400),
+    ], source: "oauth", ts: now - 60, plan: nil)
+    let codex = LimitsSet(provider: "codex", windows: [
+        win("primary", 10, minutes: 300, resets: now + 600),
+        win("secondary", 20, minutes: 10080, resets: now + 9000),
+        win("unlabelled", 99, minutes: nil, resets: now + 100),
+    ], source: "rollout", ts: now - 60, plan: "plus")
+    let fableOnly = LimitsSet(provider: "claude", windows: [
+        win("seven_day_fable", 55, minutes: 10080, resets: now + 5000),
+    ], source: "oauth", ts: now - 60, plan: nil)
+    let codexGone = LimitsSet(provider: "codex", windows: [
+        win("undated", 30, minutes: nil, resets: nil),
+    ], source: "rollout", ts: now - 60, plan: nil)
+
+    let both = LimitsBoard(claude: claude, codex: codex)
+    check(both.shown(at: now).map(\.set.provider) == ["claude", "codex"],
+          "both providers with figures are shown, Claude first")
+    check(LimitsBoard(claude: nil, codex: codexGone).shown(at: now).isEmpty,
+          "a provider with nothing drawable is not a group — the strip and its height agree")
+    check(LimitsBoard(claude: nil, codex: nil).shown(at: now).isEmpty, "no figures, no groups")
+
+    let icon = both.gauge(at: now)
+    check(icon.fiveHour == 0.4 && icon.sevenDay == 0.7 && icon.labels == ("5h", "7d"),
+          "the icon draws Claude's pair when Claude has one")
+    let codexIcon = LimitsBoard(claude: fableOnly, codex: codex).gauge(at: now)
+    check(codexIcon.fiveHour == 0.1 && codexIcon.sevenDay == 0.2,
+          "a Claude plan with only Fable leaves the icon to Codex rather than blank")
+    check(codexIcon.labels.0 == "5h" && codexIcon.labels.1 == "7d",
+          "and Codex's bars carry their own short labels: \(codexIcon.labels)")
+    check(LimitsBoard(claude: nil, codex: codexGone).gauge(at: now).isEmpty,
+          "a window with no length gets no bar: there is no honest label for it")
+    let rolled = LimitsBoard(claude: LimitsSet(provider: "claude", windows: [
+        win("five_hour", 94, minutes: 300, resets: now - 1),
+    ], source: "oauth", ts: now - 600, plan: nil), codex: nil).gauge(at: now)
+    check(rolled.fiveHour == 0, "a window past its reset draws empty in the icon too")
+
+    check(LimitsBoard.showing("codex", among: ["claude", "codex"]) == "codex",
+          "the switcher keeps the remembered provider")
+    check(LimitsBoard.showing("codex", among: ["claude"]) == "claude",
+          "a remembered provider with no figures falls back to the first")
+    check(LimitsBoard.showing("claude", among: []) == nil, "nothing to show, nothing picked")
+}
+
+// What tells the two agents apart. The reap deletes files by stateDir, so a wrong directory here
+// deletes another agent's sessions — which is why the paths are pinned rather than trusted.
+check(Provider.all.map(\.id) == ["claude", "codex"], "both agents, Claude first")
+check(Provider.named("codex").stateDir(home: "/h") == "/h/.claude/control-bar/codex/state.d",
+      "Codex sessions live in their own directory")
+check(Provider.named("claude").stateDir(home: "/h") == "/h/.claude/control-bar/state.d",
+      "Claude's stay where the hooks always wrote them")
+check(Provider.named("").id == "claude" && Provider.named("other").id == "claude",
+      "a file without a known provider is Claude's, as every pre-Codex file is")
+check(Provider.named("codex").configFile(home: "/h") == "/h/.codex/config.toml"
+        && Provider.claude.configFile(home: "/h") == "/h/.claude/settings.json",
+      "each agent's servers open in its own config file")
+check(Provider.codex.title == "Codex" && Provider.claude.glyph == "sparkle",
+      "names and glyphs come from one place")
+
+// The Swift → mcpbar.py command line. main() in mcpbar.py reads these words positionally, and an
+// older script reads the tool rule as its only argument — so the spelling is the contract, pinned
+// word for word rather than rebuilt from the same code that produced it.
+let backendGolden: [(BackendCommand, [String])] = [
+    (.mcpRefresh(provider: "claude"), ["refresh"]),
+    (.limits(provider: "claude"), ["limits"]),
+    (.limits(provider: "codex"), ["codex-limits"]),
+    (.mcpRefresh(provider: "codex"), ["codex-mcp", "refresh"]),
+    (.codexHooks, ["codex-hooks"]),
+    (.codexHooksApprove, ["codex-hooks", "approve"]),
+    (.toggleServer(provider: "claude", name: "wiki", on: false), ["toggle-server", "wiki", "--off"]),
+    (.toggleServer(provider: "codex", name: "wiki", on: true),
+     ["codex-mcp", "toggle-server", "wiki", "--on"]),
+    (.toggleTool(provider: "claude", server: "wiki", tool: "Read", prefix: "wiki", on: false),
+     ["toggle-tool", "mcp__wiki__Read", "--server", "wiki", "--tool", "Read", "--off"]),
+    (.toggleTool(provider: "codex", server: "wiki", tool: "Read", prefix: "wiki", on: true),
+     ["codex-mcp", "toggle-tool", "--server", "wiki", "--tool", "Read", "--on"]),
+]
+for (command, words) in backendGolden {
+    check(command.arguments == words, "backend \(words.joined(separator: " ")): \(command.arguments)")
+}
 
 
 print(failures == 0 ? "\nall model checks passed" : "\n\(failures) failed")

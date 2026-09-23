@@ -264,7 +264,8 @@ struct PanelSnapshot: Equatable {
     var limitGroups: [PanelLimitGroup] = []
     /// Why the strip is empty, or how old its figures are. One line, always present.
     var limitsNote = ""
-    /// How the strip stacks the groups, and which one the switcher is showing.
+    /// How the strip stacks the groups, and which one the switcher is showing — the remembered
+    /// pick already resolved against the groups there are, see LimitsBoard.showing.
     var limitsLayout: PanelLimitsLayout = .rows
     var limitsProvider = "claude"
     /// Which pet the session rows draw, or "" for none — one per agent. In the snapshot rather
@@ -454,7 +455,8 @@ extension PanelSnapshot {
         hooks = c.panelHooks()
         (limitGroups, limitsNote) = c.panelLimitGroups(now: now)
         limitsLayout = c.limitsLayout
-        limitsProvider = c.limitsProvider
+        limitsProvider = LimitsBoard.showing(c.limitsProvider, among: limitGroups.map(\.provider))
+            ?? c.limitsProvider
         petID = c.petID
         codexPetID = c.codexPetID
         self.mcp = mcp

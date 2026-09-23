@@ -70,10 +70,7 @@ extension StatusController {
         // Branches otherwise refresh only on hook events, so re-read on open (one tiny file read
         // per session) to catch a checkout made while a session sat idle. On open, not on every
         // 2.5 Hz refresh: this walks directories toward the filesystem root.
-        for (id, s) in sessions where !s.cwd.isEmpty {
-            if gitHeadCache[s.cwd] == "" { gitHeadCache[s.cwd] = nil }  // may have been git-init'd since
-            var u = s; u.branch = branchForCwd(u.cwd); sessions[id] = u
-        }
+        board.refreshBranches(freshBranch)
 
         panelStore.collapseAll()          // every open starts collapsed
         panelStore.refreshUpdateBase()    // the one moment the bundle on disk can have changed
@@ -218,10 +215,7 @@ extension StatusController {
         // place to check that the switcher is showing the one it was left on.
         lines.append("Limits — " + snapshot.limitsNote
             + (snapshot.limitGroups.count > 1 ? "  [\(snapshot.limitsLayout.rawValue)]" : ""))
-        // The same fallback the strip uses: a remembered pick whose provider has no figures
-        // right now shows the first group instead, and the dump has to agree with the window.
-        let showing = snapshot.limitGroups.first { $0.provider == snapshot.limitsProvider }?.provider
-            ?? snapshot.limitGroups.first?.provider
+        let showing = snapshot.limitsProvider
         for group in snapshot.limitGroups {
             let hidden = snapshot.limitGroups.count > 1
                 && snapshot.limitsLayout == .switcher

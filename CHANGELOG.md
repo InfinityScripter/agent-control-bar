@@ -7,6 +7,26 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.23.2] - 2026-09-23
+
+### Fixed
+- **Limits keep updating when a figure comes in broken.** One window reported as *Infinity* by the
+  status line aborted the whole capture, so the menu bar kept showing the previous numbers. That
+  window is now skipped, exactly as the Anthropic poll already skipped it.
+- **A context window Claude Code reported is no longer forgotten.** Rebuilding the model table reads
+  the Claude Code binary for a few seconds, and a window size the status line learned during those
+  seconds was written over. It is kept now.
+- **Background checks that fail leave a trace.** The limits poll, the Codex limits read and the
+  Codex hooks question ran with their errors thrown away, so a broken one looked like one with
+  nothing to say. Every failed run of the backend is now written to the system log.
+
+### Changed
+- The rules for which sessions are alive, when the chime plays, which limits the icon shows and
+  what tells Claude and Codex apart moved into the tested part of the app. Nothing looks
+  different; these are the places recent fixes kept landing in.
+- The Settings window notices on its own when a hook check or an update check finishes, instead
+  of relying on each of them to say so.
+
 ## [0.23.1] - 2026-09-22
 
 ### Fixed

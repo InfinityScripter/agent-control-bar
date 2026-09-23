@@ -1,0 +1,12 @@
+{
+  "_comment": "One table of cases for windowFor in hooks/update.js and window_for in scripts/mcpbar.py. Both suites read it, so the two copies cannot drift apart without a red test.",
+  "cases": [
+    {"model": "claude-opus-4-8", "table": {"claude-opus-4-8": 1000000}, "window": 1000000, "exact": true},
+    {"model": "claude-sonnet-4-5-20260101", "table": {"claude-sonnet-4-5": 200000}, "window": 200000, "exact": true},
+    {"model": "claude-sonnet-4-5[1m]", "table": {}, "window": 1000000, "exact": true},
+    {"model": "claude-opus-5", "table": {"claude-opus-4-5": 200000, "claude-opus-4-8": 1000000}, "window": 1000000, "exact": false},
+    {"model": "claude-haiku-9", "table": {"claude-opus-4-8": 1000000, "claude-haiku-4-5": 200000}, "window": 200000, "exact": false},
+    {"model": "claude-mystery-1", "table": {"claude-opus-4-8": 1000000}, "window": 200000, "exact": false},
+    {"model": "CLAUDE-OPUS-4-8", "table": {"claude-opus-4-8": 1000000}, "window": 1000000, "exact": true}
+  ]
+}

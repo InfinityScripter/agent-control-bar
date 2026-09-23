@@ -14,6 +14,34 @@ final class SettingsStore: ObservableObject {
 
     init(controller: StatusController) { self.controller = controller }
 
+    /// Everything this window shows that moves on its own — a hook check or an update check
+    /// finishing, Codex answering about its hooks — compared on every tick, exactly as PanelStore
+    /// compares its snapshot. It used to be announced by hand before each change, and the one
+    /// change that forgot to announce itself was a "Check now" that looked like it did nothing.
+    /// Only a change detector: the getters below still read the controller, so there is no second
+    /// copy of anything to disagree with.
+    private struct Live: Equatable {
+        let hooksHealth: HookHealth
+        let hooksChecking: Bool
+        let codexPresent: Bool
+        let codexHooksUntrusted: Int?
+        let updateChecking: Bool
+        let updateCheckedAt: Date?
+        let updateProblem: String?
+        let newerVersion: String?
+    }
+    private var live: Live?
+
+    func refresh() {
+        let next = Live(hooksHealth: hooksHealth, hooksChecking: hooksChecking,
+                        codexPresent: codexPresent, codexHooksUntrusted: codexHooksUntrusted,
+                        updateChecking: updateChecking, updateCheckedAt: updateCheckedAt,
+                        updateProblem: updateProblem, newerVersion: newerVersion)
+        guard next != live else { return }
+        live = next
+        objectWillChange.send()
+    }
+
     /// `fallback` is only reachable once the controller has gone away, which in this app means the
     /// process is on its way out. It is never shown; it exists so the binding stays total.
     private func bind<Value>(_ read: @escaping (StatusController) -> Value,
@@ -62,7 +90,7 @@ final class SettingsStore: ObservableObject {
     /// on most machines, and a settings window that explains a problem the reader cannot have is
     /// worse than one that stays quiet.
     var codexPresent: Bool {
-        controller.map { FileManager.default.fileExists(atPath: $0.codexHome) } ?? false
+        controller?.codexInstalled ?? false
     }
     /// How many of this app's hooks Codex is still skipping, and whether an answer has been had at
     /// all. Nil means Codex has not been asked yet — a fresh launch, or a Codex that did not
@@ -152,8 +180,8 @@ final class SettingsStore: ObservableObject {
 
     // MARK: Hooks
     //
-    // Read at draw time like the rest of this page; the controller announces a change before it
-    // makes one (hooksWillChange), because a look finishes while the window may be open.
+    // Read at draw time like the rest of this page; a look that finishes while the window is open
+    // redraws it through refresh().
 
     /// False for a build run outside Applications, which never touches settings.json — so the
     /// page says that, rather than showing a status nobody checked.
@@ -199,8 +227,8 @@ extension StatusController {
     func applyCodexServers(_ on: Bool) {
         codexServers = on
         UserDefaults.standard.set(on, forKey: "codexServers")
-        if on, FileManager.default.fileExists(atPath: codexHome) {
-            runQuietCommand("codex-mcp", "refresh")
+        if on, codexInstalled {
+            runQuietCommand(.mcpRefresh(provider: "codex"))
         }
         refreshCounts()
     }
@@ -216,8 +244,8 @@ extension StatusController {
         codexLimitsMTime = nil
         // The same gate pollLimits applies: switching this on where Codex has never run should
         // not spawn a process to be told there is nothing to read.
-        if on, FileManager.default.fileExists(atPath: codexSessionsDir) {
-            runQuietCommand("codex-limits")
+        if on, codexHasRun {
+            runQuietCommand(.limits(provider: "codex"))
         }
         loadCodexLimits()
         refreshCounts()
@@ -238,7 +266,6 @@ extension StatusController {
     func applyExactTerminalFocus(_ on: Bool) {
         exactTerminalFocus = on
         UserDefaults.standard.set(on, forKey: "exactTerminalFocus")
-        hooksWillChange()
         guard on, !UserDefaults.standard.bool(forKey: "exactFocusExplained") else { return }
         UserDefaults.standard.set(true, forKey: "exactFocusExplained")
         DispatchQueue.main.async { [weak self] in self?.explainExactTerminalFocus() }

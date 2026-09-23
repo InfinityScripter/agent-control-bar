@@ -349,6 +349,40 @@ class ContextWindow(unittest.TestCase):
         self.assertFalse(hasattr(mcpbar, "FALLBACK_WINDOWS"))
         self.assertIsInstance(mcpbar.model_windows(), dict)
 
+    def test_window_for_совпадает_с_windowFor_из_update_js(self):
+        """Два экземпляра одного правила на двух языках. Таблицу случаев читает и node-набор
+        (tests/merge.test.js), так что расхождение копий краснит тест, а не комментарий."""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "window-for.json")
+        with open(path) as fh:
+            cases = json.load(fh)["cases"]
+        for case in cases:
+            with self.subTest(model=case["model"]):
+                self.assertEqual(mcpbar.window_for(case["model"], case["table"]),
+                                 (case["window"], case["exact"]))
+
+    def test_наблюдение_statusline_во_время_пересборки_таблицы_не_теряется(self):
+        """Пересборка читает бинарь CLI секундами, а statusline.py в это время дописывает своё
+        наблюдение в тот же файл. Запись таблицы по старому чтению стирала его."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = os.path.join(tmp, "model-windows.json")
+            with open(cache, "w") as fh:
+                json.dump({"version": "старая", "models": {}, "observed": {"claude-a": 1}}, fh)
+
+            def scrape_while_statusline_writes():
+                with open(cache, "w") as fh:
+                    json.dump({"version": "старая", "models": {},
+                               "observed": {"claude-a": 1, "claude-b": 2}}, fh)
+                return {"claude-c": 3}
+
+            with mock.patch.object(mcpbar, "WINDOW_CACHE", cache), \
+                 mock.patch.object(mcpbar, "find_claude", return_value=None), \
+                 mock.patch.object(mcpbar, "scrape_model_windows", scrape_while_statusline_writes):
+                models = mcpbar.model_windows()
+            with open(cache) as fh:
+                written = json.load(fh)
+        self.assertEqual(written["observed"], {"claude-a": 1, "claude-b": 2})
+        self.assertEqual(models, {"claude-a": 1, "claude-b": 2, "claude-c": 3})
+
     def test_неизвестная_модель_получает_умолчание(self):
         self.assertEqual(
             mcpbar.window_for("совсем-новая-модель", {}), (mcpbar.DEFAULT_WINDOW, False))

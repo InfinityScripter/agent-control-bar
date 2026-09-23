@@ -98,9 +98,8 @@ struct PanelView: View {
         }
     }
 
-    /// Which provider the switcher is showing. A remembered pick that no longer has figures falls
-    /// back to the first group rather than to an empty strip — a provider can go quiet for a week
-    /// and come back, and the pick is worth keeping across that.
+    /// Which provider the switcher is showing; the snapshot has already resolved the remembered
+    /// pick against the groups there are.
     private func shownGroup(_ groups: [PanelLimitGroup]) -> PanelLimitGroup {
         groups.first { $0.provider == store.snapshot.limitsProvider } ?? groups[0]
     }
