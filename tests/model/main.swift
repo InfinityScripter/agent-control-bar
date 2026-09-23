@@ -2226,6 +2226,60 @@ check(PetIconFrames(Pet.load(directory: blankDir)!, height: 18) == nil,
 
 try? FileManager.default.removeItem(atPath: iconPetDir)
 
+// Which provider's limits the icon and the strip show. These rules used to be written three times
+// outside the model — the icon, the strip and the height reserved for it — and the two fixes in
+// this area were both on those seams, not in the windows themselves.
+do {
+    let now = 1_800_000_000.0
+    func win(_ key: String, _ used: Int, minutes: Int?, resets: Double?) -> NamedWindow {
+        NamedWindow(key: key, title: key, badge: nil, minutes: minutes,
+                    window: LimitWindow(used: used, resets: resets))
+    }
+    let claude = LimitsSet(provider: "claude", windows: [
+        win("five_hour", 40, minutes: 300, resets: now + 3600),
+        win("seven_day", 70, minutes: 10080, resets: now + 86400),
+    ], source: "oauth", ts: now - 60, plan: nil)
+    let codex = LimitsSet(provider: "codex", windows: [
+        win("primary", 10, minutes: 300, resets: now + 600),
+        win("secondary", 20, minutes: 10080, resets: now + 9000),
+        win("unlabelled", 99, minutes: nil, resets: now + 100),
+    ], source: "rollout", ts: now - 60, plan: "plus")
+    let fableOnly = LimitsSet(provider: "claude", windows: [
+        win("seven_day_fable", 55, minutes: 10080, resets: now + 5000),
+    ], source: "oauth", ts: now - 60, plan: nil)
+    let codexGone = LimitsSet(provider: "codex", windows: [
+        win("undated", 30, minutes: nil, resets: nil),
+    ], source: "rollout", ts: now - 60, plan: nil)
+
+    let both = LimitsBoard(claude: claude, codex: codex)
+    check(both.shown(at: now).map(\.set.provider) == ["claude", "codex"],
+          "both providers with figures are shown, Claude first")
+    check(LimitsBoard(claude: nil, codex: codexGone).shown(at: now).isEmpty,
+          "a provider with nothing drawable is not a group — the strip and its height agree")
+    check(LimitsBoard(claude: nil, codex: nil).shown(at: now).isEmpty, "no figures, no groups")
+
+    let icon = both.gauge(at: now)
+    check(icon.fiveHour == 0.4 && icon.sevenDay == 0.7 && icon.labels == ("5h", "7d"),
+          "the icon draws Claude's pair when Claude has one")
+    let codexIcon = LimitsBoard(claude: fableOnly, codex: codex).gauge(at: now)
+    check(codexIcon.fiveHour == 0.1 && codexIcon.sevenDay == 0.2,
+          "a Claude plan with only Fable leaves the icon to Codex rather than blank")
+    check(codexIcon.labels.0 == "5h" && codexIcon.labels.1 == "7d",
+          "and Codex's bars carry their own short labels: \(codexIcon.labels)")
+    check(LimitsBoard(claude: nil, codex: codexGone).gauge(at: now).isEmpty,
+          "a window with no length gets no bar: there is no honest label for it")
+    let rolled = LimitsBoard(claude: LimitsSet(provider: "claude", windows: [
+        win("five_hour", 94, minutes: 300, resets: now - 1),
+    ], source: "oauth", ts: now - 600, plan: nil), codex: nil).gauge(at: now)
+    check(rolled.fiveHour == 0, "a window past its reset draws empty in the icon too")
+
+    check(LimitsBoard.showing("codex", among: ["claude", "codex"]) == "codex",
+          "the switcher keeps the remembered provider")
+    check(LimitsBoard.showing("codex", among: ["claude"]) == "claude",
+          "a remembered provider with no figures falls back to the first")
+    check(LimitsBoard.showing("claude", among: []) == nil, "nothing to show, nothing picked")
+}
+
 // The Swift → mcpbar.py command line. main() in mcpbar.py reads these words positionally, and an
 // older script reads the tool rule as its only argument — so the spelling is the contract, pinned
 // word for word rather than rebuilt from the same code that produced it.

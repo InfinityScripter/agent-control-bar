@@ -218,10 +218,7 @@ extension StatusController {
         // place to check that the switcher is showing the one it was left on.
         lines.append("Limits — " + snapshot.limitsNote
             + (snapshot.limitGroups.count > 1 ? "  [\(snapshot.limitsLayout.rawValue)]" : ""))
-        // The same fallback the strip uses: a remembered pick whose provider has no figures
-        // right now shows the first group instead, and the dump has to agree with the window.
-        let showing = snapshot.limitGroups.first { $0.provider == snapshot.limitsProvider }?.provider
-            ?? snapshot.limitGroups.first?.provider
+        let showing = snapshot.limitsProvider
         for group in snapshot.limitGroups {
             let hidden = snapshot.limitGroups.count > 1
                 && snapshot.limitsLayout == .switcher

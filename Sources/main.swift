@@ -1329,31 +1329,9 @@ final class StatusController: NSObject, NSWindowDelegate {
         return gauge.image(icon: icon)
     }
 
-    func currentGauge() -> Gauge {
-        let now = Date().timeIntervalSince1970
-        // Read through the same rule the panel's bars use: a window whose reset has passed is
-        // drawn empty rather than with the figure it carried before. The icon is the one surface
-        // that is always on screen, so a near-full bar left over from before a rollover is the
-        // most visible thing this app can get wrong.
-        //
-        // Built first and tested for emptiness, rather than asking whether Claude has limits at
-        // all: a plan that reports only its Fable window has limits and still draws no bars here,
-        // and that used to leave the icon blank while Codex figures sat unused below.
-        let drawn = limits?.set.drawable(at: now) ?? []
-        let claude = Gauge(fiveHour: drawn.first { $0.key == "five_hour" }?.window.fraction,
-                           sevenDay: drawn.first { $0.key == "seven_day" }?.window.fraction)
-        if !claude.isEmpty { return claude }
-        // Codex only when Claude has no figures at all. The icon has room for two labelled bars,
-        // and a pair mixed from two accounts would need a provider mark beside each one to mean
-        // anything — so the rule here is the simple one: whoever has numbers gets the bars. Which
-        // provider leads when both do is a setting of its own, and it is not this release.
-        let live = (codexWindows?.drawable(at: now) ?? [])
-            .filter { $0.shortTitle != nil }.prefix(2)
-        guard let first = live.first else { return Gauge() }
-        let second = live.count > 1 ? live.last : nil
-        return Gauge(fiveHour: first.window.fraction, sevenDay: second?.window.fraction,
-                     labels: (first.shortTitle ?? "", second?.shortTitle ?? ""))
-    }
+    func currentGauge() -> Gauge { limitsBoard.gauge(at: Date().timeIntervalSince1970) }
+
+    var limitsBoard: LimitsBoard { LimitsBoard(claude: limits?.set, codex: codexWindows) }
 
     // Every agent's state directory, in the order their rows are keyed. The provider string is
     // the one written into the files themselves — see Session.provider.
