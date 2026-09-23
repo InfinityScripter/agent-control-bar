@@ -55,10 +55,10 @@ extension StatusController {
         if !mcpBusy, Date().timeIntervalSince1970 - mcp.checkedAt > Self.mcpOpenStaleAfter {
             refreshMCP()
         }
-        // A sleeping Mac misses timer ticks, so the five-minute cadence can silently become an
-        // hour. Opening is the moment the figures get looked at — worth a poll if the reading is
-        // older than the timer could explain.
-        if Date().timeIntervalSince1970 - (limits?.ts ?? 0) > 600 { pollLimits() }
+        // Opening is the moment the figures get looked at, so they are asked for afresh — the
+        // five-minute timer alone let the panel open on figures up to ten minutes old. pollLimits
+        // keeps a burst of opens down to one request.
+        pollLimits()
         checkForUpdate()          // refreshes the update cache for next open (gated to once a day)
         refreshNotificationAuthStatus()
         // The verdict from launch is not good enough for the one person looking at an empty tab,

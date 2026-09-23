@@ -107,6 +107,7 @@ final class StatusController: NSObject, NSWindowDelegate {
     var lastNotifiedChangeAt: Date?     // dedupe: notifyMCPChange runs on every reload, the change lives 45 s
     var limitsMTime: Date?              // limits.json parse gate; nil forces a re-read (see loadLimits)
     var lastLimitsPoll: Double = 0      // so a rollover cannot bring the next poll forward into a loop
+    var limitsTimer: Timer?             // the five-minute poll; each Claude request pushes it back
     var rolledOverHandled: Double = 0   // the reset stamp that already brought one poll forward
     var codexLimitsMTime: Date?         // the same gate for codex/limits.json
     var codexHooksMTime: Date?          // and for codex/hooks.json
@@ -344,7 +345,7 @@ final class StatusController: NSObject, NSWindowDelegate {
         // the desktop app it never fires at all — which left the bars frozen on whatever they
         // last showed. Five minutes is well clear of the endpoint's rate limiting (community
         // consensus puts the floor at three).
-        Timer.scheduledTimer(withTimeInterval: 300, repeats: true) {
+        limitsTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) {
             [weak self] _ in self?.pollLimits()
         }
         pollLimits()
@@ -768,11 +769,12 @@ final class StatusController: NSObject, NSWindowDelegate {
     ///
     /// Each has its own off switch, for different reasons: the Anthropic poll spends the user's
     /// own OAuth token, and the Codex read opens files that belong to another program.
+    ///
+    /// Opening the panel calls this every time, so Claude is asked only when the last question is
+    /// a minute old: a burst of opens costs one request, not one each.
     func pollLimits() {
-        if oauthLimits {
-            lastLimitsPoll = Date().timeIntervalSince1970
-            runQuietCommand(.limits(provider: "claude"))
-        }
+        let now = Date().timeIntervalSince1970
+        if oauthLimits, now - lastLimitsPoll >= 60 { pollClaudeLimits(now: now) }
         // Not gated on the switch above, and deliberately: reading Codex's figures costs no token
         // and no request at all. Codex writes them into its own session file as it goes, and the
         // command only reads the newest one — so the only thing to opt out of is the reading.
@@ -810,7 +812,14 @@ final class StatusController: NSObject, NSWindowDelegate {
               let newest = limits?.set.rolledOver(since: rolledOverHandled, at: now)
         else { return }
         rolledOverHandled = newest
+        pollClaudeLimits(now: now)
+    }
+
+    /// Ask Anthropic now and push the five-minute timer back to count from this question, so a
+    /// poll made on opening the panel is not followed seconds later by the timer's own.
+    func pollClaudeLimits(now: Double) {
         lastLimitsPoll = now
+        limitsTimer?.fireDate = Date(timeIntervalSince1970: now + 300)
         runQuietCommand(.limits(provider: "claude"))
     }
 
