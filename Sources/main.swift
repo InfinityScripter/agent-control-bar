@@ -90,9 +90,11 @@ final class StatusController: NSObject, NSWindowDelegate {
     // No UI writes it: it is a `defaults write` knob for someone who wants a different number.
     var stalePruneAge: TimeInterval { UserDefaults.standard.object(forKey: "hideIdleAfter") as? Double ?? 900 }
 
-    let engine = SessionEngine()  // the state machine lives in Sessions.swift, testable
-    var sessions: [String: Session] = [:]  // "<provider>:<id>" -> latest parsed per-session state
-    var fileMTimes: [String: Date] = [:]   // "<provider>:<id>" -> last-parsed mtime (re-parse only on change)
+    // Every live session and the decisions about them live in SessionBoard (Sources/Model),
+    // under the model check; this class only reads the files and acts on what it returns.
+    let board = SessionBoard(engine: SessionEngine())
+    var engine: SessionEngine { board.engine }
+    var sessions: [String: Session] { board.sessions }  // "<provider>:<id>" -> latest parsed state
     var gitHeadCache: [String: String] = [:]  // cwd -> resolved HEAD path ("" = confirmed non-git)
     var uiConfigCache: (mtime: Date?, values: [String: Double])?
     // Stored state used by the extensions in Updates.swift, SessionRows.swift and
@@ -104,7 +106,6 @@ final class StatusController: NSObject, NSWindowDelegate {
     let brewInstallCommand = "brew install --cask claude-control-bar && open -a \"Claude Control Bar\""
     var whatsNewWindow: NSWindow?
     let logoSet: [NSImage] = Data(base64Encoded: claudeLogoPNG).flatMap(NSImage.init(data:)).map { [$0] } ?? []
-    var prevState: [String: String] = [:]  // id -> previous raw state per session
     var activeBase = ""        // label without the elapsed clock
     var renderedTitle: String? // what the status item is actually showing, to skip identical redraws
     var lastLifecycleCheck: Double = 0  // the quit decision is sampled far slower than the UI
@@ -217,11 +218,9 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// switched to Codex was answering "how much Codex have I got left", not this once.
     var limitsProvider = "claude"
     var analytics = true            // the anonymous daily ping (Sources/Analytics.swift); env var and endpoint also gate it
-    var sessionWord: [String: String] = [:] // id -> current thinking word; re-picked on each entry into "thinking"
     var soundThreshold: Double = 0  // 0 = off; else the min turn length (seconds) that chimes on completion
     var needsYouSound = NeedsYouSound.defaultChoice  // system sound name; "" = off
     var needsYouPlayer: NSSound?  // the loaded pick, replaced when the pick changes
-    var turnStart: [String: Double] = [:]  // id -> active turn start, for the completion-sound length gate
     lazy var completionSound: NSSound? = {
         guard let p = Bundle.main.path(forResource: "completion", ofType: "mp3"),
               let s = NSSound(contentsOfFile: p, byReference: true) else { return nil }
@@ -1362,41 +1361,25 @@ final class StatusController: NSObject, NSWindowDelegate {
         return (dir as NSString).appendingPathComponent(s.id + ".json")
     }
 
-    // Refresh `sessions` from the state directories, re-parsing only files whose mtime changed
-    // (writes are atomic renames, so a content update bumps mtime and is never read torn).
+    // Refresh `sessions` from the state directories; SessionBoard re-parses only the files whose
+    // mtime changed.
     func reloadSessions() {
         let fm = FileManager.default
-        let files = stateFiles()
-        let present = Set(files.map { $0.key })
-        for key in Array(fileMTimes.keys) where !present.contains(key) {
-            fileMTimes[key] = nil
-            // Symmetric with the pid-death reap in evaluate(): a SessionEnd deletes the file,
-            // and the engine's transcript cache plus the per-session bookkeeping must go with
-            // it — or one small entry per session ever seen stays for the app's lifetime.
-            if let gone = sessions[key], !gone.transcript.isEmpty {
-                engine.dropCache(forTranscript: gone.transcript)
-            }
-            sessions[key] = nil
-            prevState[key] = nil; sessionWord[key] = nil; turnStart[key] = nil
+        let files = stateFiles().compactMap { f -> SessionBoard.File? in
+            guard let m = (try? fm.attributesOfItem(atPath: f.path))?[.modificationDate] as? Date
+            else { return nil }
+            return SessionBoard.File(key: f.key, path: f.path, provider: f.provider, id: f.id, mtime: m)
         }
-        for f in files {
-            guard let attrs = try? fm.attributesOfItem(atPath: f.path),
-                  let m = attrs[.modificationDate] as? Date else { continue }
-            if fileMTimes[f.key] == m { continue }
-            fileMTimes[f.key] = m
-            guard let data = fm.contents(atPath: f.path),
-                  let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-            var s = Session(json: o, id: f.id)
-            // The directory a file was found in settles the provider, whatever the file says: a
-            // hand-edited or truncated `provider` must not send the reap at another agent's
-            // directory, and a file in codex/state.d is a Codex session by construction.
-            s.provider = f.provider
-            // A hook event means activity in that cwd, which may have JUST become a repo (git init /
-            // first branch mid-session) — a cached "" (non-git) would otherwise stick until app restart.
-            if gitHeadCache[s.cwd] == "" { gitHeadCache[s.cwd] = nil }
-            s.branch = branchForCwd(s.cwd)   // only on file change (a hook event), never on a bare tick
-            sessions[f.key] = s
-        }
+        board.reload(files, read: { path in
+            fm.contents(atPath: path).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        }, branch: freshBranch)
+    }
+
+    // A hook event means activity in that cwd, which may have JUST become a repo (git init or a
+    // first branch mid-session) — a cached "" (non-git) would otherwise stick until app restart.
+    func freshBranch(_ cwd: String) -> String {
+        if gitHeadCache[cwd] == "" { gitHeadCache[cwd] = nil }
+        return branchForCwd(cwd)
     }
 
     // MARK: git branch (no `git` spawn — .git/HEAD is a tiny text file)
@@ -1460,82 +1443,23 @@ final class StatusController: NSObject, NSWindowDelegate {
         needsYouPlayer?.play()
     }
 
-    // Working->done edge for the completion chime, gated on turn length >= soundThreshold (0 = off).
-    // Reads prevState, which the evaluate() loop writes only AFTER this runs, so it must be called
-    // there before that write. Tracks the turn's start while the session is working.
-    func completionEdge(_ s: Session, now: Double) -> Bool {
-        if isWorkingState(s.state), s.startedAt > 0 { turnStart[s.key] = s.startedAt }
-        let prev = prevState[s.key] ?? ""
-        var edge = false
-        if soundThreshold > 0, s.state == "done", prev != "done", let st = turnStart[s.key], st > 0, now - st >= soundThreshold { edge = true }
-        if s.state == "done" { turnStart[s.key] = 0 }
-        return edge
-    }
-
     func evaluate() {
         let now = Date().timeIntervalSince1970
-        var chime = false, needsYou = false
-
-        for key in Array(sessions.keys) {
-            guard var s = sessions[key] else { continue }
-            s.eff = engine.effectiveState(s, now: now)   // compute once per tick; the menu + tooltip reuse it
-            // Reap on PROCESS death, not idle time: a session leaves only when its `claude` process is
-            // gone (closed/crashed terminal, quit app), so an idle-but-open session stays and the icon
-            // holds. Pre-upgrade files have no pid (0) — fall back to the old idle+age prune so they
-            // can't linger forever. This is also what keeps state.d self-cleaning (no growing cache).
-            let dead = s.pid > 0 ? !pidAlive(s.pid)
-                                 : (s.eff == "idle" && stalePruneAge > 0 && now - s.ts > stalePruneAge)
-            if dead {
-                try? FileManager.default.removeItem(atPath: statePath(of: s))
-                sessions[key] = nil; fileMTimes[key] = nil; prevState[key] = nil; sessionWord[key] = nil; turnStart[key] = nil
-                if !s.transcript.isEmpty { engine.dropCache(forTranscript: s.transcript) }
-                continue
-            }
-            sessions[key] = s
-            updateThinkingWord(s)
-            if completionEdge(s, now: now) { chime = true }
-            // The frontmost-app lookup is a workspace query, so it runs only on the raw edge.
-            if !needsYouSound.isEmpty, s.state == "permission", prevState[s.key] != "permission",
-               NeedsYouSound.shouldCue(prevState: prevState[s.key], state: s.state, effective: s.eff,
-                                       hostBundle: s.termBundle,
-                                       frontmost: NSWorkspace.shared.frontmostApplication?.bundleIdentifier) {
-                needsYou = true
-            }
-            prevState[s.key] = s.state
-        }
-        for key in Array(prevState.keys) where sessions[key] == nil { prevState[key] = nil; sessionWord[key] = nil; turnStart[key] = nil }
+        let rules = SessionBoard.Rules(soundThreshold: soundThreshold, stalePruneAge: stalePruneAge,
+                                       thinkingWords: thinkingWords, needsYou: !needsYouSound.isEmpty)
+        let tick = board.tick(now: now, rules: rules, pidAlive: pidAlive,
+                              frontmost: { NSWorkspace.shared.frontmostApplication?.bundleIdentifier })
+        // The one write this app makes into a state directory: the file of a session whose
+        // process has died. The path comes from the session's provider — see statePath(of:).
+        for s in tick.reaped { try? FileManager.default.removeItem(atPath: statePath(of: s)) }
         // Keyed by cwd, so it outlived the sessions above: an entry per directory ever seen, for
         // the app's lifetime. Kept only for directories a live session still points at.
         let liveCwds = Set(sessions.values.map(\.cwd))
         gitHeadCache = gitHeadCache.filter { liveCwds.contains($0.key) }
-        if chime { completionSound?.play() }
-        if needsYou { playNeedsYou() }   // one cue per tick however many sessions asked at once
+        if tick.chime { completionSound?.play() }
+        if tick.needsYou { playNeedsYou() }   // one cue per tick however many sessions asked at once
 
-        // Same-named projects (two clones/worktrees of one repo) get a parent-folder qualifier
-        // ("work/myrepo" vs "tmp/myrepo") so their rows stay tellable apart. Runs after the reap so
-        // dead sessions can't force a qualifier onto a now-unique name.
-        // Only non-empty cwds count as colliding locations: a pre-upgrade/warmup file without cwd is
-        // location-unknown, and counting its "" as a distinct place forced a bogus qualifier onto a
-        // genuinely unique row.
-        var cwdsByProject: [String: Set<String>] = [:]
-        for s in sessions.values where !s.project.isEmpty && !s.cwd.isEmpty { cwdsByProject[s.project, default: []].insert(s.cwd) }
-        for key in Array(sessions.keys) {
-            guard var s = sessions[key] else { continue }
-            if !s.cwd.isEmpty, (cwdsByProject[s.project]?.count ?? 0) > 1 {
-                let parent = (((s.cwd as NSString).deletingLastPathComponent) as NSString).lastPathComponent
-                s.displayName = parent.isEmpty ? s.project : parent + "/" + s.project
-            } else {
-                s.displayName = s.project
-            }
-            sessions[key] = s
-        }
-
-        // Surface the single highest-priority session (permission > working > …); ties broken by
-        // recency, so within a tier the most recently active session wins.
-        let lead = sessions.values.max { a, b in
-            let pa = priority(of: a.eff), pb = priority(of: b.eff)
-            return pa == pb ? a.ts < b.ts : pa < pb
-        }
+        let lead = tick.lead
         setCrabMood(CrabMood.display(forEffectiveStates: sessions.values.map(\.eff), leadState: lead?.eff),
                     working: sessions.values.filter { isWorkingState($0.eff) }.count)
         statusItem.button?.toolTip = lead.map(sessionMenuLine)  // repo · branch [· elapsed] on hover
@@ -1614,7 +1538,7 @@ final class StatusController: NSObject, NSWindowDelegate {
     }
 
     // The listing reloadSessions() just made, not a second contentsOfDirectory for the same answer.
-    func sessionCount() -> Int { fileMTimes.count }
+    func sessionCount() -> Int { board.fileCount }
 
     var claudeProbedAt: Double = 0
     var claudeWasRunning = false

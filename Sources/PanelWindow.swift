@@ -70,10 +70,7 @@ extension StatusController {
         // Branches otherwise refresh only on hook events, so re-read on open (one tiny file read
         // per session) to catch a checkout made while a session sat idle. On open, not on every
         // 2.5 Hz refresh: this walks directories toward the filesystem root.
-        for (id, s) in sessions where !s.cwd.isEmpty {
-            if gitHeadCache[s.cwd] == "" { gitHeadCache[s.cwd] = nil }  // may have been git-init'd since
-            var u = s; u.branch = branchForCwd(u.cwd); sessions[id] = u
-        }
+        board.refreshBranches(freshBranch)
 
         panelStore.collapseAll()          // every open starts collapsed
         panelStore.refreshUpdateBase()    // the one moment the bundle on disk can have changed

@@ -72,35 +72,16 @@ extension StatusController {
         return s.count > Swift.max(max, keep) ? String(s.prefix(keep)) + "…" : s
     }
 
-    // Rank a session's EFFECTIVE state for surfacing (higher = more important), so a session
-    // awaiting YOUR permission is never hidden behind one merely thinking. `eff` only ever yields
-    // permission / thinking / tool / idle (done collapses to idle; waiting is never emitted).
-    func priority(of eff: String) -> Int {
-        eff == "permission" ? 2 : (isWorkingState(eff) ? 1 : 0)   // idle / unknown = 0
-    }
-
     func workingLabel(_ s: Session) -> String {
         // Off means no word, not a duller word. It used to fall through to the hook's own label,
         // so unchecking "Thinking words" left the bar reading "Thinking…" — indistinguishable
         // from the switch doing nothing, and reported as exactly that. The icon already says
         // Claude is working and the timer says for how long.
         guard useThinkingWords else { return "" }
-        if s.state == "thinking", let w = sessionWord[s.key], !w.isEmpty { return w + "…" }
+        if s.state == "thinking", let w = board.word(for: s.key), !w.isEmpty { return w + "…" }
         if !s.label.isEmpty { return s.label }
         return s.state == "tool" ? "Working…" : "Thinking…"
     }
-
-    // Re-pick a word each time a session ENTERS the thinking state (prompt, or a tool->thinking `post`),
-    // avoiding an immediate repeat, so a tool round-trip lands a different word. Held steady while the
-    // session stays thinking. Computed regardless of the toggle so flipping it on shows instantly.
-    func updateThinkingWord(_ s: Session) {
-        let prev = prevState[s.key] ?? ""
-        guard s.state == "thinking", prev != "thinking" else { return }
-        var w = thinkingWords.randomElement() ?? "Thinking"
-        if thinkingWords.count > 1 { while w == sessionWord[s.key] { w = thinkingWords.randomElement() ?? w } }
-        sessionWord[s.key] = w
-    }
-
 
     // "1m 1s" / "43s" — Claude Code's elapsed-clock style.
     func elapsed(_ secs: Int) -> String {

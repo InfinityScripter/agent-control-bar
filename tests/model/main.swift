@@ -2226,6 +2226,117 @@ check(PetIconFrames(Pet.load(directory: blankDir)!, height: 18) == nil,
 
 try? FileManager.default.removeItem(atPath: iconPetDir)
 
+// The session lifecycle around SessionEngine: reading files, reaping, the chime and "needs you"
+// edges, same-named projects, the lead session. It used to live in StatusController, tangled
+// with the disk, timers and NSWorkspace, and the per-session side tables were cleared in three
+// places that had to stay in step.
+do {
+    let now = 1_800_000_000.0
+    let mtime = Date(timeIntervalSince1970: 1)
+    var disk: [String: [String: Any]] = [:]
+    var reads = 0
+    func file(_ provider: String, _ id: String, at stamp: Date = mtime) -> SessionBoard.File {
+        SessionBoard.File(key: provider + ":" + id, path: "/\(provider)/\(id).json",
+                          provider: provider, id: id, mtime: stamp)
+    }
+    func read(_ path: String) -> [String: Any]? { reads += 1; return disk[path] }
+    var alive: Set<Int32> = [11, 12, 13]
+    var rules = SessionBoard.Rules(soundThreshold: 60, stalePruneAge: 900,
+                                   thinkingWords: ["Pondering", "Musing"], needsYou: true)
+
+    let board = SessionBoard(engine: SessionEngine())
+    disk["/claude/a.json"] = ["state": "thinking", "project": "myrepo", "cwd": "/work/myrepo",
+                              "pid": 11, "ts": now, "startedAt": now - 120, "provider": "codex"]
+    disk["/claude/b.json"] = ["state": "idle", "project": "myrepo", "cwd": "/tmp/myrepo",
+                              "pid": 12, "ts": now]
+    board.reload([file("claude", "a"), file("claude", "b")], read: read) { cwd in
+        cwd == "/work/myrepo" ? "main" : ""
+    }
+    check(board.sessions.count == 2 && board.fileCount == 2, "two session files, two sessions")
+    check(board.sessions["claude:a"]?.provider == "claude",
+          "the directory settles the provider, not what the file claims")
+    check(board.sessions["claude:a"]?.branch == "main", "the branch comes with the read")
+    board.reload([file("claude", "a"), file("claude", "b")], read: read) { _ in "" }
+    check(reads == 2, "an unchanged mtime is not read again: \(reads) reads")
+
+    var tick = board.tick(now: now, rules: rules, pidAlive: { alive.contains($0) }, frontmost: { nil })
+    check(board.sessions["claude:a"]?.displayName == "work/myrepo",
+          "two clones of one repo are told apart by their parent folder")
+    check(board.sessions["claude:b"]?.displayName == "tmp/myrepo", "and so is the other one")
+    check(tick.lead?.id == "a", "a working session leads an idle one")
+    let word = board.word(for: "claude:a")
+    check(word != nil && rules.thinkingWords.contains(word!), "entering thinking picks a word")
+    _ = board.tick(now: now + 1, rules: rules, pidAlive: { alive.contains($0) }, frontmost: { nil })
+    check(board.word(for: "claude:a") == word, "and keeps it while the session stays thinking")
+
+    // The turn ends after two minutes, over the one-minute threshold: one chime, once.
+    disk["/claude/a.json"] = ["state": "done", "project": "myrepo", "cwd": "/work/myrepo",
+                              "pid": 11, "ts": now + 2]
+    let later = Date(timeIntervalSince1970: 2)
+    board.reload([file("claude", "a", at: later), file("claude", "b")], read: read) { _ in "" }
+    tick = board.tick(now: now + 2, rules: rules, pidAlive: { alive.contains($0) }, frontmost: { nil })
+    check(tick.chime, "a turn longer than the threshold chimes when it finishes")
+    tick = board.tick(now: now + 3, rules: rules, pidAlive: { alive.contains($0) }, frontmost: { nil })
+    check(!tick.chime, "and only on the edge, not on every tick after it")
+
+    // Needs you: only on the edge, and not when the session's own terminal is in front.
+    disk["/claude/c.json"] = ["state": "permission", "project": "other", "cwd": "/x/other",
+                              "pid": 13, "ts": now, "term_bundle": "com.apple.Terminal"]
+    board.reload([file("claude", "a", at: later), file("claude", "b"), file("claude", "c")],
+                 read: read) { _ in "" }
+    tick = board.tick(now: now + 4, rules: rules, pidAlive: { alive.contains($0) },
+                      frontmost: { "com.apple.Terminal" })
+    check(!tick.needsYou, "no cue when the terminal asking is already in front")
+    disk["/claude/c.json"]?["ts"] = now + 5
+    board.reload([file("claude", "a", at: later), file("claude", "b"),
+                  file("claude", "c", at: Date(timeIntervalSince1970: 3))], read: read) { _ in "" }
+    check(!board.tick(now: now + 5, rules: rules, pidAlive: { alive.contains($0) },
+                      frontmost: { "com.other" }).needsYou,
+          "a permission already seen is not an edge the second time")
+    check(board.tick(now: now + 5, rules: rules, pidAlive: { alive.contains($0) },
+                     frontmost: { nil }).lead?.id == "c",
+          "a session waiting for permission leads everything else")
+
+    // A dead process is reaped: the session goes, its path comes back to be deleted, and nothing
+    // about it is remembered — the same file showing up again is read afresh.
+    alive.remove(11)
+    tick = board.tick(now: now + 6, rules: rules, pidAlive: { alive.contains($0) }, frontmost: { nil })
+    check(tick.reaped.map(\.key) == ["claude:a"], "a session whose process died is reaped")
+    check(board.sessions["claude:a"] == nil && board.word(for: "claude:a") == nil,
+          "and its side tables go with it")
+    check(board.sessions["claude:b"]?.displayName == "myrepo",
+          "the survivor of two clones drops its qualifier")
+    let before = reads
+    board.reload([file("claude", "a", at: later), file("claude", "b"),
+                  file("claude", "c", at: Date(timeIntervalSince1970: 3))], read: read) { _ in "" }
+    check(reads == before + 1, "a reaped file that is still there is read again, not trusted")
+    _ = board.tick(now: now + 6, rules: rules, pidAlive: { alive.contains($0) }, frontmost: { nil })
+
+    // A file gone from disk takes its session with it.
+    board.reload([file("claude", "c", at: Date(timeIntervalSince1970: 3))], read: read) { _ in "" }
+    check(board.sessions.keys.sorted() == ["claude:c"] && board.fileCount == 1,
+          "a deleted file drops its session")
+
+    // No pid (a pre-upgrade file): pruned by idle age instead, and only when the rule is on.
+    disk["/claude/old.json"] = ["state": "idle", "project": "p", "ts": now - 1000]
+    board.reload([file("claude", "c", at: Date(timeIntervalSince1970: 3)), file("claude", "old")],
+                 read: read) { _ in "" }
+    rules.stalePruneAge = 0
+    check(board.tick(now: now, rules: rules, pidAlive: { alive.contains($0) }, frontmost: { nil })
+            .reaped.isEmpty, "with the idle prune off, a pid-less session stays")
+    rules.stalePruneAge = 900
+    check(board.tick(now: now, rules: rules, pidAlive: { alive.contains($0) }, frontmost: { nil })
+            .reaped.map(\.id) == ["old"], "past the idle age, a pid-less session is pruned")
+
+    // Sessions without a cwd do not force a qualifier onto a genuinely unique name.
+    disk["/claude/n1.json"] = ["state": "idle", "project": "solo", "cwd": "/a/solo", "pid": 13, "ts": now]
+    disk["/claude/n2.json"] = ["state": "idle", "project": "solo", "pid": 13, "ts": now]
+    board.reload([file("claude", "n1"), file("claude", "n2")], read: read) { _ in "" }
+    _ = board.tick(now: now, rules: rules, pidAlive: { alive.contains($0) }, frontmost: { nil })
+    check(board.sessions["claude:n1"]?.displayName == "solo",
+          "a session with no cwd is not a second location")
+}
+
 // Which provider's limits the icon and the strip show. These rules used to be written three times
 // outside the model — the icon, the strip and the height reserved for it — and the two fixes in
 // this area were both on those seams, not in the windows themselves.
