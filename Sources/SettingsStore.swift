@@ -200,7 +200,7 @@ extension StatusController {
         codexServers = on
         UserDefaults.standard.set(on, forKey: "codexServers")
         if on, FileManager.default.fileExists(atPath: codexHome) {
-            runQuietCommand("codex-mcp", "refresh")
+            runQuietCommand(.mcpRefresh(provider: "codex"))
         }
         refreshCounts()
     }
@@ -217,7 +217,7 @@ extension StatusController {
         // The same gate pollLimits applies: switching this on where Codex has never run should
         // not spawn a process to be told there is nothing to read.
         if on, FileManager.default.fileExists(atPath: codexSessionsDir) {
-            runQuietCommand("codex-limits")
+            runQuietCommand(.limits(provider: "codex"))
         }
         loadCodexLimits()
         refreshCounts()

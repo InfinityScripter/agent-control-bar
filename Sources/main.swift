@@ -702,7 +702,7 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// of them: the first to return cleared it.
     var backendRunning = 0
 
-    func runBackend(_ arguments: [String], then done: (() -> Void)? = nil) {
+    func runBackend(_ command: BackendCommand, then done: (() -> Void)? = nil) {
         guard !backend.script.isEmpty else {
             NSLog("ClaudeControlBar: no mcpbar.py — the bootstrap hook has not run")
             done?()
@@ -712,30 +712,7 @@ final class StatusController: NSObject, NSWindowDelegate {
         mcpBusy = true
         backendQueue.async { [weak self] in
             guard let self else { return }
-            let task = Process()
-            // Absolute paths: a GUI process gets a stripped PATH with no pyenv and no nvm in it.
-            task.executableURL = URL(fileURLWithPath: self.backend.python)
-            task.arguments = [self.backend.script] + arguments
-            task.standardOutput = FileHandle.nullDevice
-            // stderr and the exit code used to go to /dev/null together, so a backend that died
-            // on a traceback looked exactly like one that had nothing to report — the menu simply
-            // showed the previous picture and said nothing. Read into a pipe (not inherited: a
-            // GUI process's stderr is the system log, where it is nobody's) and surfaced only on
-            // a non-zero exit, so a healthy run stays as quiet as it was.
-            let errors = Pipe()
-            task.standardError = errors
-            do {
-                try task.run()
-                let stderr = errors.fileHandleForReading.readDataToEndOfFile()
-                task.waitUntilExit()
-                if task.terminationStatus != 0 {
-                    let text = String(data: stderr.suffix(2000), encoding: .utf8) ?? ""
-                    NSLog("ClaudeControlBar: mcpbar.py \(arguments.first ?? "") exited"
-                          + " \(task.terminationStatus): \(text)")
-                }
-            } catch {
-                NSLog("ClaudeControlBar: \(self.backend.python) failed: \(error)")
-            }
+            self.spawnBackend(command)
             DispatchQueue.main.async {
                 self.backendRunning = max(0, self.backendRunning - 1)
                 self.mcpBusy = self.backendRunning > 0
@@ -776,7 +753,7 @@ final class StatusController: NSObject, NSWindowDelegate {
         // which is the expensive thing a second queued check would repeat for nothing. Gated on
         // the switch AND on Codex being installed, so a Mac without it spawns nothing.
         if codexServers, FileManager.default.fileExists(atPath: codexHome) {
-            runQuietCommand("codex-mcp", "refresh")
+            runQuietCommand(.mcpRefresh(provider: "codex"))
         }
         // Asked on the same occasions, and not gated on either Codex switch: this one explains an
         // empty Sessions tab, which is not a thing either switch turns off. It is gated on its own
@@ -784,8 +761,8 @@ final class StatusController: NSObject, NSWindowDelegate {
         // server or tool switch, so without it a handful of clicks in the MCP tab would spawn a
         // `codex app-server` each — for an answer that can only change when a human has answered a
         // trust prompt, which is exactly what rewrites one of the two files below.
-        if askCodexAboutHooks() { runQuietCommand("codex-hooks") }
-        runBackend(["refresh"]) { [weak self] in
+        if askCodexAboutHooks() { runQuietCommand(.codexHooks) }
+        runBackend(.mcpRefresh(provider: "claude")) { [weak self] in
             guard let self else { return }
             self.refreshQueued = false
             if self.refreshAgain {
@@ -805,7 +782,7 @@ final class StatusController: NSObject, NSWindowDelegate {
     func pollLimits() {
         if oauthLimits {
             lastLimitsPoll = Date().timeIntervalSince1970
-            runQuietCommand("limits")
+            runQuietCommand(.limits(provider: "claude"))
         }
         // Not gated on the switch above, and deliberately: reading Codex's figures costs no token
         // and no request at all. Codex writes them into its own session file as it goes, and the
@@ -815,7 +792,7 @@ final class StatusController: NSObject, NSWindowDelegate {
         // spawn a process every five minutes to be told there is nothing to read. Asked afresh
         // each poll, so installing Codex later is picked up without a restart.
         if codexLimits, FileManager.default.fileExists(atPath: codexSessionsDir) {
-            runQuietCommand("codex-limits")
+            runQuietCommand(.limits(provider: "codex"))
         }
     }
 
@@ -845,24 +822,48 @@ final class StatusController: NSObject, NSWindowDelegate {
         else { return }
         rolledOverHandled = newest
         lastLimitsPoll = now
-        runQuietCommand("limits")
+        runQuietCommand(.limits(provider: "claude"))
     }
 
     /// Run one backend command for the file it writes and nothing else. Not routed through runBackend:
     /// that toggles mcpBusy and re-reads mcp.json, and a poll that only rewrites its own file
     /// has nothing to say about either — the tick's mtime gate picks the file up.
-    func runQuietCommand(_ command: String..., then done: (() -> Void)? = nil) {
+    func runQuietCommand(_ command: BackendCommand, then done: (() -> Void)? = nil) {
         guard !backend.script.isEmpty else { done?(); return }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
-            let task = Process()
-            task.executableURL = URL(fileURLWithPath: self.backend.python)
-            task.arguments = [self.backend.script] + command
-            task.standardOutput = FileHandle.nullDevice
-            task.standardError = FileHandle.nullDevice
-            try? task.run()
-            task.waitUntilExit()
+            self.spawnBackend(command)
             if let done { DispatchQueue.main.async(execute: done) }
+        }
+    }
+
+    /// Run mcpbar.py once and wait for it, off the main queue. Both runBackend and runQuietCommand
+    /// come through here, so neither can die unheard: stderr and the exit code used to go to
+    /// /dev/null together on the quiet path, and a backend that died on a traceback looked exactly
+    /// like one that had nothing to report — every question to Codex once failed that way with a
+    /// NameError, unnoticed. Read into a pipe (not inherited: a GUI process's stderr is the
+    /// system log, where it is nobody's) and surfaced only on a non-zero exit, so a healthy run
+    /// stays quiet.
+    func spawnBackend(_ command: BackendCommand) {
+        let arguments = command.arguments
+        let task = Process()
+        // Absolute paths: a GUI process gets a stripped PATH with no pyenv and no nvm in it.
+        task.executableURL = URL(fileURLWithPath: backend.python)
+        task.arguments = [backend.script] + arguments
+        task.standardOutput = FileHandle.nullDevice
+        let errors = Pipe()
+        task.standardError = errors
+        do {
+            try task.run()
+            let stderr = errors.fileHandleForReading.readDataToEndOfFile()
+            task.waitUntilExit()
+            if task.terminationStatus != 0 {
+                let text = String(data: stderr.suffix(2000), encoding: .utf8) ?? ""
+                NSLog("ClaudeControlBar: mcpbar.py \(arguments.joined(separator: " ")) exited"
+                      + " \(task.terminationStatus): \(text)")
+            }
+        } catch {
+            NSLog("ClaudeControlBar: \(backend.python) failed: \(error)")
         }
     }
 
@@ -885,7 +886,7 @@ final class StatusController: NSObject, NSWindowDelegate {
         hooksWillChange()
         codexHooksChecking = true
         refreshCounts()
-        runQuietCommand("codex-hooks", "approve") { [weak self] in
+        runQuietCommand(.codexHooksApprove) { [weak self] in
             guard let self else { return }
             // The next tick re-reads codex/hooks.json through its own mtime gate; clearing the
             // flag here is what turns the button back from "Approving…" to its own name.
@@ -1038,13 +1039,8 @@ final class StatusController: NSObject, NSWindowDelegate {
         // clicked rather than being guessed from the name: the same server name can be
         // configured in both agents, and asking Claude to switch off Codex's copy would edit
         // the wrong file and leave the row lying about what happened.
-        let codex = provider == "codex"
         model(of: provider).setServerLocally(name, enabled: enabled)
-        if codex {
-            runBackend(["codex-mcp", "toggle-server", name, enabled ? "--on" : "--off"])
-        } else {
-            runBackend(["toggle-server", name, enabled ? "--on" : "--off"])
-        }
+        runBackend(.toggleServer(provider: provider, name: name, on: enabled))
         scheduleRecheck()
         // Last, not first: the row draws a spinner while a check is running or ordered, so it has
         // to be redrawn after the work is on its way rather than before.
@@ -1080,15 +1076,8 @@ final class StatusController: NSObject, NSWindowDelegate {
         // toggle: a tool moving in or out of the context does not change which servers answered.
         model(of: provider).setToolLocally(server: server, tool: tool, enabled: enabled)
         refreshCounts()
-        if provider == "codex" {
-            // No rule to pass: Codex keeps its own deny list per server, by plain tool name,
-            // so there is no `mcp__…__…` spelling for the script to match against.
-            runBackend(["codex-mcp", "toggle-tool", "--server", server, "--tool", tool,
-                        enabled ? "--on" : "--off"])
-        } else {
-            runBackend(["toggle-tool", MCPServer.fullToolName(prefix: prefix, tool: tool),
-                        "--server", server, "--tool", tool, enabled ? "--on" : "--off"])
-        }
+        runBackend(.toggleTool(provider: provider, server: server, tool: tool, prefix: prefix,
+                               on: enabled))
     }
 
     @objc func openSettingsJSON() { openConfig(of: "claude") }

@@ -2226,6 +2226,28 @@ check(PetIconFrames(Pet.load(directory: blankDir)!, height: 18) == nil,
 
 try? FileManager.default.removeItem(atPath: iconPetDir)
 
+// The Swift → mcpbar.py command line. main() in mcpbar.py reads these words positionally, and an
+// older script reads the tool rule as its only argument — so the spelling is the contract, pinned
+// word for word rather than rebuilt from the same code that produced it.
+let backendGolden: [(BackendCommand, [String])] = [
+    (.mcpRefresh(provider: "claude"), ["refresh"]),
+    (.limits(provider: "claude"), ["limits"]),
+    (.limits(provider: "codex"), ["codex-limits"]),
+    (.mcpRefresh(provider: "codex"), ["codex-mcp", "refresh"]),
+    (.codexHooks, ["codex-hooks"]),
+    (.codexHooksApprove, ["codex-hooks", "approve"]),
+    (.toggleServer(provider: "claude", name: "wiki", on: false), ["toggle-server", "wiki", "--off"]),
+    (.toggleServer(provider: "codex", name: "wiki", on: true),
+     ["codex-mcp", "toggle-server", "wiki", "--on"]),
+    (.toggleTool(provider: "claude", server: "wiki", tool: "Read", prefix: "wiki", on: false),
+     ["toggle-tool", "mcp__wiki__Read", "--server", "wiki", "--tool", "Read", "--off"]),
+    (.toggleTool(provider: "codex", server: "wiki", tool: "Read", prefix: "wiki", on: true),
+     ["codex-mcp", "toggle-tool", "--server", "wiki", "--tool", "Read", "--on"]),
+]
+for (command, words) in backendGolden {
+    check(command.arguments == words, "backend \(words.joined(separator: " ")): \(command.arguments)")
+}
+
 
 print(failures == 0 ? "\nall model checks passed" : "\n\(failures) failed")
 exit(failures == 0 ? 0 : 1)
