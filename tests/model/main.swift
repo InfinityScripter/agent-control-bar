@@ -624,6 +624,22 @@ if !FileManager.default.fileExists(atPath: seamPath) {
     check(seam.waitingAuth == ["needs-oauth"], "the waiting-for-auth list crosses over")
 }
 
+// The same border for Claude's limits.json, written by the real statusline.py during the python
+// suite (LimitsWriters in tests/test_statusline.py, which also holds mcpbar.py to the same record).
+let limitsSeamPath = FileManager.default.currentDirectoryPath + "/build/seam/limits.json"
+if let data = FileManager.default.contents(atPath: limitsSeamPath),
+   let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+    let seamLimits = Limits(json: root)
+    check(seamLimits?.fiveHour == LimitWindow(used: 4, resets: 1_790_164_800),
+          "a fractional percentage and an ISO reset arrive as numbers the app can read")
+    check(seamLimits?.sevenDay?.used == 69, "the weekly window crosses over")
+    check(seamLimits?.source == "statusline" && (seamLimits?.ts ?? 0) > 0,
+          "the reserved keys stay the record's own, not windows")
+} else {
+    check(false, "limits seam fixture missing at \(limitsSeamPath) — run the python suite first "
+        + "(/usr/bin/python3 -m unittest discover -s tests), it writes build/seam/limits.json")
+}
+
 // MARK: Changelog — the "What's new" source
 
 let changelogFixture = """

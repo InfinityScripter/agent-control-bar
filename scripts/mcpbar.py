@@ -2340,7 +2340,12 @@ def model_windows():
     # Захардкоженного списка моделей здесь намеренно нет: он и устаревает с каждым
     # релизом, и не наше дело его публиковать. Пробелы закрывает правило ниже —
     # «наблюдение сильнее таблицы»: токенов больше окна, значит окно на самом деле больше.
-    models = {**scrape_model_windows(), **observed}
+    scraped = scrape_model_windows()
+    # Перечитываем после выскребания, а не берём прочитанное до него: чтение бинаря идёт секундами,
+    # и statusline.py за это время мог дописать новое наблюдение в тот же файл. Запись по старому
+    # чтению его стирала.
+    observed = read_json(WINDOW_CACHE, {}).get("observed") or observed
+    models = {**scraped, **observed}
     write_json(WINDOW_CACHE, {"version": version, "models": models, "observed": observed})
     return models
 

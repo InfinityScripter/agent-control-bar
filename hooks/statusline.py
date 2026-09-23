@@ -95,13 +95,17 @@ def capture_limits(payload):
         # two writers, one file, one rule.
         if name in ("ts", "source"):
             continue
-        record[name] = {
-            # int(round(...)) is load-bearing. The payload reports fractional percentages, and
-            # the app reads this with `as? Int` — which returns nil for 4.2, so the limits
-            # silently disappear from the menu bar while the file looks perfectly healthy.
-            "used_percentage": int(round(float(block["used_percentage"]))),
-            "resets_at": parse_reset(block.get("resets_at")),
-        }
+        # int(round(...)) is load-bearing. The payload reports fractional percentages, and the
+        # app reads this with `as? Int` — which returns nil for 4.2, so the limits silently
+        # disappear from the menu bar while the file looks perfectly healthy. OverflowError is
+        # Infinity, which json.loads lets through and round() refuses: one such window used to
+        # abort the whole capture. Same skip as usage_record() in mcpbar.py — the two writers are
+        # held to one record by LimitsWriters in tests/test_statusline.py.
+        try:
+            pct = int(round(float(block["used_percentage"])))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        record[name] = {"used_percentage": pct, "resets_at": parse_reset(block.get("resets_at"))}
     if len(record) <= 2:
         return
     # Unchanged values are not rewritten while the file is fresh. The status line can redraw

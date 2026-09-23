@@ -15,6 +15,8 @@ import unittest
 
 HOOKS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks")
 sys.path.insert(0, HOOKS)
+SCRIPTS = os.path.join(os.path.dirname(HOOKS), "scripts")
+sys.path.insert(0, SCRIPTS)
 
 
 class Capture(unittest.TestCase):
@@ -336,6 +338,56 @@ class Wrapper(unittest.TestCase):
             fh.write(f'bash "{foreign}"\n')
         result = self.run_wrapper(tmp)
         self.assertEqual(result.stdout, "FOREIGN OK")
+
+
+class LimitsWriters(unittest.TestCase):
+    """У limits.json два писателя: statusline.py (из payload statusLine) и mcpbar.py (из ответа
+    эндпоинта). Приложение читает файл одним разбором, поэтому одинаковые окна обязаны давать
+    одинаковую запись — раньше это держалось на комментарии «same skip as usage_record()»."""
+
+    WINDOWS = {
+        "five_hour": {"used_percentage": 4.2, "resets_at": "2026-09-23T12:00:00Z"},
+        "seven_day": {"used_percentage": 68.9, "resets_at": 1_790_000_000},
+        "seven_day_opus": {"used_percentage": 50},
+        "ts": {"used_percentage": 1},
+        "source": {"used_percentage": 1},
+        # json.loads пропускает голый Infinity, а round(inf) кидает OverflowError.
+        "seven_day_sonnet": {"used_percentage": float("inf")},
+    }
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        os.environ["CONTROL_BAR_ROOT"] = self.tmp
+        import statusline
+
+        self.statusline = importlib.reload(statusline)
+        import mcpbar
+
+        self.mcpbar = mcpbar
+
+    def test_оба_писателя_дают_одну_запись(self):
+        self.statusline.capture_limits({"rate_limits": self.WINDOWS})
+        with open(os.path.join(self.tmp, "limits.json")) as fh:
+            from_statusline = json.load(fh)
+        from_endpoint = self.mcpbar.usage_record(self.WINDOWS)
+
+        def body(record):
+            return {k: v for k, v in record.items() if k not in ("ts", "source")}
+
+        self.assertEqual(body(from_statusline), body(from_endpoint))
+        self.assertEqual(from_statusline["five_hour"],
+                         {"used_percentage": 4, "resets_at": 1_790_164_800})
+        self.assertNotIn("seven_day_sonnet", from_statusline)
+
+    def test_запись_statusline_уезжает_образцом_для_swift(self):
+        """Swift-проверка (tests/model/main.swift) разбирает этот файл через Limits(json:):
+        единственная проверка, пересекающая границу языков для limits.json."""
+        self.statusline.capture_limits({"rate_limits": self.WINDOWS})
+        seam_dir = os.path.join(os.path.dirname(HOOKS), "build", "seam")
+        os.makedirs(seam_dir, exist_ok=True)
+        import shutil
+
+        shutil.copyfile(os.path.join(self.tmp, "limits.json"), os.path.join(seam_dir, "limits.json"))
 
 
 if __name__ == "__main__":

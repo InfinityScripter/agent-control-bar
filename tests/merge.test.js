@@ -159,6 +159,27 @@ test("a model absent from the registry borrows its family's widest window", () =
   assert.equal(state.assumed, true, "an inferred window is marked, not passed off as measured");
 });
 
+// The same cases scripts/mcpbar.py's window_for is checked against (tests/test_mcpbar.py): two
+// copies of one rule in two languages, pinned by one table instead of a "keep in step" comment.
+test("windowFor agrees with window_for on every shared case", () => {
+  const { cases } = JSON.parse(
+    fs.readFileSync(path.resolve(__dirname, "fixtures/window-for.json"), "utf8"));
+  for (const [i, c] of cases.entries()) {
+    const home = sandbox();
+    const transcript = path.join(home, "t.jsonl");
+    // One token: small enough that no window is overflowed into the million one.
+    fs.writeFileSync(transcript, JSON.stringify({ type: "assistant", message: {
+      model: c.model, content: [{ text: "hi" }], usage: { input_tokens: 1 } } }));
+    fs.writeFileSync(path.join(home, ".claude", "control-bar", "model-windows.json"),
+      JSON.stringify({ models: c.table }));
+    run(updatePath, home, ["prompt"],
+        JSON.stringify({ session_id: "w" + i, cwd: home, transcript_path: transcript }));
+    const state = JSON.parse(fs.readFileSync(path.join(stateDir(home), "w" + i + ".json"), "utf8"));
+    assert.equal(state.window, c.window, c.model);
+    assert.equal(state.assumed, !c.exact, c.model);
+  }
+});
+
 // The window a session runs in is a property of the SESSION, not of the model: the same
 // claude-opus-5 answers with 200k in one place and 1M in another. Recomputing from the
 // transcript has to guess which, and a wrong guess moves the percentage by a factor of five.
