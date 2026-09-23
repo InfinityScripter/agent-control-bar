@@ -46,7 +46,6 @@ extension StatusController {
         // is already in trouble. An attempt is what the throttle counts; the outcome is separate.
         d.set(now, forKey: "lastUpdateCheck")
         guard let url = URL(string: releaseAPIURL) else { return }
-        hooksWillChange()
         updateCheckRunning = true
         var req = URLRequest(url: url)
         req.setValue("ClaudeControlBar", forHTTPHeaderField: "User-Agent") // GitHub API requires a UA
@@ -98,7 +97,6 @@ extension StatusController {
     func updateCheckFinished(problem: String?) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.hooksWillChange()
             self.updateCheckRunning = false
             self.updateCheckProblem = problem
             if problem == nil { self.updateCheckedAt = Date() }

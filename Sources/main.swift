@@ -569,14 +569,12 @@ final class StatusController: NSObject, NSWindowDelegate {
         guard isInstalledCopy, !hookCheckRunning else { return }
         guard let installer = Bundle.main.path(forResource: "install", ofType: "js") else {
             // No retry timer: a file missing from the bundle does not come back by itself.
-            hooksWillChange()
             hookHealth = .notInstalled(reason: "This copy of the app has no install.js inside it.",
                                        hint: "Reinstall the app.")
             hookCheckedAt = Date().timeIntervalSince1970
             refreshCounts()
             return
         }
-        hooksWillChange()
         hookCheckRunning = true
         hookRetryTimer?.invalidate()
         hookRetryTimer = nil
@@ -590,7 +588,6 @@ final class StatusController: NSObject, NSWindowDelegate {
                 if health.problem != nil || health != self.hookHealth {
                     NSLog("ClaudeControlBar: hooks — \(trace)")
                 }
-                self.hooksWillChange()
                 self.hookCheckRunning = false
                 self.hookCheckedAt = Date().timeIntervalSince1970
                 self.hookHealth = health
@@ -618,12 +615,6 @@ final class StatusController: NSObject, NSWindowDelegate {
         // .common, so it fires while the panel is open — which is when someone is watching for it.
         RunLoop.main.add(timer, forMode: .common)
         hookRetryTimer = timer
-    }
-
-    /// The Settings page reads the hook state at draw time and has to be told before it moves;
-    /// see SettingsStore.bind for why the announcement comes first.
-    func hooksWillChange() {
-        if settingsWindow != nil { settingsStore.objectWillChange.send() }
     }
 
     /// One look, off the main thread: find a node that starts, run the installer with it, and
@@ -881,14 +872,12 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// would read as the click having done nothing.
     func approveCodexHooks() {
         guard !codexHooksChecking else { return }
-        hooksWillChange()
         codexHooksChecking = true
         refreshCounts()
         runQuietCommand(.codexHooksApprove) { [weak self] in
             guard let self else { return }
             // The next tick re-reads codex/hooks.json through its own mtime gate; clearing the
             // flag here is what turns the button back from "Approving…" to its own name.
-            self.hooksWillChange()
             self.codexHooksChecking = false
             self.codexTrustInputs = ""   // the gate has been overtaken, so let it re-measure
             self.refreshCounts()
@@ -910,7 +899,10 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// this, because NSMenu would not let rows be added or removed while it tracked and the only
     /// thing that could move was the text already in them. A window has no such rule: the store
     /// re-reads, and only a real difference redraws anything.
-    func refreshCounts() { if panelIsOpen { panelStore.refresh() } }
+    func refreshCounts() {
+        if panelIsOpen { panelStore.refresh() }
+        if settingsWindow?.isVisible == true { settingsStore.refresh() }
+    }
 
     // MARK: pets
     //
@@ -1188,19 +1180,12 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// Codex itself has been asked, and a machine where the command has not run yet must not be
     /// told its hooks are fine.
     func loadCodexHooks() {
-        // The Settings row draws this at draw time, so it has to be told before the value moves —
-        // but only when it actually moves: this runs at 2.5 Hz, and announcing every tick would
-        // redraw the window forever for an answer that changes when a human approves something.
-        let wasUntrusted = codexHooksUntrusted, wasAnswered = codexHooksAnswered
         switch codexStateFile(at: "codex/hooks.json", gate: &codexHooksMTime) {
         case .missing: codexHooksUntrusted = 0; codexHooksAnswered = false
         case .unchanged: break
         case .changed(let object):
             codexHooksUntrusted = (object["untrusted"] as? NSNumber)?.intValue ?? 0
             codexHooksAnswered = true
-        }
-        if codexHooksUntrusted != wasUntrusted || codexHooksAnswered != wasAnswered {
-            hooksWillChange()
         }
     }
 
@@ -1314,7 +1299,7 @@ final class StatusController: NSObject, NSWindowDelegate {
         // The panel is a live window, not a menu frozen at open time: the per-session clocks, the
         // limit figures and the server states all move under it. The store publishes only when
         // something actually differs, so a quiet tick costs one comparison and no redraw.
-        if panelIsOpen { panelStore.refresh() }
+        refreshCounts()
     }
 
     /// Bars ride in the same status item as the icon. A second status item would be cleaner to
