@@ -736,6 +736,19 @@ test("a codex event writes into codex's own state directory, never into Claude's
   assert.deepEqual(fs.readdirSync(stateDir(home)), [], "Claude's directory stays empty");
 });
 
+test("a Codex PermissionRequest alone does not claim the user needs to act", () => {
+  const home = sandbox();
+  const payload = JSON.stringify({ session_id: "c1", cwd: home, tool_name: "exec" });
+  run(updatePath, home, ["prompt", "--provider", "codex"], payload);
+  run(updatePath, home, ["permreq", "--provider", "codex"], payload);
+  const codexState = JSON.parse(fs.readFileSync(path.join(codexStateDir(home), "c1.json"), "utf8"));
+  assert.equal(codexState.state, "thinking");
+
+  run(updatePath, home, ["permreq"], JSON.stringify({ session_id: "claude", cwd: home }));
+  const claudeState = JSON.parse(fs.readFileSync(path.join(stateDir(home), "claude.json"), "utf8"));
+  assert.equal(claudeState.state, "permission", "Claude permission handling is unchanged");
+});
+
 test("codex context is measured from the rollout with the window codex itself reports", () => {
   // Claude's window has to be guessed from the model name; Codex states it in every
   // token_count record, so the figure is exact and `assumed` is honestly false.

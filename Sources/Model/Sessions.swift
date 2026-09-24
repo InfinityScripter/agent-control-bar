@@ -114,14 +114,28 @@ struct TurnFacts {
 final class SessionEngine {
     // private so the compiler guards the seam: dropCache is the one sanctioned door in.
     private var turnLineCache: [String: (size: UInt64, mtime: Date, facts: TurnFacts)] = [:]
+    private var questionCache: [String: CodexRollout.Questions] = [:]
 
     /// A dead session's transcript leaves the cache with it — keyed by path, not id.
-    func dropCache(forTranscript path: String) { turnLineCache[path] = nil }
+    func dropCache(forTranscript path: String) {
+        turnLineCache[path] = nil
+        questionCache[path] = nil
+    }
 
     // Per-session effective state with two recovery nets: an absolute age cap, plus the transcript
     // "interrupted by user" marker (Esc / denied permission fire no hook, freezing the file). "done"
     // collapses to rest.
     func effectiveState(_ s: Session, now: Double) -> String {
+        if s.provider == "codex" {
+            if !s.transcript.isEmpty {
+                var questions = questionCache[s.transcript] ?? CodexRollout.Questions()
+                let pending = questions.pending(in: s.transcript)
+                questionCache[s.transcript] = questions
+                if pending { return "permission" }
+            }
+            // Codex fires PermissionRequest before deciding whether auto-review handles it.
+            if s.state == "permission" { return "idle" }
+        }
         if isActiveState(s.state) {
             // The ts is stamped by the last hook event and untouched while a tool runs — there
             // is no "still running" hook — so every cap here is a last resort, not a measurement.
