@@ -10,16 +10,16 @@ enum NeedsYouSound {
     static let defaultChoice = "Tink"   // half a second, light, unlike the completion chime
     static let volume: Float = 0.7      // the completion clip's level; the two should sit together
 
-    /// Whether this tick should cue for `state` given what the session looked like last tick.
+    /// Whether this tick entered a confirmed wait since the previous effective state.
     ///
-    /// Raw state, so the edge is the hook event itself; effective state too, so a stale
-    /// permission file read at app launch (an hour-old prompt the user long answered) stays
-    /// silent. `frontmost` is the app the user is looking at: when it is the very terminal or
+    /// Effective state keeps an ambiguous Codex PermissionRequest silent and also covers a
+    /// pending Question while the hook's raw state says the agent is working. `frontmost` is
+    /// the app the user is looking at: when it is the very terminal or
     /// desktop app that hosts the session, the prompt is already on their screen and a sound
     /// is noise — the cue is for the session behind another window.
-    static func shouldCue(prevState: String?, state: String, effective: String,
+    static func shouldCue(prevState: String?, effective: String,
                           hostBundle: String, frontmost: String?) -> Bool {
-        guard state == "permission", effective == "permission", prevState != "permission" else { return false }
+        guard effective == "permission", prevState != "permission" else { return false }
         if !hostBundle.isEmpty, let front = frontmost, front == hostBundle { return false }
         return true
     }

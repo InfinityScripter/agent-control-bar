@@ -309,6 +309,55 @@ check(engine.effectiveState(makeSession(state: "permission", ts: nowTs - 1900), 
 check(engine.effectiveState(makeSession(state: "permission", ts: nowTs - 1700), now: nowTs) == "permission",
       "and inside the cap it holds")
 
+let codexFalsePermission = Session(json: ["provider": "codex", "state": "permission",
+                                         "ts": nowTs, "pid": 1], id: "codex-false")
+check(engine.effectiveState(codexFalsePermission, now: nowTs) == "idle",
+      "a Codex PermissionRequest alone does not prove the user saw a prompt")
+
+func codexLine(_ payload: [String: Any]) -> String {
+    let data = try! JSONSerialization.data(withJSONObject: ["type": "response_item", "payload": payload])
+    return String(decoding: data, as: UTF8.self)
+}
+let questionArguments = #"{"questions":[{"title":"first"},{"title":"second"}]}"#
+let questionCall = codexLine(["type": "function_call", "name": "request_user_input_async",
+                              "call_id": "q1", "arguments": questionArguments])
+let questionAccepted = codexLine(["type": "function_call_output", "call_id": "q1",
+                                  "output": #"{"accepted":true}"#])
+func codexQuestionReply(_ index: Int) -> String {
+    let questionId = String(decoding: try! JSONSerialization.data(
+        withJSONObject: ["request_user_input_async", "q1", index]), as: UTF8.self)
+    let answer = String(decoding: try! JSONSerialization.data(
+        withJSONObject: [["questionItemId": questionId, "answer": "yes"]]), as: UTF8.self)
+    return codexLine(["type": "message", "role": "user", "content": [["type": "input_text",
+        "text": "<send_user_message_question_reply>\n\(answer)\n</send_user_message_question_reply>"]]])
+}
+let codexQuestionPath = writeTranscript("codex-question.jsonl", lines: [questionCall, questionAccepted])
+let codexQuestionSession = Session(json: ["provider": "codex", "state": "tool",
+                                          "transcript": codexQuestionPath, "ts": nowTs,
+                                          "pid": 1], id: "codex-question")
+check(engine.effectiveState(codexQuestionSession, now: nowTs) == "permission",
+      "an accepted Codex Question needs the user even while tools continue")
+func appendCodexLine(_ line: String, to path: String) {
+    let file = FileHandle(forWritingAtPath: path)!
+    try! file.seekToEnd()
+    try! file.write(contentsOf: Data(("\n" + line).utf8))
+    try! file.close()
+}
+appendCodexLine(codexQuestionReply(0), to: codexQuestionPath)
+check(engine.effectiveState(codexQuestionSession, now: nowTs) == "permission",
+      "answering one of two questions leaves the other pending")
+appendCodexLine(codexQuestionReply(1), to: codexQuestionPath)
+check(engine.effectiveState(codexQuestionSession, now: nowTs) == "tool",
+      "the Codex Question clears after all its answers arrive")
+let completedQuestionPath = writeTranscript("codex-question-completed.jsonl", lines: [
+    questionCall, questionAccepted, #"{"type":"event_msg","payload":{"type":"task_complete"}}"#,
+])
+let completedQuestionSession = Session(json: ["provider": "codex", "state": "done",
+                                             "transcript": completedQuestionPath, "ts": nowTs,
+                                             "pid": 1], id: "codex-completed")
+check(engine.effectiveState(completedQuestionSession, now: nowTs) == "idle",
+      "an unanswered async Question stops needing input when Codex ends the turn")
+
 // The interrupt net: Esc / deny write a marker record but fire no hook.
 let interrupted = writeTranscript("interrupted.jsonl", lines: [
     #"{"type":"user","message":{"content":"[Request interrupted by user]"}}"#,
@@ -1327,25 +1376,28 @@ check(!noTag.isEmpty && !noTag.localizedCaseInsensitiveContains("rate limit"),
 
 // MARK: Needs-you sound — one cue per prompt, and none when the prompt is already on screen
 
-check(NeedsYouSound.shouldCue(prevState: "tool", state: "permission", effective: "permission",
+check(NeedsYouSound.shouldCue(prevState: "tool", effective: "permission",
                               hostBundle: "com.apple.Terminal", frontmost: "com.apple.Safari"),
       "a session entering permission behind another app cues")
-check(!NeedsYouSound.shouldCue(prevState: "permission", state: "permission", effective: "permission",
+check(NeedsYouSound.shouldCue(prevState: "tool", effective: "permission",
+                              hostBundle: "com.apple.Terminal", frontmost: "com.apple.Safari"),
+      "a pending Codex Question cues even while the raw hook state says tool")
+check(!NeedsYouSound.shouldCue(prevState: "permission", effective: "permission",
                                hostBundle: "com.apple.Terminal", frontmost: "com.apple.Safari"),
       "a session still waiting does not cue again on the next tick")
-check(!NeedsYouSound.shouldCue(prevState: "tool", state: "permission", effective: "permission",
+check(!NeedsYouSound.shouldCue(prevState: "tool", effective: "permission",
                                hostBundle: "com.apple.Terminal", frontmost: "com.apple.Terminal"),
       "no cue when the hosting terminal is the frontmost app — the prompt is already on screen")
-check(NeedsYouSound.shouldCue(prevState: "tool", state: "permission", effective: "permission",
+check(NeedsYouSound.shouldCue(prevState: "tool", effective: "permission",
                               hostBundle: "", frontmost: "com.apple.Terminal"),
       "an unknown host (ssh, pre-upgrade file) always cues rather than guessing")
-check(!NeedsYouSound.shouldCue(prevState: nil, state: "permission", effective: "idle",
+check(!NeedsYouSound.shouldCue(prevState: nil, effective: "idle",
                                hostBundle: "", frontmost: nil),
       "a stale permission file read at launch is silent: its effective state is idle")
-check(NeedsYouSound.shouldCue(prevState: nil, state: "permission", effective: "permission",
+check(NeedsYouSound.shouldCue(prevState: nil, effective: "permission",
                               hostBundle: "", frontmost: nil),
       "a session first seen already waiting cues once")
-check(!NeedsYouSound.shouldCue(prevState: "tool", state: "thinking", effective: "thinking",
+check(!NeedsYouSound.shouldCue(prevState: "tool", effective: "thinking",
                                hostBundle: "", frontmost: nil),
       "only the permission state cues")
 check(NeedsYouSound.choices.contains(NeedsYouSound.defaultChoice), "the default is one of the choices")
@@ -2351,6 +2403,33 @@ do {
     _ = board.tick(now: now, rules: rules, pidAlive: { alive.contains($0) }, frontmost: { nil })
     check(board.sessions["claude:n1"]?.displayName == "solo",
           "a session with no cwd is not a second location")
+
+    let questionPath = NSTemporaryDirectory() + "ccb-board-question.jsonl"
+    try! [questionCall, questionAccepted].joined(separator: "\n")
+        .write(toFile: questionPath, atomically: true, encoding: .utf8)
+    let questionBoard = SessionBoard(engine: SessionEngine())
+    disk["/codex/q.json"] = ["state": "tool", "transcript": questionPath, "pid": 13,
+                             "ts": now, "term_bundle": "com.apple.Terminal"]
+    questionBoard.reload([file("codex", "q")], read: read) { _ in "" }
+    let asked = questionBoard.tick(now: now, rules: rules,
+                                  pidAlive: { alive.contains($0) }, frontmost: { "com.other" })
+    check(asked.needsYou && asked.lead?.eff == "permission",
+          "a Codex Question cues and leads while the raw hook state is tool")
+    check(!questionBoard.tick(now: now + 1, rules: rules,
+                              pidAlive: { alive.contains($0) }, frontmost: { "com.other" }).needsYou,
+          "a pending Codex Question does not cue again on the next tick")
+    disk["/codex/q.json"]?["state"] = "thinking"
+    questionBoard.reload([file("codex", "q", at: Date(timeIntervalSince1970: 4))],
+                         read: read) { _ in "" }
+    check(!questionBoard.tick(now: now + 2, rules: rules,
+                              pidAlive: { alive.contains($0) }, frontmost: { "com.other" }).needsYou,
+          "a new hook event does not replay the sound while the Question remains open")
+    appendCodexLine(codexQuestionReply(0), to: questionPath)
+    appendCodexLine(codexQuestionReply(1), to: questionPath)
+    check(questionBoard.tick(now: now + 3, rules: rules,
+                             pidAlive: { alive.contains($0) }, frontmost: { "com.other" })
+            .lead?.eff == "thinking", "answering the Question restores the working state")
+    try? FileManager.default.removeItem(atPath: questionPath)
 }
 
 // Which provider's limits the icon and the strip show. These rules used to be written three times

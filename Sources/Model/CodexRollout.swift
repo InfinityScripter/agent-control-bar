@@ -69,4 +69,132 @@ enum CodexRollout {
         return Boundary(ends: endTypes.contains(kind), at: at,
                         turn: payload["turn_id"] as? String ?? "")
     }
+
+    /// Questions remain visible while a turn works in the background. The async tool's immediate
+    /// `accepted` output means the card was offered, not that the user answered it. Rollouts are
+    /// append-only in normal use, so consume each new record once rather than rereading a long
+    /// conversation on every panel tick.
+    struct Questions {
+        private static let callType = Data("\"type\":\"function_call\"".utf8)
+        private static let asyncName = Data("\"name\":\"request_user_input_async\"".utf8)
+        private static let syncName = Data("\"name\":\"request_user_input\"".utf8)
+        private static let outputType = Data("\"type\":\"function_call_output\"".utf8)
+        private static let userRole = Data("\"role\":\"user\"".utf8)
+        private static let replyTag = Data("<send_user_message_question_reply>".utf8)
+        private static let eventType = Data("\"type\":\"event_msg\"".utf8)
+        private static let endNeedles = endTypes.map { Data("\"type\":\"\($0)\"".utf8) }
+
+        private var offset: UInt64 = 0
+        private var size: UInt64 = 0
+        private var mtime: Date = .distantPast
+        private var inode: UInt64 = 0
+        private var offered: [String: Set<Int>] = [:]
+        private var waiting: [String: Set<Int>] = [:]
+
+        mutating func pending(in path: String) -> Bool {
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+                  let currentSize = (attrs[.size] as? NSNumber)?.uint64Value else {
+                self = Questions()
+                return false
+            }
+            let currentMtime = attrs[.modificationDate] as? Date ?? .distantPast
+            let currentInode = (attrs[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0
+            if currentSize < size || (inode != 0 && currentInode != inode)
+                || (currentSize == size && currentMtime != mtime) {
+                self = Questions()
+            }
+            if currentSize == size && currentMtime == mtime && currentInode == inode {
+                return !waiting.isEmpty
+            }
+            guard let file = FileHandle(forReadingAtPath: path) else { return false }
+            defer { try? file.close() }
+            do {
+                try file.seek(toOffset: offset)
+                let data = try file.readToEnd() ?? Data()
+                let completeEnd = data.lastIndex(of: 10).map { $0 + 1 } ?? 0
+                for line in data[..<completeEnd].split(separator: 10) { consume(Data(line)) }
+                offset += UInt64(completeEnd)
+                if completeEnd < data.count {
+                    let last = Data(data[completeEnd...])
+                    if (try? JSONSerialization.jsonObject(with: last)) != nil {
+                        consume(last)
+                        offset += UInt64(last.count)
+                    }
+                }
+            } catch { return !waiting.isEmpty }
+            size = currentSize
+            mtime = currentMtime
+            inode = currentInode
+            return !waiting.isEmpty
+        }
+
+        private mutating func consume(_ data: Data) {
+            let call = data.range(of: Self.callType) != nil
+                && (data.range(of: Self.asyncName) != nil || data.range(of: Self.syncName) != nil)
+            let output = (!offered.isEmpty || !waiting.isEmpty)
+                && data.range(of: Self.outputType) != nil
+            let reply = data.range(of: Self.userRole) != nil
+                && data.range(of: Self.replyTag) != nil
+            let end = data.range(of: Self.eventType) != nil
+                && Self.endNeedles.contains(where: { data.range(of: $0) != nil })
+            guard call || output || reply || end else { return }
+            guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let payload = root["payload"] as? [String: Any],
+                  let type = payload["type"] as? String else { return }
+            if root["type"] as? String == "event_msg" {
+                if endTypes.contains(type) {
+                    // The desktop removes an unanswered async card when the turn ends.
+                    offered.removeAll()
+                    waiting.removeAll()
+                }
+                return
+            }
+            guard root["type"] as? String == "response_item" else { return }
+            if type == "function_call", let name = payload["name"] as? String,
+               let id = payload["call_id"] as? String,
+               let arguments = payload["arguments"] as? String,
+               let argumentData = arguments.data(using: .utf8),
+               let values = try? JSONSerialization.jsonObject(with: argumentData) as? [String: Any],
+               let questions = values["questions"] as? [[String: Any]], !questions.isEmpty {
+                if name == "request_user_input_async" {
+                    offered[id] = Set(questions.indices)
+                } else if name == "request_user_input" {
+                    waiting[id] = Set(questions.indices)
+                }
+            } else if type == "function_call_output", let id = payload["call_id"] as? String {
+                if let questions = offered.removeValue(forKey: id) {
+                    if let output = payload["output"] as? String,
+                       let outputData = output.data(using: .utf8),
+                       let result = try? JSONSerialization.jsonObject(with: outputData) as? [String: Any],
+                       result["accepted"] as? Bool == true {
+                        waiting[id] = questions
+                    }
+                } else {
+                    waiting[id] = nil
+                }
+            } else if type == "message", payload["role"] as? String == "user",
+                      let content = payload["content"] as? [[String: Any]] {
+                for part in content {
+                    guard let text = part["text"] as? String,
+                          let start = text.range(of: "<send_user_message_question_reply>"),
+                          let end = text.range(of: "</send_user_message_question_reply>",
+                                               range: start.upperBound..<text.endIndex),
+                          let replyData = String(text[start.upperBound..<end.lowerBound]).data(using: .utf8),
+                          let replies = try? JSONSerialization.jsonObject(with: replyData) as? [[String: Any]]
+                    else { continue }
+                    for reply in replies {
+                        guard let rawId = reply["questionItemId"] as? String,
+                              let idData = rawId.data(using: .utf8),
+                              let parts = try? JSONSerialization.jsonObject(with: idData) as? [Any],
+                              parts.count == 3,
+                              parts[0] as? String == "request_user_input_async",
+                              let callId = parts[1] as? String,
+                              let index = parts[2] as? Int else { continue }
+                        waiting[callId]?.remove(index)
+                        if waiting[callId]?.isEmpty == true { waiting[callId] = nil }
+                    }
+                }
+            }
+        }
+    }
 }

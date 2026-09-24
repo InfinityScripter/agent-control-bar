@@ -24,7 +24,7 @@ final class SessionBoard {
         /// How long an idle session without a pid is kept; 0 keeps it forever.
         var stalePruneAge: Double
         var thinkingWords: [String]
-        /// Whether a permission prompt cues a sound at all.
+        /// Whether a confirmed request for the user cues a sound at all.
         var needsYou: Bool
     }
 
@@ -34,7 +34,7 @@ final class SessionBoard {
         var reaped: [Session] = []
         /// A turn longer than the threshold has just finished.
         var chime = false
-        /// A session has just started waiting for permission, and its terminal is not in front.
+        /// A session has just started waiting for the user, and its terminal is not in front.
         var needsYou = false
         /// The single most important session: permission > working > the rest, most recent first.
         var lead: Session?
@@ -68,6 +68,7 @@ final class SessionBoard {
             mtimes[f.key] = f.mtime
             guard let json = read(f.path) else { continue }
             var s = Session(json: json, id: f.id)
+            s.eff = sessions[f.key]?.eff ?? ""
             // The directory a file was found in settles the provider, whatever the file says: a
             // hand-edited or truncated `provider` must not send the reap at another agent's
             // directory, and a file in codex/state.d is a Codex session by construction.
@@ -88,6 +89,7 @@ final class SessionBoard {
         var out = Tick()
         for key in sessions.keys.sorted() {
             guard var s = sessions[key] else { continue }
+            let previousEffective = s.eff
             s.eff = engine.effectiveState(s, now: now)   // once per tick; the menu and tooltip reuse it
             // Reap on PROCESS death, not idle time: a session leaves only when its process is gone
             // (closed or crashed terminal, quit app), so an idle-but-open session stays and the
@@ -104,9 +106,9 @@ final class SessionBoard {
             sessions[key] = s
             pickWord(s, from: rules.thinkingWords)
             if completionEdge(s, now: now, threshold: rules.soundThreshold) { out.chime = true }
-            // The frontmost-app lookup is a workspace query, so it runs only on the raw edge.
-            if rules.needsYou, s.state == "permission", prevState[key] != "permission",
-               NeedsYouSound.shouldCue(prevState: prevState[key], state: s.state, effective: s.eff,
+            // The frontmost-app lookup is a workspace query, so it runs only on a confirmed edge.
+            if rules.needsYou, s.eff == "permission", previousEffective != "permission",
+               NeedsYouSound.shouldCue(prevState: previousEffective, effective: s.eff,
                                        hostBundle: s.termBundle, frontmost: frontmost()) {
                 out.needsYou = true
             }

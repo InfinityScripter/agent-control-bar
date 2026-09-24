@@ -409,7 +409,9 @@ process.stdin.on("end", () => {
       break;
     }
     case "permreq":
-      // Desktop-app permission signal; not redundant with notify (that's CLI-only).
+      // Codex fires this before auto-review routing, so it does not prove a human prompt exists.
+      if (codex) return;
+      // Claude desktop permission signal; not redundant with notify (that's CLI-only).
       state = "permission"; label = "Awaiting permission"; startedAt = 0; break;
     case "stop":
       state = "done"; label = "Done"; startedAt = 0; break;

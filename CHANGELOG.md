@@ -7,6 +7,15 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.23.4] - 2026-09-24
+
+### Fixed
+- **Codex no longer shows a false “Needs you” signal from an unconfirmed permission event.**
+  Codex can emit `PermissionRequest` before automatic approval decides whether to interrupt
+  the user. The panel now waits for a confirmed question. A visible Question card keeps the
+  signal on while it awaits an answer, even if the agent continues working, and clears it
+  after all answers arrive or the turn ends. The sound follows the same confirmed wait.
+
 ## [0.23.3] - 2026-09-23
 
 ### Changed
