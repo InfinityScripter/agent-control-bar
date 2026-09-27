@@ -264,11 +264,15 @@ extension StatusController {
     /// Strictly newer, checked here and not only where the menu decides to offer it: a
     /// restarted copy inherits this process's environment, and in the CONTROL_BAR_UPDATE_NOW
     /// mode it reinstalled the version it had just become and restarted once more.
+    ///
+    /// Once releases are signed (UpdateFeed.signingKey), the source build is off the table: a
+    /// GitHub archive is generated on the fly and carries no signature, so building and running
+    /// it would be exactly the unverified path the signature exists to close.
     @objc func installLatestUpdate() {
         guard !selfUpdating, let latest = UserDefaults.standard.string(forKey: "latestVersion"),
               Self.versionIsNewer(latest, than: currentVersion) else { return }
         if let asset = latestAsset { installLatestDMG(latest: latest, asset: asset) }
-        else if canBuildFromSource { selfUpdate(latest: latest) }
+        else if canBuildFromSource, !UpdateFeed.signingEnforced { selfUpdate(latest: latest) }
         else { openLatestRelease() }
     }
 
@@ -307,9 +311,11 @@ extension StatusController {
     /// swap it into this bundle's place and restart. The same bundle swap build.sh does, minus
     /// the minute of compiling and the toolchain it needs.
     ///
-    /// No signature is involved: releases are ad-hoc signed, so there is no identity to require.
-    /// What stands in are the size and sha256 the releases API advertises (UpdateFeed.verify)
-    /// and the bundle's own version, which must be the one the menu offered. The download
+    /// Releases are ad-hoc signed, so there is no code-signing identity to require. What stands
+    /// in are the size and sha256 the releases API advertises (UpdateFeed.verify), the Ed25519
+    /// signature of the image by the maintainer's release key once one is built in
+    /// (UpdateFeed.signingKey — checked before anything is mounted), and the bundle's own
+    /// version, which must be the one the menu offered. The download
     /// carries no quarantine — URLSession only sets it for apps that opt in — and the staged
     /// bundle is cleared of attributes anyway, so Gatekeeper never sees a "downloaded" app.
     func installLatestDMG(latest: String, asset: UpdateFeed.ReleaseAsset) {
@@ -318,6 +324,9 @@ extension StatusController {
         let target = Bundle.main.bundlePath
         let fail: (String) -> Void = { [weak self] reason in
             self?.updateFailed(latest: latest, reason: reason, body: "Nothing was changed.")
+        }
+        if UpdateFeed.signingEnforced, asset.signatureURL == nil {
+            return fail("the release carries no signature for its image")
         }
         let dmg = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("ccb-update-\(latest).dmg")
         let progress = DownloadProgress()
@@ -354,6 +363,18 @@ extension StatusController {
             try? FileManager.default.removeItem(at: dmg)
         }
         if let why = UpdateFeed.verify(file: dmg, against: asset) { return fail(why) }
+        if UpdateFeed.signingEnforced {
+            // A few dozen bytes, fetched on this utility queue after the image is in: the image
+            // is what the signature is checked against, so there is nothing to gain earlier.
+            guard let sigURL = asset.signatureURL,
+                  let sigData = try? Data(contentsOf: sigURL),
+                  let signature = String(data: sigData, encoding: .utf8)
+            else { return fail("could not download the image's signature") }
+            if let why = UpdateFeed.verifySignature(file: dmg, signature: signature,
+                                                    publicKey: UpdateFeed.signingKey) {
+                return fail("signature: \(why)")
+            }
+        }
         do { try FileManager.default.createDirectory(at: mount, withIntermediateDirectories: true) }
         catch { return fail("mkdir: \(error)") }
         if let why = run("/usr/bin/hdiutil", ["attach", dmg.path, "-nobrowse", "-noautoopen", "-readonly",

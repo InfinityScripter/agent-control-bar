@@ -127,7 +127,10 @@ else
   echo "  macOS will block the first launch. See README, section \"Gatekeeper\"."
   # || warns instead of swallowing: macOS kills an unsigned arm64 binary at launch, so a
   # silently failed ad-hoc codesign shipped a complete-looking .app that never starts.
-  codesign --force --entitlements "$ENTITLEMENTS" --sign - "$STAGE_APP" >/dev/null 2>&1 \
+  # --options runtime here too, not only for Developer ID: releases ship ad-hoc signed, and
+  # without the hardened runtime dyld honours DYLD_INSERT_LIBRARIES — any process of the user's
+  # could load its own code into an app that may hold the Automation grant for Terminal/iTerm.
+  codesign --force --options runtime --entitlements "$ENTITLEMENTS" --sign - "$STAGE_APP" >/dev/null 2>&1 \
     || echo "WARNING: ad-hoc codesign failed — Apple Silicon Macs will refuse to launch this build" >&2
 fi
 # The swap happens only past this line: binary present and executable, plist well-formed.

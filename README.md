@@ -37,8 +37,9 @@ The app compiles from source on your Mac at the next session start, so you need 
 
 Updates for the DMG install are one click: when a newer release is out, the panel opens with an
 **Update available** card. Click it to read what changed, then **Download and install** — the
-app fetches the release DMG, checks its size and SHA-256 against what GitHub advertises, swaps
-itself in place and restarts. No Gatekeeper prompt the second time: the app clears the quarantine
+app fetches the release DMG from GitHub, checks its size and SHA-256 against what GitHub
+advertises and, once release signing is set up, its Ed25519 signature against the key built into
+the app, then swaps itself in place and restarts. An image without a digest is not installed. No Gatekeeper prompt the second time: the app clears the quarantine
 flag from the copy it installs itself.
 
 Pick one install channel. With both installed every hook runs twice; the app resolves the conflict in favor of the plugin, but there is no reason to keep both.

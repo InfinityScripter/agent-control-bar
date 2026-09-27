@@ -209,7 +209,9 @@ function dirtyCount(cwd, event, prev) {
   if (!cwd) return null;
   if (event !== "prompt" && event !== "stop") return typeof prev.dirty === "number" ? prev.dirty : null;
   try {
-    const res = cp.spawnSync("git", ["-C", cwd, "status", "--porcelain"],
+    // core.fsmonitor off: a repository's own .git/config can name a program for it, and
+    // `git status` would run that program from inside this hook, on every turn boundary.
+    const res = cp.spawnSync("git", ["-c", "core.fsmonitor=false", "-C", cwd, "status", "--porcelain"],
       { encoding: "utf8", timeout: 1500, stdio: ["ignore", "pipe", "ignore"] });
     if (res.status !== 0 || res.error) return null;
     return res.stdout.split("\n").filter(Boolean).length;

@@ -22,7 +22,15 @@ name: Release
 # release so far has shipped in (README, "Gatekeeper"). Uploaded with --clobber so re-running
 # the workflow for an existing release replaces the asset instead of failing on it. The app's
 # one-click update installs exactly this file, checked against the size and sha256 the
-# releases API reports for it.
+# releases API reports for it — and against `<dmg>.sig`, an Ed25519 signature made here with
+# the UPDATE_SIGNING_KEY secret (tools/update-signing/sign.js), once the app carries the
+# public key (UpdateFeed.signingKey). With the key in the app, a release without a valid
+# signature fails here instead of shipping an update every installed copy would refuse.
+#
+# Write access is scoped per job. The macOS job runs build.sh — the most code of any step —
+# with a read-only token and hands the image over as a workflow artifact; only the two small
+# ubuntu jobs that tag and upload can write to the repository, and only the upload job ever
+# sees the signing key.
 on:
   push:
     branches: [main]
@@ -38,17 +46,19 @@ on:
         default: "main"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
       released: ${{ steps.tag.outputs.released }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.event.inputs.target || github.sha }}
 
@@ -128,9 +138,10 @@ jobs:
     timeout-minutes: 30
     steps:
       # The tag, not `target`: `target` may be a branch that moved on since the tag was cut.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: refs/tags/${{ needs.publish.outputs.tag }}
+          persist-credentials: false
 
       # The Finder window layout inside build.sh needs a Finder that accepts Apple events; on a
       # runner that step reports itself skipped and the image still carries the app and the
@@ -138,10 +149,62 @@ jobs:
       - name: Build the DMG
         run: ./build.sh --dmg
 
+      - name: Hand the DMG to the upload job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-dmg
+          path: build/claude-control-bar.dmg
+          retention-days: 1
+          if-no-files-found: error
+
+  attach:
+    needs: [publish, dmg]
+    if: needs.publish.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # The tag's checkout for two files only: the signing tool, and the public key the app of
+      # this very release was built with. Nothing from it is built or run besides sign.js.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: refs/tags/${{ needs.publish.outputs.tag }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-dmg
+          path: dist
+
+      # The key the app will check against, read from the tagged source — so a key rotated in
+      # the app and not in the secret (or the other way round) fails here, not on users' Macs.
+      - name: Sign the DMG
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          APP_KEY="$(sed -nE 's/^ *static let signingKey = "([^"]*)".*/\1/p' Sources/Model/UpdateFeed.swift)"
+          if [ -z "$UPDATE_SIGNING_KEY" ]; then
+            if [ -n "$APP_KEY" ]; then
+              echo "The app requires signed updates, but the UPDATE_SIGNING_KEY secret is not set." >&2
+              exit 1
+            fi
+            echo "Release signing is not set up (no UPDATE_SIGNING_KEY secret) — publishing unsigned."
+            exit 0
+          fi
+          node tools/update-signing/sign.js sign dist/claude-control-bar.dmg > dist/claude-control-bar.dmg.sig
+          if [ -n "$APP_KEY" ]; then
+            node tools/update-signing/sign.js verify dist/claude-control-bar.dmg \
+              dist/claude-control-bar.dmg.sig "$APP_KEY"
+          else
+            echo "Signed, but UpdateFeed.signingKey is empty: this release's app does not check it yet."
+          fi
+
       - name: Attach the DMG to the release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.publish.outputs.tag }}
         run: |
-          gh release upload "$TAG" build/claude-control-bar.dmg \
-            --repo "$GITHUB_REPOSITORY" --clobber
+          files=(dist/claude-control-bar.dmg)
+          if [ -f dist/claude-control-bar.dmg.sig ]; then files+=(dist/claude-control-bar.dmg.sig); fi
+          gh release upload "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
