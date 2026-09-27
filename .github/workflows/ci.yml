@@ -11,6 +11,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Read-only token for every job: nothing here writes to the repository, and a pull request's
+# code runs in these jobs.
+permissions:
+  contents: read
+
 jobs:
   # Linux mirror of the script halves: not authoritative (the macOS job is — the hooks run on
   # macOS), but it finishes minutes earlier and doubles as proof the Python/Node suites stay
@@ -19,7 +24,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
       - name: Python tests
         run: python3 -m unittest discover -s tests -v
@@ -42,7 +49,9 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
       - name: Type-check the app with Swift 6.0
         run: |
@@ -67,7 +76,9 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
       # The backend deliberately runs on the system python and the standard library alone: it is
       # launched by a GUI process, where neither pyenv nor nvm is on PATH.
@@ -101,7 +112,7 @@ jobs:
       # visual change installs it from the run page instead of building the branch by hand.
       # Ad-hoc signed, unnotarized — Gatekeeper wants a right-click Open the first time.
       - name: Keep the DMG
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: Claude-Control-Bar-dmg
           path: build/*.dmg

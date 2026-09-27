@@ -1311,6 +1311,9 @@ let releaseFixture: [String: Any] = [
     "tag_name": "v0.8.0", "body": "### Fixed\n- a thing",
     "assets": [
         ["name": "SHA256SUMS", "browser_download_url": "https://x/SHA256SUMS", "size": 90],
+        ["name": "claude-control-bar.dmg.sig",
+         "browser_download_url": "https://github.com/x/releases/download/v0.8.0/claude-control-bar.dmg.sig",
+         "size": 89],
         ["name": "claude-control-bar.dmg",
          "browser_download_url": "https://github.com/x/releases/download/v0.8.0/claude-control-bar.dmg",
          "size": 1_236_911,
@@ -1325,13 +1328,33 @@ check(asset?.sha256 == "72a5efc5ab509cc7184926b797dd9e0ed2367dea2391469d2495bed4
       "the digest loses its sha256: prefix")
 check(UpdateFeed.dmgAsset(in: ["assets": [["name": "src.tar.gz", "browser_download_url": "https://x/a", "size": 1]]]) == nil,
       "a release without a DMG offers no asset")
-check(UpdateFeed.dmgAsset(in: ["assets": [["name": "a.dmg", "browser_download_url": "https://x/a.dmg", "size": 5]]])?.sha256 == nil,
-      "a release that carries no digest still installs, without the checksum")
-check(UpdateFeed.dmgAsset(in: ["assets": [["name": "a.dmg", "browser_download_url": "https://x/a.dmg"]]]) == nil,
+check(asset?.signatureURL?.absoluteString.hasSuffix("/claude-control-bar.dmg.sig") == true,
+      "the .sig published next to the image is picked up")
+let ghDMG = "https://github.com/x/releases/download/v1/a.dmg"
+let okDigest = "sha256:" + String(repeating: "ab", count: 32)
+check(UpdateFeed.dmgAsset(in: ["assets": [["name": "a.dmg", "browser_download_url": ghDMG, "size": 5,
+                                           "digest": okDigest]]])?.signatureURL == nil,
+      "a release without a .sig offers the image without a signature URL")
+check(UpdateFeed.dmgAsset(in: ["assets": [["name": "a.dmg", "browser_download_url": ghDMG, "size": 5]]]) == nil,
+      "a release that carries no digest is refused: nothing would prove the download is that file")
+check(UpdateFeed.dmgAsset(in: ["assets": [["name": "a.dmg", "browser_download_url": ghDMG]]]) == nil,
       "a size-less asset is refused: without it a truncated download cannot be told apart")
-check(UpdateFeed.dmgAsset(in: ["assets": [["name": "a.dmg", "browser_download_url": "https://x/a.dmg",
-                                           "size": 5, "digest": "md5:abc"]]])?.sha256 == nil,
+check(UpdateFeed.dmgAsset(in: ["assets": [["name": "a.dmg", "browser_download_url": ghDMG,
+                                           "size": 5, "digest": "md5:abc"]]]) == nil,
       "a digest of another algorithm is not mistaken for sha256")
+check(UpdateFeed.dmgAsset(in: ["assets": [["name": "a.dmg", "browser_download_url": ghDMG,
+                                           "size": 5, "digest": "sha256:abc"]]]) == nil,
+      "a truncated sha256 is refused")
+for foreign in ["https://evil.example/releases/download/v1/a.dmg", "http://github.com/x/releases/download/v1/a.dmg",
+                "https://github.com.evil.example/x/releases/download/v1/a.dmg", "https://github.com/x/archive/a.dmg"] {
+    check(UpdateFeed.dmgAsset(in: ["assets": [["name": "a.dmg", "browser_download_url": foreign, "size": 5,
+                                               "digest": okDigest]]]) == nil,
+          "an image outside GitHub's https release downloads is refused: \(foreign)")
+}
+check(UpdateFeed.dmgAsset(in: ["assets": [
+        ["name": "a.dmg.sig", "browser_download_url": "https://evil.example/releases/download/v1/a.dmg.sig", "size": 89],
+        ["name": "a.dmg", "browser_download_url": ghDMG, "size": 5, "digest": okDigest]]])?.signatureURL == nil,
+      "a signature hosted outside GitHub is not taken")
 // The asset survives the round trip through UserDefaults the way the daily check stores it.
 let stored = asset!.dictionary
 check(UpdateFeed.ReleaseAsset(dictionary: stored) == asset, "asset survives its dictionary round trip")
@@ -1351,8 +1374,34 @@ check(UpdateFeed.verify(file: dmgTmp, against: UpdateFeed.ReleaseAsset(url: good
       "a size mismatch is refused before hashing")
 check(UpdateFeed.verify(file: dmgTmp, against: UpdateFeed.ReleaseAsset(url: good.url, size: 3, sha256: "00")) != nil,
       "a digest mismatch is refused")
-check(UpdateFeed.verify(file: dmgTmp, against: UpdateFeed.ReleaseAsset(url: good.url, size: 3, sha256: nil)) == nil,
-      "no digest advertised: the size check alone stands")
+check(UpdateFeed.verify(file: dmgTmp, against: UpdateFeed.ReleaseAsset(url: good.url, size: 3, sha256: nil)) != nil,
+      "no digest advertised: the size alone does not pass")
+// Ed25519, RFC 8032 §7.1 TEST 2 (message 0x72) — the same vector tests/update-signing.test.js
+// checks on the Node side that signs releases, so the two halves agree on the encodings.
+let rfcPub = Data([0x3d, 0x40, 0x17, 0xc3, 0xe8, 0x43, 0x89, 0x5a, 0x92, 0xb7, 0x0a, 0xa7, 0x4d, 0x1b, 0x7e, 0xbc,
+                   0x9c, 0x98, 0x2c, 0xcf, 0x2e, 0xc4, 0x96, 0x8c, 0xc0, 0xcd, 0x55, 0xf1, 0x2a, 0xf4, 0x66, 0x0c] as [UInt8])
+    .base64EncodedString()
+let rfcSig = Data([0x92, 0xa0, 0x09, 0xa9, 0xf0, 0xd4, 0xca, 0xb8, 0x72, 0x0e, 0x82, 0x0b, 0x5f, 0x64, 0x25, 0x40,
+                   0xa2, 0xb2, 0x7b, 0x54, 0x16, 0x50, 0x3f, 0x8f, 0xb3, 0x76, 0x22, 0x23, 0xeb, 0xdb, 0x69, 0xda,
+                   0x08, 0x5a, 0xc1, 0xe4, 0x3e, 0x15, 0x99, 0x6e, 0x45, 0x8f, 0x36, 0x13, 0xd0, 0xf1, 0x1d, 0x8c,
+                   0x38, 0x7b, 0x2e, 0xae, 0xb4, 0x30, 0x2a, 0xee, 0xb0, 0x0d, 0x29, 0x16, 0x12, 0xbb, 0x0c, 0x00] as [UInt8])
+    .base64EncodedString()
+let signedTmp = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("ccb-signed-test.dmg")
+try! Data([0x72]).write(to: signedTmp)
+check(UpdateFeed.verifySignature(file: signedTmp, signature: rfcSig + "\n", publicKey: rfcPub) == nil,
+      "the RFC 8032 vector verifies, trailing newline of the .sig file included")
+check(UpdateFeed.verifySignature(file: dmgTmp, signature: rfcSig, publicKey: rfcPub) != nil,
+      "a signature over other bytes is refused")
+check(UpdateFeed.verifySignature(file: signedTmp, signature: rfcSig,
+                                 publicKey: Data(repeating: 9, count: 32).base64EncodedString()) != nil,
+      "a signature by another key is refused")
+check(UpdateFeed.verifySignature(file: signedTmp, signature: "AAAA", publicKey: rfcPub) != nil,
+      "a malformed signature is refused")
+check(UpdateFeed.verifySignature(file: signedTmp, signature: rfcSig, publicKey: "short") != nil,
+      "a malformed key is refused")
+check(UpdateFeed.signingKey.isEmpty || Data(base64Encoded: UpdateFeed.signingKey)?.count == 32,
+      "the built-in update key, once set, is 32 raw bytes in base64")
+try? FileManager.default.removeItem(at: signedTmp)
 try? FileManager.default.removeItem(at: dmgTmp)
 
 // A check that found no release says why, on the About page, instead of nothing.

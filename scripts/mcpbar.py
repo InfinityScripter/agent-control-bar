@@ -1347,7 +1347,8 @@ def oauth_token():
     raw = ""
     try:
         raw = subprocess.run(
-            ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+            # Абсолютный путь: через PATH первый попавшийся `security` получил бы токен.
+            ["/usr/bin/security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
             capture_output=True, text=True, timeout=30,
         ).stdout.strip()
     except Exception:
