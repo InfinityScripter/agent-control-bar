@@ -8,7 +8,11 @@ struct PanelView: View {
     @Environment(\.colorScheme) private var scheme
     /// How tall the list wants to be, measured from the content itself. The starting value only
     /// has to be non-zero: the first layout replaces it.
-    @State private var contentHeight: CGFloat = 120
+    private let _contentHeight = State<CGFloat>(initialValue: 120)
+    private var contentHeight: CGFloat {
+        get { _contentHeight.wrappedValue }
+        nonmutating set { _contentHeight.wrappedValue = newValue }
+    }
 
     var body: some View {
         VStack(spacing: 0) {

@@ -110,7 +110,13 @@ enum Motion {
 /// not alive.
 struct PanelEntrance: ViewModifier {
     let index: Int
-    @State private var shown = false
+    // Not the State attribute: in the SDK it is a macro whose plugin ships only with Xcode, and
+    // the plugin install builds this app with the Command Line Tools alone. CI rejects it here.
+    private let _shown = State<Bool>(initialValue: false)
+    private var shown: Bool {
+        get { _shown.wrappedValue }
+        nonmutating set { _shown.wrappedValue = newValue }
+    }
 
     func body(content: Content) -> some View {
         content

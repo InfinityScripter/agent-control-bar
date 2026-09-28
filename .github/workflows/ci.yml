@@ -34,6 +34,15 @@ jobs:
       - name: Node tests
         run: node --test tests/*.test.js
 
+      # The plugin builds the app with the Command Line Tools, which lack the SwiftUIMacros plugin
+      # that `@State` expands through; the macOS jobs below build with Xcode and would not notice.
+      - name: No @State in Sources
+        run: |
+          if grep -rnE '@State([^A-Za-z]|$)' Sources; then
+            echo "@State does not compile without Xcode; use State(initialValue:) as in Motion.swift"
+            exit 1
+          fi
+
       # -x follows the sourced identity.env (declared with a shellcheck source= directive).
       - name: Shell scripts pass shellcheck
         run: shellcheck -x build.sh hooks/statusline.sh
