@@ -39,11 +39,15 @@ enum SettingsPage: String, CaseIterable, Identifiable {
 /// an animation style gets picked or a version number is parked.
 struct SettingsView: View {
     @ObservedObject var store: SettingsStore
-    @State private var page: SettingsPage? = .general
+    private let _page = State<SettingsPage?>(initialValue: .general)
+    private var page: SettingsPage? {
+        get { _page.wrappedValue }
+        nonmutating set { _page.wrappedValue = newValue }
+    }
 
     var body: some View {
         NavigationSplitView {
-            List(selection: $page) {
+            List(selection: _page.projectedValue) {
                 ForEach(SettingsPage.allCases) { item in
                     Label(item.title, systemImage: item.icon).tag(item)
                 }
