@@ -2,7 +2,7 @@
 
 **English** | [Русский](README.ru.md)
 
-https://github.com/user-attachments/assets/39381f85-c8ce-4d32-8baa-dce67d39ee7e
+https://github.com/user-attachments/assets/f44cc709-94be-40b7-88b3-2d2d4231e837
 
 A macOS menu bar app for **Claude Code**. It shows what Claude is doing and lets you manage sessions, MCP servers and usage limits from the menu bar.
 
@@ -136,7 +136,18 @@ Three places are looked in, and the first one to claim a name keeps it:
 
 1. **This app.** One pet ships with it: Clawd, the menu bar crab, drawn from the very same frames, so the two can never fall out of step.
 2. **`~/.codex/pets`.** Codex's own pets folder. Anything installed there shows up, whether it came from Codex's `hatch-pet` or from one of the community galleries ([awesome-codex-pets](https://github.com/BeiXiao/awesome-codex-pets), [petdex](https://petdex.dev)). The folder is re-read every time the Settings window opens, so a pet installed while the app is running needs no restart.
-3. **The ChatGPT desktop app, if you have it.** It carries the Codex companions inside itself, and they are read out of it where it sits: nothing is copied, and nothing of theirs is shipped in this repository. Remove that app and those pets go with it.
+3. **The ChatGPT desktop app, if you have it.** It carries nine Codex companions inside itself, and they are read out of it where it sits: nothing is copied onto your disk. Remove that app and those pets go with it.
+
+These are the nine, each playing one loop of what it does in a session row: resting, working, then waiting for you. The previews are cut from the same sheets at the same tempo the panel uses.
+
+| | | |
+| :---: | :---: | :---: |
+| **Codex** | **BSOD** | **Dewey** |
+| ![Codex, a Codex companion](assets/codex-pets/codex.gif) | ![BSOD, a Codex companion](assets/codex-pets/bsod.gif) | ![Dewey, a Codex companion](assets/codex-pets/dewey.gif) |
+| **Fireball** | **Hoots** | **Null Signal** |
+| ![Fireball, a Codex companion](assets/codex-pets/fireball.gif) | ![Hoots, a Codex companion](assets/codex-pets/hoots.gif) | ![Null Signal, a Codex companion](assets/codex-pets/null-signal.gif) |
+| **Rocky** | **Seedy** | **Stacky** |
+| ![Rocky, a Codex companion](assets/codex-pets/rocky.gif) | ![Seedy, a Codex companion](assets/codex-pets/seedy.gif) | ![Stacky, a Codex companion](assets/codex-pets/stacky.gif) |
 
 Making your own is the same sprite sheet Codex uses: a transparent PNG or WebP, 192 × 208 cells, eight columns, one row per animation (idle, running right, running left, waving, jumping, failed, waiting, running, review). Either published size works: 1536 × 1872 for nine rows, or 1536 × 2288 for eleven. Put it in `~/.codex/pets/<name>/` beside a `pet.json` naming it, and it appears in the chooser. A sheet at any other size is skipped on its own and leaves the rest alone, which is what keeps a change to that format from taking the panel down with it. `tools/pet-sheet` builds this app's own sheet from the crab frames and is the worked example.
 
