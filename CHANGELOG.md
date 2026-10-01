@@ -7,6 +7,14 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.23.5] - 2026-10-01
+
+### Fixed
+- **Installing the plugin works again on a Mac without Xcode.** The plugin builds the app from
+  source with the Command Line Tools, and they lack the plugin that SwiftUI's `@State` expands
+  through, so the build failed on every Mac that had only the Command Line Tools. The app no
+  longer uses `@State`, and CI now rejects it so the break cannot return unnoticed.
+
 ## [0.23.4] - 2026-09-24
 
 ### Fixed
