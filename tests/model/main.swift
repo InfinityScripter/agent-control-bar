@@ -2618,7 +2618,11 @@ check(MCPChange(at: Date(), up: [], down: [], appeared: ["x"], vanished: [], too
         .notifications.isEmpty, "a server appearing or a tool count moving posts nothing")
 
 // The mtime gate in front of codex/limits.json and codex/hooks.json.
-let gateFile = dir + "gate.json"
+// A directory of their own: an earlier check removes `dir` once it is done with it.
+let splitDir = NSTemporaryDirectory() + "ccb-model-split-test/"
+try? FileManager.default.removeItem(atPath: splitDir)
+try! FileManager.default.createDirectory(atPath: splitDir, withIntermediateDirectories: true)
+let gateFile = splitDir + "gate.json"
 try? FileManager.default.removeItem(atPath: gateFile)
 var gate: Date? = Date()
 if case .missing = StateFileLook.at(gateFile, gate: &gate) { check(gate == nil, "no file is an answer, and clears the gate") }
@@ -2659,7 +2663,7 @@ check(idle.step(now: quitT0 + 30, inUse: false, needed: false) == .stay,
       "a probe that found the app needed starts the clock over")
 
 // The branch a session row shows, read out of .git/HEAD.
-let gitRoot = dir + "git/"
+let gitRoot = splitDir + "git/"
 try? FileManager.default.removeItem(atPath: gitRoot)
 func gitWrite(_ path: String, _ text: String) {
     let full = gitRoot + path
