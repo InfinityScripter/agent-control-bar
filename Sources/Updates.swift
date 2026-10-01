@@ -172,7 +172,7 @@ extension StatusController {
             showWhatsNewWindow(version: currentVersion, markdown: text,
                                date: Changelog.date(for: currentVersion, in: md))
         } else if let url = URL(string:
-            "https://github.com/InfinityScripter/claude-control-bar/releases/tag/v\(currentVersion)") {
+            "https://github.com/InfinityScripter/agent-control-bar/releases/tag/v\(currentVersion)") {
             // A bundle built before the changelog shipped as a resource: the release page has it.
             NSWorkspace.shared.open(url)
         }
@@ -448,7 +448,7 @@ extension StatusController {
     /// release that has none, and it needs a Swift toolchain on the machine.
     func selfUpdate(latest: String) {
         guard let url = URL(string:
-                "https://github.com/InfinityScripter/claude-control-bar/archive/refs/tags/v\(latest).tar.gz")
+                "https://github.com/InfinityScripter/agent-control-bar/archive/refs/tags/v\(latest).tar.gz")
         else { return }
         selfUpdating = true
         setUpdateStage("Downloading source…")

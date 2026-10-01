@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: 🔧 Troubleshooting Guide
-    url: https://github.com/InfinityScripter/claude-control-bar/blob/main/TROUBLESHOOTING.md
+    url: https://github.com/InfinityScripter/agent-control-bar/blob/main/TROUBLESHOOTING.md
     about: Common issues and how to fix them
   - name: 🔒 What it touches
-    url: https://github.com/InfinityScripter/claude-control-bar/blob/main/PRIVACY.md
+    url: https://github.com/InfinityScripter/agent-control-bar/blob/main/PRIVACY.md
     about: Every file written and every request made, in one page.
