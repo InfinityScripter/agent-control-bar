@@ -20,6 +20,13 @@ from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
 
 import mcpbar  # noqa: E402
+import mcpbar_codex  # noqa: E402
+
+
+def home(name):
+    """Модуль, где живёт имя: Codex-половина скрипта переехала в mcpbar_codex.py, и подменять
+    её пути и функции надо там, где их читают."""
+    return mcpbar_codex if name in vars(mcpbar_codex) and name not in vars(mcpbar) else mcpbar
 
 
 class ParseListLine(unittest.TestCase):
@@ -242,12 +249,12 @@ class StaleToolRules(unittest.TestCase):
         state = os.path.join(root, "mcp.json")
         with open(state, "w") as fh:
             json.dump({"servers": [{"name": "claude.ai Figma", "toolPrefix": "b6d68fb1"}]}, fh)
-        self.saved = {k: getattr(mcpbar, k) for k in ("SETTINGS", "ROOT", "STATE")}
+        self.saved = {k: getattr(home(k), k) for k in ("SETTINGS", "ROOT", "STATE")}
         mcpbar.SETTINGS, mcpbar.ROOT, mcpbar.STATE = self.settings, root, state
 
     def tearDown(self):
         for key, value in self.saved.items():
-            setattr(mcpbar, key, value)
+            setattr(home(key), key, value)
         self._dir.cleanup()
 
     def test_приставка_берётся_из_состояния(self):
@@ -272,7 +279,7 @@ class DisabledServersStayDown(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()
         root = self._dir.name
-        self.saved = {k: getattr(mcpbar, k) for k in ("CONFIG", "SETTINGS", "DESCRIPTIONS")}
+        self.saved = {k: getattr(home(k), k) for k in ("CONFIG", "SETTINGS", "DESCRIPTIONS")}
         mcpbar.CONFIG = os.path.join(root, "claude.json")
         mcpbar.SETTINGS = os.path.join(root, "settings.json")
         mcpbar.DESCRIPTIONS = os.path.join(root, "descriptions.json")
@@ -288,7 +295,7 @@ class DisabledServersStayDown(unittest.TestCase):
     def tearDown(self):
         mcpbar.ask_server_for_tools = self._ask
         for key, value in self.saved.items():
-            setattr(mcpbar, key, value)
+            setattr(home(key), key, value)
         self._dir.cleanup()
 
     def test_выключенный_сервер_не_запускается_за_описаниями(self):
@@ -556,14 +563,14 @@ class StatusLineObject(unittest.TestCase):
             "STATUSLINE_SAVED": os.path.join(claude, "control-bar", "statusline-saved.json"),
             "STATUSLINE_INSTALLED": os.path.join(claude, "control-bar", "statusline-installed.json"),
         }
-        self.saved = {k: getattr(mcpbar, k) for k in self.patched}
+        self.saved = {k: getattr(home(k), k) for k in self.patched}
         for k, v in self.patched.items():
-            setattr(mcpbar, k, v)
+            setattr(home(k), k, v)
         # Обёртка ищется рядом со скриптом; в тестовом прогоне она есть в репозитории.
 
     def tearDown(self):
         for k, v in self.saved.items():
-            setattr(mcpbar, k, v)
+            setattr(home(k), k, v)
 
     def read(self):
         with open(self.settings) as fh:
@@ -823,13 +830,13 @@ class RefreshProjects(unittest.TestCase):
             "attach_tools": lambda servers: None,
             "model_windows": lambda: {},
         }
-        self.saved = {k: getattr(mcpbar, k) for k in patched}
+        self.saved = {k: getattr(home(k), k) for k in patched}
         for k, v in patched.items():
-            setattr(mcpbar, k, v)
+            setattr(home(k), k, v)
 
     def tearDown(self):
         for k, v in self.saved.items():
-            setattr(mcpbar, k, v)
+            setattr(home(k), k, v)
         self._dir.cleanup()
 
     @staticmethod
@@ -948,13 +955,13 @@ class RefreshLock(unittest.TestCase):
             "attach_tools": lambda servers: None,
             "model_windows": lambda: {},
         }
-        self.saved = {k: getattr(mcpbar, k) for k in patched}
+        self.saved = {k: getattr(home(k), k) for k in patched}
         for k, v in patched.items():
-            setattr(mcpbar, k, v)
+            setattr(home(k), k, v)
 
     def tearDown(self):
         for k, v in self.saved.items():
-            setattr(mcpbar, k, v)
+            setattr(home(k), k, v)
         self._dir.cleanup()
 
     def test_второй_refresh_при_занятом_локе_не_гоняет_проверку(self):
@@ -1311,14 +1318,14 @@ class UsageToken(unittest.TestCase):
             threading.Thread(target=server.serve_forever, daemon=True).start()
 
         self._dir = tempfile.TemporaryDirectory()
-        self.saved = {k: getattr(mcpbar, k) for k in ("USAGE_URL", "LIMITS", "oauth_token")}
+        self.saved = {k: getattr(home(k), k) for k in ("USAGE_URL", "LIMITS", "oauth_token")}
         mcpbar.USAGE_URL = "http://127.0.0.1:%d/" % self.bouncer.server_address[1]
         mcpbar.LIMITS = os.path.join(self._dir.name, "limits.json")
         mcpbar.oauth_token = lambda: "SECRET"
 
     def tearDown(self):
         for k, v in self.saved.items():
-            setattr(mcpbar, k, v)
+            setattr(home(k), k, v)
         for server in (self.target, self.bouncer):
             server.shutdown()
             server.server_close()
@@ -1386,13 +1393,13 @@ class BackupPermissions(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()
         tmp = self._dir.name
-        self.saved = {k: getattr(mcpbar, k) for k in ("ROOT", "SETTINGS")}
+        self.saved = {k: getattr(home(k), k) for k in ("ROOT", "SETTINGS")}
         mcpbar.ROOT = os.path.join(tmp, "control-bar")
         mcpbar.SETTINGS = os.path.join(tmp, "settings.json")
 
     def tearDown(self):
         for k, v in self.saved.items():
-            setattr(mcpbar, k, v)
+            setattr(home(k), k, v)
         self._dir.cleanup()
 
     def put(self, path, mode):
@@ -1499,7 +1506,7 @@ class UsagePayloadDrift(unittest.TestCase):
         # data:-URL вместо третьего локального HTTP-сервера в файле: build_opener открывает
         # их штатно, тем же путём с NoRedirect — проверено живым запуском.
         tmp = tempfile.TemporaryDirectory()
-        saved = {k: getattr(mcpbar, k) for k in ("USAGE_URL", "LIMITS", "oauth_token")}
+        saved = {k: getattr(home(k), k) for k in ("USAGE_URL", "LIMITS", "oauth_token")}
         mcpbar.USAGE_URL = "data:application/json,[1,2,3]"
         mcpbar.LIMITS = os.path.join(tmp.name, "limits.json")
         mcpbar.oauth_token = lambda: "SECRET"
@@ -1509,7 +1516,7 @@ class UsagePayloadDrift(unittest.TestCase):
             self.assertFalse(os.path.exists(mcpbar.LIMITS), "мусор не должен стать limits.json")
         finally:
             for k, v in saved.items():
-                setattr(mcpbar, k, v)
+                setattr(home(k), k, v)
             tmp.cleanup()
 
     def test_кеш_десктопа_с_неожиданными_формами_не_роняет_и_не_подбирает_мусор(self):
@@ -1583,7 +1590,7 @@ class DescriptionsNegativeCache(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()
         root = self._dir.name
-        self.saved = {k: getattr(mcpbar, k) for k in ("CONFIG", "SETTINGS", "DESCRIPTIONS")}
+        self.saved = {k: getattr(home(k), k) for k in ("CONFIG", "SETTINGS", "DESCRIPTIONS")}
         mcpbar.CONFIG = os.path.join(root, "claude.json")
         mcpbar.SETTINGS = os.path.join(root, "settings.json")
         mcpbar.DESCRIPTIONS = os.path.join(root, "descriptions.json")
@@ -1596,7 +1603,7 @@ class DescriptionsNegativeCache(unittest.TestCase):
     def tearDown(self):
         mcpbar.ask_server_for_tools = self._ask
         for key, value in self.saved.items():
-            setattr(mcpbar, key, value)
+            setattr(home(key), key, value)
         self._dir.cleanup()
 
     def config(self, servers):
@@ -1637,15 +1644,15 @@ class DescriptionsNegativeCache(unittest.TestCase):
                 "Figma": {"ts": 1, "v": mcpbar.DESCRIPTIONS_FORMAT, "tools": []}},
             "tool_names_from_transcripts": lambda: {},
         }
-        saved = {k: getattr(mcpbar, k) for k in patched}
+        saved = {k: getattr(home(k), k) for k in patched}
         for k, v in patched.items():
-            setattr(mcpbar, k, v)
+            setattr(home(k), k, v)
         try:
             servers = [{"name": "Figma"}]
             mcpbar.attach_tools(servers)
         finally:
             for k, v in saved.items():
-                setattr(mcpbar, k, v)
+                setattr(home(k), k, v)
         self.assertEqual(servers[0]["toolNames"], ["t1"])
 
 
@@ -1785,9 +1792,9 @@ class SeamContract(unittest.TestCase):
             "session_cwds": lambda: [],
             "model_windows": lambda: {},
         }
-        self.saved = {k: getattr(mcpbar, k) for k in patched}
+        self.saved = {k: getattr(home(k), k) for k in patched}
         for k, v in patched.items():
-            setattr(mcpbar, k, v)
+            setattr(home(k), k, v)
 
         write = mcpbar.write_json
         write(mcpbar.CONFIG, {"mcpServers": {"wiki": {"command": "true"}}})
@@ -1816,7 +1823,7 @@ class SeamContract(unittest.TestCase):
 
     def tearDown(self):
         for k, v in self.saved.items():
-            setattr(mcpbar, k, v)
+            setattr(home(k), k, v)
         self._dir.cleanup()
 
     def test_схема_написанного_настоящим_refresh_закреплена_и_уезжает_свифту(self):
@@ -1865,23 +1872,23 @@ class CodexLimits(unittest.TestCase):
 
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()
-        self.saved = {k: getattr(mcpbar, k)
+        self.saved = {k: getattr(home(k), k)
                       for k in ("CODEX", "CODEX_ROLLOUTS", "CODEX_LIMITS", "CODEX_ROOT")}
-        mcpbar.CODEX = os.path.join(self._dir.name, ".codex")
-        mcpbar.CODEX_ROLLOUTS = os.path.join(mcpbar.CODEX, "sessions", "*", "*", "*", "rollout-*.jsonl")
-        mcpbar.CODEX_ROOT = os.path.join(self._dir.name, "control-bar", "codex")
+        mcpbar_codex.CODEX = os.path.join(self._dir.name, ".codex")
+        mcpbar_codex.CODEX_ROLLOUTS = os.path.join(mcpbar_codex.CODEX, "sessions", "*", "*", "*", "rollout-*.jsonl")
+        mcpbar_codex.CODEX_ROOT = os.path.join(self._dir.name, "control-bar", "codex")
         self.root = os.path.join(self._dir.name, "control-bar")
-        mcpbar.CODEX_LIMITS = os.path.join(self.root, "codex", "limits.json")
+        mcpbar_codex.CODEX_LIMITS = os.path.join(self.root, "codex", "limits.json")
         self.saved["ROOT"] = mcpbar.ROOT
         mcpbar.ROOT = self.root
 
     def tearDown(self):
         for key, value in self.saved.items():
-            setattr(mcpbar, key, value)
+            setattr(home(key), key, value)
         self._dir.cleanup()
 
     def rollout(self, name, lines, day="11"):
-        path = os.path.join(mcpbar.CODEX, "sessions", "2026", "09", day, name)
+        path = os.path.join(mcpbar_codex.CODEX, "sessions", "2026", "09", day, name)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as fh:
             for line in lines:
@@ -1900,7 +1907,7 @@ class CodexLimits(unittest.TestCase):
                             "info": {"total_token_usage": {"input_tokens": 10}}}}
 
     def test_окна_снимка_становятся_фактами(self):
-        record = mcpbar.codex_limits_record({
+        record = mcpbar_codex.codex_limits_record({
             "primary": {"used_percent": 12.4, "window_minutes": 300, "resets_at": 1_789_012_345},
             "secondary": {"used_percent": 58.6, "window_minutes": 10080, "resets_at": 1_789_500_000},
             "plan_type": "pro",
@@ -1917,33 +1924,33 @@ class CodexLimits(unittest.TestCase):
 
     def test_процент_целый_как_у_claude(self):
         """Swift читает used_percentage как `as? Int`: дробь молча выключила бы окно."""
-        record = mcpbar.codex_limits_record({"primary": {"used_percent": 0.6}}, ts=1)
+        record = mcpbar_codex.codex_limits_record({"primary": {"used_percent": 0.6}}, ts=1)
         self.assertIsInstance(record["windows"][0]["used_percentage"], int)
         self.assertEqual(record["windows"][0]["used_percentage"], 1)
 
     def test_на_free_плане_второго_окна_нет(self):
         """secondary_window приходит null — окно пропускается, а не рисуется нулём."""
-        record = mcpbar.codex_limits_record({"primary": {"used_percent": 3}, "secondary": None}, ts=1)
+        record = mcpbar_codex.codex_limits_record({"primary": {"used_percent": 3}, "secondary": None}, ts=1)
         self.assertEqual([w["kind"] for w in record["windows"]], ["primary"])
 
     def test_остаток_секунд_отсчитывается_от_снимка(self):
         """Старые сборки шлют «через сколько», а не «когда». Отсчёт от `сейчас` двигал бы
         сброс вперёд на каждый опрос — окно не сбрасывалось бы в панели никогда."""
-        record = mcpbar.codex_limits_record(
+        record = mcpbar_codex.codex_limits_record(
             {"primary": {"used_percent": 5, "resets_in_seconds": 600}}, ts=1_789_000_000)
         self.assertEqual(record["windows"][0]["resets_at"], 1_789_000_600)
 
     def test_битое_окно_не_уносит_соседнее(self):
-        record = mcpbar.codex_limits_record({
+        record = mcpbar_codex.codex_limits_record({
             "primary": {"used_percent": None},
             "secondary": {"used_percent": 40, "window_minutes": 10080},
         }, ts=1)
         self.assertEqual([w["kind"] for w in record["windows"]], ["secondary"])
 
     def test_неожиданная_форма_это_нет_данных(self):
-        self.assertIsNone(mcpbar.codex_limits_record(["primary"], ts=1))
-        self.assertIsNone(mcpbar.codex_limits_record({}, ts=1))
-        self.assertIsNone(mcpbar.codex_limits_record({"primary": "12%"}, ts=1))
+        self.assertIsNone(mcpbar_codex.codex_limits_record(["primary"], ts=1))
+        self.assertIsNone(mcpbar_codex.codex_limits_record({}, ts=1))
+        self.assertIsNone(mcpbar_codex.codex_limits_record({"primary": "12%"}, ts=1))
 
     def test_берётся_последняя_запись_файла(self):
         path = self.rollout("rollout-2026-09-11T10-00-00-aaa.jsonl", [
@@ -1953,7 +1960,7 @@ class CodexLimits(unittest.TestCase):
             self.token_count({"used_percent": 20, "window_minutes": 300},
                              stamp="2026-09-11T11:00:00Z"),
         ])
-        snapshot, ts, _model = mcpbar.codex_file_snapshots(path)["codex"]
+        snapshot, ts, _model = mcpbar_codex.codex_file_snapshots(path)["codex"]
         self.assertEqual(snapshot["primary"]["used_percent"], 20)
         # Момент записи, а не время файла: панель показывает возраст цифр, и возраст
         # недельного снимка должен читаться неделей, а не «только что».
@@ -1964,13 +1971,13 @@ class CodexLimits(unittest.TestCase):
         начинает мерить ДРУГОЙ пул. limit_id у обоих пулов одинаковый ("codex"), так что
         отличает их только модель хода: без пометки панель показала бы резервные проценты
         как обычные, и 100% выжранного пятичасового окна остались бы невидимыми."""
-        record = mcpbar.codex_limits_record(
+        record = mcpbar_codex.codex_limits_record(
             {"primary": {"used_percent": 13, "window_minutes": 10080}},
             ts=1, model="gpt-reserve")
         self.assertEqual([w["pool"] for w in record["windows"]], ["reserve"])
 
     def test_обычная_модель_ничего_не_помечает(self):
-        record = mcpbar.codex_limits_record(
+        record = mcpbar_codex.codex_limits_record(
             {"primary": {"used_percent": 13, "window_minutes": 300}}, ts=1, model="gpt-5.6-terra")
         self.assertEqual([w["pool"] for w in record["windows"]], ["codex"])
 
@@ -1987,7 +1994,7 @@ class CodexLimits(unittest.TestCase):
             self.token_count({"used_percent": 13, "window_minutes": 10080},
                              stamp="2026-09-11T11:00:00Z"),
         ])
-        found = mcpbar.codex_file_snapshots(path)
+        found = mcpbar_codex.codex_file_snapshots(path)
         self.assertEqual(found["reserve"][0]["primary"]["used_percent"], 13)
         self.assertEqual(found["reserve"][2], "gpt-reserve")
         # И обычный снимок того же файла — тот, что был до переезда на резерв. Резервный ход
@@ -2004,11 +2011,11 @@ class CodexLimits(unittest.TestCase):
         # Сжатый архив рядом: распаковывать его незачем, живой файл всегда plain.
         with open(new.replace(".jsonl", ".jsonl.zst"), "wb") as fh:
             fh.write(b"\x28\xb5\x2f\xfd")
-        self.assertEqual(mcpbar.newest_rollout(), new)
+        self.assertEqual(mcpbar_codex.newest_rollout(), new)
 
     def test_без_codex_ничего_не_пишется(self):
-        self.assertIn("~/.codex", mcpbar.fetch_codex_limits())
-        self.assertFalse(os.path.exists(mcpbar.CODEX_LIMITS))
+        self.assertIn("~/.codex", mcpbar_codex.fetch_codex_limits())
+        self.assertFalse(os.path.exists(mcpbar_codex.CODEX_LIMITS))
 
     def test_файл_пишется_только_владельцу(self):
         """Каталог состояния общий для staff-группы: проценты лимитов аккаунта — не для всех."""
@@ -2019,21 +2026,21 @@ class CodexLimits(unittest.TestCase):
                              {"used_percent": 42, "window_minutes": 10080,
                               "resets_at": 1_789_700_000}, plan="pro"),
         ])
-        mcpbar.fetch_codex_limits()
-        with open(mcpbar.CODEX_LIMITS) as fh:
+        mcpbar_codex.fetch_codex_limits()
+        with open(mcpbar_codex.CODEX_LIMITS) as fh:
             written = json.load(fh)
         self.assertEqual([w["used_percentage"] for w in written["windows"]], [7, 42])
-        self.assertEqual(stat.S_IMODE(os.stat(mcpbar.CODEX_LIMITS).st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(os.stat(mcpbar_codex.CODEX_LIMITS).st_mode), 0o600)
         # И оба каталога до него: makedirs со своим mode закрывает только последний, а
         # промежуточный ~/.claude/control-bar на свежей машине оставался бы 0755.
-        for directory in (self.root, os.path.dirname(mcpbar.CODEX_LIMITS)):
+        for directory in (self.root, os.path.dirname(mcpbar_codex.CODEX_LIMITS)):
             self.assertEqual(stat.S_IMODE(os.stat(directory).st_mode), 0o700, directory)
 
         # Артефакт для swift-стороны шва: model-проверка парсит ровно этот файл.
         repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         seam_dir = os.path.join(repo, "build", "seam")
         os.makedirs(seam_dir, exist_ok=True)
-        shutil.copyfile(mcpbar.CODEX_LIMITS, os.path.join(seam_dir, "codex-limits.json"))
+        shutil.copyfile(mcpbar_codex.CODEX_LIMITS, os.path.join(seam_dir, "codex-limits.json"))
 
     def test_резерв_доезжает_до_файла(self):
         """Сквозь весь путь: ход на резервной модели → пометка в codex/limits.json. Swift-сторона
@@ -2044,14 +2051,14 @@ class CodexLimits(unittest.TestCase):
             self.token_count({"used_percent": 13, "window_minutes": 10080,
                               "resets_at": 1_789_700_000}, plan="plus"),
         ])
-        mcpbar.fetch_codex_limits()
-        with open(mcpbar.CODEX_LIMITS) as fh:
+        mcpbar_codex.fetch_codex_limits()
+        with open(mcpbar_codex.CODEX_LIMITS) as fh:
             written = json.load(fh)
         self.assertEqual([w["pool"] for w in written["windows"]], ["reserve"])
         repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         seam_dir = os.path.join(repo, "build", "seam")
         os.makedirs(seam_dir, exist_ok=True)
-        shutil.copyfile(mcpbar.CODEX_LIMITS,
+        shutil.copyfile(mcpbar_codex.CODEX_LIMITS,
                         os.path.join(seam_dir, "codex-limits-reserve.json"))
 
 
@@ -2079,7 +2086,7 @@ class CodexLimits(unittest.TestCase):
             self.window("primary", pool="reserve", ts=1_789_018_588, used=29,
                         minutes=10080, resets=1_789_616_476),
         ]}
-        merged = mcpbar.merge_codex_limits(previous, fresh)
+        merged = mcpbar_codex.merge_codex_limits(previous, fresh)
         self.assertEqual([(w["pool"], w["kind"], w["used_percentage"]) for w in merged["windows"]],
                          [("codex", "primary", 97), ("codex", "secondary", 15),
                           ("reserve", "primary", 29)])
@@ -2094,7 +2101,7 @@ class CodexLimits(unittest.TestCase):
         fresh = {"ts": 1_789_020_000, "source": "rollout", "windows": [
             self.window("primary", ts=1_789_020_000, used=4, resets=1_789_038_000),
         ]}
-        merged = mcpbar.merge_codex_limits(previous, fresh)
+        merged = mcpbar_codex.merge_codex_limits(previous, fresh)
         self.assertEqual([(w["pool"], w["used_percentage"]) for w in merged["windows"]],
                          [("codex", 4), ("reserve", 29)])
 
@@ -2106,7 +2113,7 @@ class CodexLimits(unittest.TestCase):
             self.window("primary", pool="reserve", ts=1_789_020_000, minutes=10080,
                         resets=1_789_616_476),
         ]}
-        self.assertEqual(mcpbar.merge_codex_limits(previous, fresh)["ts"], 1_789_000_000)
+        self.assertEqual(mcpbar_codex.merge_codex_limits(previous, fresh)["ts"], 1_789_000_000)
 
     def test_файл_прошлой_версии_переезжает_без_потери(self):
         """До этой версии пул стоял пометкой на всей записи, а момент замера был один на файл.
@@ -2118,7 +2125,7 @@ class CodexLimits(unittest.TestCase):
         fresh = {"ts": 1_789_020_000, "source": "rollout", "windows": [
             self.window("primary", ts=1_789_020_000, used=4, resets=1_789_038_000),
         ]}
-        merged = mcpbar.merge_codex_limits(previous, fresh)
+        merged = mcpbar_codex.merge_codex_limits(previous, fresh)
         self.assertEqual([(w["pool"], w["used_percentage"], w["ts"]) for w in merged["windows"]],
                          [("codex", 4, 1_789_020_000), ("reserve", 29, 1_789_018_588)])
 
@@ -2126,7 +2133,7 @@ class CodexLimits(unittest.TestCase):
         fresh = {"ts": 1_789_020_000, "source": "rollout",
                  "windows": [self.window(ts=1_789_020_000)]}
         for previous in (None, [], {"windows": "нет"}, {"windows": ["строка"]}):
-            self.assertEqual(mcpbar.merge_codex_limits(previous, fresh), fresh, previous)
+            self.assertEqual(mcpbar_codex.merge_codex_limits(previous, fresh), fresh, previous)
 
     def test_обычные_окна_ищутся_в_прошлых_сессиях(self):
         """Панель, впервые открытая уже на резерве, обязана показать обычные окна.
@@ -2152,8 +2159,8 @@ class CodexLimits(unittest.TestCase):
         ])
         os.utime(old, (1_000_000, 1_000_000))
         os.utime(now, (2_000_000, 2_000_000))
-        mcpbar.fetch_codex_limits()
-        with open(mcpbar.CODEX_LIMITS) as fh:
+        mcpbar_codex.fetch_codex_limits()
+        with open(mcpbar_codex.CODEX_LIMITS) as fh:
             written = json.load(fh)
         self.assertEqual([(w["pool"], w["kind"], w["used_percentage"]) for w in written["windows"]],
                          [("codex", "primary", 97), ("codex", "secondary", 15),
@@ -2172,7 +2179,7 @@ class CodexLimits(unittest.TestCase):
              "payload": {"turn_id": "1", "model": "gpt-reserve"}},
             self.token_count({"used_percent": 29, "window_minutes": 10080}),
         ])
-        self.assertEqual(list(mcpbar.codex_file_snapshots(path)), ["reserve"])
+        self.assertEqual(list(mcpbar_codex.codex_file_snapshots(path)), ["reserve"])
 
     def test_хвост_без_единого_хода_читается_как_прежде(self):
         """Записи turn_context в хвосте нет вовсе — значит, и следов резервной сессии нет.
@@ -2180,7 +2187,7 @@ class CodexLimits(unittest.TestCase):
         path = self.rollout("rollout-2026-09-11T10-00-00-plain.jsonl", [
             self.token_count({"used_percent": 12, "window_minutes": 300}),
         ])
-        found = mcpbar.codex_file_snapshots(path)
+        found = mcpbar_codex.codex_file_snapshots(path)
         self.assertEqual(list(found), ["codex"])
         self.assertEqual(found["codex"][0]["primary"]["used_percent"], 12)
 
@@ -2205,8 +2212,8 @@ class CodexLimits(unittest.TestCase):
         for at, (name, lines) in enumerate(files):
             path = self.rollout(f"rollout-2026-09-11T10-00-00-{name}.jsonl", lines)
             os.utime(path, (3_000_000 - at, 3_000_000 - at))
-        mcpbar.fetch_codex_limits()
-        with open(mcpbar.CODEX_LIMITS) as fh:
+        mcpbar_codex.fetch_codex_limits()
+        with open(mcpbar_codex.CODEX_LIMITS) as fh:
             written = json.load(fh)
         self.assertEqual([(w["pool"], w["used_percentage"]) for w in written["windows"]],
                          [("codex", 97), ("reserve", 29)])
@@ -2216,7 +2223,7 @@ class CodexLimits(unittest.TestCase):
         и поиск его в прошлых сессиях повторялся бы на каждом опросе без всякого шанса.
         Назад идём ровно за обычными окнами и только когда их нет."""
         seen = []
-        real = mcpbar.codex_file_snapshots
+        real = mcpbar_codex.codex_file_snapshots
 
         def counting(path):
             seen.append(path)
@@ -2229,11 +2236,11 @@ class CodexLimits(unittest.TestCase):
                 self.token_count({"used_percent": 10, "window_minutes": 300}),
             ])
             os.utime(path, (1_000_000 + ord(name), 1_000_000 + ord(name)))
-        mcpbar.codex_file_snapshots = counting
+        mcpbar_codex.codex_file_snapshots = counting
         try:
-            mcpbar.fetch_codex_limits()
+            mcpbar_codex.fetch_codex_limits()
         finally:
-            mcpbar.codex_file_snapshots = real
+            mcpbar_codex.codex_file_snapshots = real
         self.assertEqual(len(seen), 1, seen)
 
     def test_память_доезжает_до_файла(self):
@@ -2245,7 +2252,7 @@ class CodexLimits(unittest.TestCase):
                               "resets_at": 1_789_700_000}, plan="plus"),
         ])
         os.utime(first, (1_000_000, 1_000_000))
-        mcpbar.fetch_codex_limits()
+        mcpbar_codex.fetch_codex_limits()
         second = self.rollout("rollout-2026-09-11T11-00-00-two.jsonl", [
             {"timestamp": "2026-09-11T11:00:00Z", "type": "turn_context",
              "payload": {"turn_id": "1", "model": "gpt-reserve"}},
@@ -2254,8 +2261,8 @@ class CodexLimits(unittest.TestCase):
                              stamp="2026-09-11T11:00:00Z", plan="plus"),
         ])
         os.utime(second, (2_000_000, 2_000_000))
-        mcpbar.fetch_codex_limits()
-        with open(mcpbar.CODEX_LIMITS) as fh:
+        mcpbar_codex.fetch_codex_limits()
+        with open(mcpbar_codex.CODEX_LIMITS) as fh:
             written = json.load(fh)
         self.assertEqual([(w["pool"], w["kind"], w["used_percentage"]) for w in written["windows"]],
                          [("codex", "primary", 97), ("codex", "secondary", 15),
@@ -2265,7 +2272,7 @@ class CodexLimits(unittest.TestCase):
         repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         seam_dir = os.path.join(repo, "build", "seam")
         os.makedirs(seam_dir, exist_ok=True)
-        shutil.copyfile(mcpbar.CODEX_LIMITS,
+        shutil.copyfile(mcpbar_codex.CODEX_LIMITS,
                         os.path.join(seam_dir, "codex-limits-pools.json"))
 
 
@@ -2277,18 +2284,18 @@ class CodexHooks(unittest.TestCase):
 
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()
-        self.saved = {k: getattr(mcpbar, k)
+        self.saved = {k: getattr(home(k), k)
                       for k in ("CODEX", "CODEX_ROOT", "CODEX_HOOKS", "ROOT",
                                 "codex_hooks_list", "codex_rpc")}
-        mcpbar.CODEX = os.path.join(self._dir.name, ".codex")
+        mcpbar_codex.CODEX = os.path.join(self._dir.name, ".codex")
         self.root = os.path.join(self._dir.name, "control-bar")
         mcpbar.ROOT = self.root
-        mcpbar.CODEX_ROOT = os.path.join(self.root, "codex")
-        mcpbar.CODEX_HOOKS = os.path.join(self.root, "codex", "hooks.json")
+        mcpbar_codex.CODEX_ROOT = os.path.join(self.root, "codex")
+        mcpbar_codex.CODEX_HOOKS = os.path.join(self.root, "codex", "hooks.json")
 
     def tearDown(self):
         for key, value in self.saved.items():
-            setattr(mcpbar, key, value)
+            setattr(home(key), key, value)
         self._dir.cleanup()
 
     def groups(self, *hooks):
@@ -2305,7 +2312,7 @@ class CodexHooks(unittest.TestCase):
         наши хуки из-за чужого, который он сознательно оставил без доверия."""
         alien = {"eventName": "preToolUse", "command": "/usr/local/bin/somebody-else",
                  "enabled": True, "trustStatus": "untrusted"}
-        count = mcpbar.codex_untrusted_ours(
+        count = mcpbar_codex.codex_untrusted_ours(
             self.groups(self.ours("untrusted"), self.ours("trusted", "stop"), alien))
         self.assertEqual(count, 1)
 
@@ -2320,52 +2327,52 @@ class CodexHooks(unittest.TestCase):
                   "enabled": True, "trustStatus": "untrusted"}
         mine = {"eventName": "preToolUse", "command": quoted,
                 "enabled": True, "trustStatus": "untrusted"}
-        self.assertEqual(mcpbar.codex_untrusted_ours(self.groups(mine, backup)), 1)
+        self.assertEqual(mcpbar_codex.codex_untrusted_ours(self.groups(mine, backup)), 1)
 
     def test_выключенный_хук_не_считается(self):
         """Выключенный не запустится и с доверием — подсказка про него врала бы."""
         off = dict(self.ours("untrusted"), enabled=False)
-        self.assertEqual(mcpbar.codex_untrusted_ours(self.groups(off)), 0)
+        self.assertEqual(mcpbar_codex.codex_untrusted_ours(self.groups(off)), 0)
 
     def test_неожиданная_форма_это_ноль_а_не_падение(self):
-        self.assertEqual(mcpbar.codex_untrusted_ours(None), 0)
-        self.assertEqual(mcpbar.codex_untrusted_ours([{"hooks": "нет"}]), 0)
-        self.assertEqual(mcpbar.codex_untrusted_ours([{"hooks": [{"command": None}]}]), 0)
+        self.assertEqual(mcpbar_codex.codex_untrusted_ours(None), 0)
+        self.assertEqual(mcpbar_codex.codex_untrusted_ours([{"hooks": "нет"}]), 0)
+        self.assertEqual(mcpbar_codex.codex_untrusted_ours([{"hooks": [{"command": None}]}]), 0)
 
     def test_файл_пишется_только_владельцу(self):
         """В нём ничего секретного, но каталог общий для staff, и режим здесь тот же, что
         у соседних файлов состояния — одно правило на весь каталог."""
-        os.makedirs(mcpbar.CODEX, exist_ok=True)
-        mcpbar.codex_hooks_list = lambda: (self.groups(self.ours("untrusted")), None)
-        mcpbar.fetch_codex_hooks()
-        with open(mcpbar.CODEX_HOOKS) as fh:
+        os.makedirs(mcpbar_codex.CODEX, exist_ok=True)
+        mcpbar_codex.codex_hooks_list = lambda: (self.groups(self.ours("untrusted")), None)
+        mcpbar_codex.fetch_codex_hooks()
+        with open(mcpbar_codex.CODEX_HOOKS) as fh:
             written = json.load(fh)
         self.assertEqual(written["untrusted"], 1)
-        self.assertEqual(stat.S_IMODE(os.stat(mcpbar.CODEX_HOOKS).st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(os.stat(mcpbar_codex.CODEX_HOOKS).st_mode), 0o600)
         repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         seam_dir = os.path.join(repo, "build", "seam")
         os.makedirs(seam_dir, exist_ok=True)
-        shutil.copyfile(mcpbar.CODEX_HOOKS, os.path.join(seam_dir, "codex-hooks.json"))
+        shutil.copyfile(mcpbar_codex.CODEX_HOOKS, os.path.join(seam_dir, "codex-hooks.json"))
 
     def test_без_codex_ничего_не_пишется(self):
-        self.assertIn("~/.codex", mcpbar.fetch_codex_hooks())
-        self.assertFalse(os.path.exists(mcpbar.CODEX_HOOKS))
+        self.assertIn("~/.codex", mcpbar_codex.fetch_codex_hooks())
+        self.assertFalse(os.path.exists(mcpbar_codex.CODEX_HOOKS))
 
     def test_молчание_app_server_не_гасит_прошлый_ответ(self):
         """Отказ app-server — это «не знаю», а не «всё одобрено»: перезаписать ноль поверх
         честной восьмёрки значит убрать подсказку ровно тогда, когда она нужна."""
-        os.makedirs(mcpbar.CODEX, exist_ok=True)
-        mcpbar.codex_hooks_list = lambda: (self.groups(self.ours("untrusted")), None)
-        mcpbar.fetch_codex_hooks()
-        mcpbar.codex_hooks_list = lambda: ([], "app-server timed out")
-        mcpbar.fetch_codex_hooks()
-        with open(mcpbar.CODEX_HOOKS) as fh:
+        os.makedirs(mcpbar_codex.CODEX, exist_ok=True)
+        mcpbar_codex.codex_hooks_list = lambda: (self.groups(self.ours("untrusted")), None)
+        mcpbar_codex.fetch_codex_hooks()
+        mcpbar_codex.codex_hooks_list = lambda: ([], "app-server timed out")
+        mcpbar_codex.fetch_codex_hooks()
+        with open(mcpbar_codex.CODEX_HOOKS) as fh:
             self.assertEqual(json.load(fh)["untrusted"], 1)
 
     def test_изменённый_после_одобрения_тоже_ждёт(self):
         """`modified` — хук, одобренный раньше, чья команда с тех пор поменялась: так бывает
         после обновления приложения. Codex снова его пропускает, и «одобрено» про него — неправда."""
-        self.assertEqual(mcpbar.codex_untrusted_ours(self.groups(self.ours("modified"))), 1)
+        self.assertEqual(mcpbar_codex.codex_untrusted_ours(self.groups(self.ours("modified"))), 1)
 
     def fake_app_server(self, before, after, write_error=None):
         """Подмена app-server: `hooks/list` отвечает `before`, а после записи доверия — `after`."""
@@ -2378,14 +2385,14 @@ class CodexHooks(unittest.TestCase):
             wrote = any(m == "config/batchWrite" for m, _ in calls)
             return {"data": after if wrote else before}, None
 
-        mcpbar.codex_rpc = rpc
+        mcpbar_codex.codex_rpc = rpc
         return calls
 
     def test_одобрение_пишет_хеш_codex_только_своим_ждущим(self):
         """Хеш берётся из ответа Codex, а не считается нами, и пишется тем же `config/batchWrite`
         в `hooks.state`, что шлёт кнопка доверия в самом Codex. Чужой хук, уже одобренный и
         выключенный — не трогаются: одобряется ровно то, о чём была кнопка."""
-        os.makedirs(mcpbar.CODEX, exist_ok=True)
+        os.makedirs(mcpbar_codex.CODEX, exist_ok=True)
         waiting = dict(self.ours("untrusted"), key="hooks.json:pre_tool_use:0:0",
                        currentHash="sha256:aa")
         changed = dict(self.ours("modified", "stop"), key="hooks.json:stop:0:0",
@@ -2400,33 +2407,33 @@ class CodexHooks(unittest.TestCase):
             self.groups(waiting, changed, done, off, alien),
             self.groups(dict(waiting, trustStatus="trusted"), dict(changed, trustStatus="trusted"),
                         done, off, alien))
-        mcpbar.approve_codex_hooks()
+        mcpbar_codex.approve_codex_hooks()
         writes = [params for method, params in calls if method == "config/batchWrite"]
         self.assertEqual(writes, [{"edits": [{"keyPath": "hooks.state", "value": {
             "hooks.json:pre_tool_use:0:0": {"trusted_hash": "sha256:aa"},
             "hooks.json:stop:0:0": {"trusted_hash": "sha256:bb"},
         }, "mergeStrategy": "upsert"}]}])
-        with open(mcpbar.CODEX_HOOKS) as fh:
+        with open(mcpbar_codex.CODEX_HOOKS) as fh:
             self.assertEqual(json.load(fh)["untrusted"], 0,
                              "счёт — это новый ответ Codex после записи, а не наша догадка")
 
     def test_нечего_одобрять_конфиг_не_трогаем(self):
         """Запись меняет mtime config.toml, а по нему приложение решает спросить Codex снова —
         пустая запись на каждый клик заставляла бы спрашивать впустую."""
-        os.makedirs(mcpbar.CODEX, exist_ok=True)
+        os.makedirs(mcpbar_codex.CODEX, exist_ok=True)
         done = dict(self.ours("trusted"), key="k", currentHash="sha256:aa")
         calls = self.fake_app_server(self.groups(done), self.groups(done))
-        mcpbar.approve_codex_hooks()
+        mcpbar_codex.approve_codex_hooks()
         self.assertNotIn("config/batchWrite", [method for method, _ in calls])
 
     def test_отказ_записи_не_выдаётся_за_одобрение(self):
-        os.makedirs(mcpbar.CODEX, exist_ok=True)
+        os.makedirs(mcpbar_codex.CODEX, exist_ok=True)
         waiting = dict(self.ours("untrusted"), key="k", currentHash="sha256:aa")
         self.fake_app_server(self.groups(waiting),
                              self.groups(dict(waiting, trustStatus="trusted")),
                              write_error="config is locked")
-        self.assertEqual(mcpbar.approve_codex_hooks(), "config is locked")
-        self.assertFalse(os.path.exists(mcpbar.CODEX_HOOKS))
+        self.assertEqual(mcpbar_codex.approve_codex_hooks(), "config is locked")
+        self.assertFalse(os.path.exists(mcpbar_codex.CODEX_HOOKS))
 
 
 class FindCodex(unittest.TestCase):
@@ -2438,12 +2445,12 @@ class FindCodex(unittest.TestCase):
         inside = "/Applications/ChatGPT.app/Contents/Resources/codex"
         with mock.patch("os.path.exists", lambda path: path == inside), \
                 mock.patch.dict(os.environ, {"PATH": ""}):
-            self.assertEqual(mcpbar.find_codex(), inside)
+            self.assertEqual(mcpbar_codex.find_codex(), inside)
 
     def test_нигде_нет_это_пустая_строка_а_не_падение(self):
         with mock.patch("os.path.exists", lambda path: False), \
                 mock.patch.dict(os.environ, {"PATH": ""}):
-            self.assertEqual(mcpbar.find_codex(), "")
+            self.assertEqual(mcpbar_codex.find_codex(), "")
 
 
 class CodexMCP(unittest.TestCase):
@@ -2456,17 +2463,17 @@ class CodexMCP(unittest.TestCase):
 
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()
-        self.saved = {k: getattr(mcpbar, k) for k in ("CODEX", "CODEX_ROOT", "CODEX_MCP", "ROOT")}
-        mcpbar.CODEX = os.path.join(self._dir.name, ".codex")
+        self.saved = {k: getattr(home(k), k) for k in ("CODEX", "CODEX_ROOT", "CODEX_MCP", "ROOT")}
+        mcpbar_codex.CODEX = os.path.join(self._dir.name, ".codex")
         self.root = os.path.join(self._dir.name, "control-bar")
         mcpbar.ROOT = self.root
-        mcpbar.CODEX_ROOT = os.path.join(self.root, "codex")
-        mcpbar.CODEX_MCP = os.path.join(self.root, "codex", "mcp.json")
-        os.makedirs(mcpbar.CODEX, exist_ok=True)
+        mcpbar_codex.CODEX_ROOT = os.path.join(self.root, "codex")
+        mcpbar_codex.CODEX_MCP = os.path.join(self.root, "codex", "mcp.json")
+        os.makedirs(mcpbar_codex.CODEX, exist_ok=True)
 
     def tearDown(self):
         for key, value in self.saved.items():
-            setattr(mcpbar, key, value)
+            setattr(home(key), key, value)
         self._dir.cleanup()
 
     # `codex mcp list --json` — проверено живьём: выключенные серверы в списке ЕСТЬ, в отличие
@@ -2515,17 +2522,17 @@ class CodexMCP(unittest.TestCase):
             "codex_server_status": lambda: (
                 (status if status is not None else self.STATUS), status_error),
         }
-        saved = {k: getattr(mcpbar, k) for k in patched}
+        saved = {k: getattr(home(k), k) for k in patched}
         for key, value in patched.items():
-            setattr(mcpbar, key, value)
+            setattr(home(key), key, value)
         try:
-            return mcpbar.refresh_codex_mcp()
+            return mcpbar_codex.refresh_codex_mcp()
         finally:
             for key, value in saved.items():
-                setattr(mcpbar, key, value)
+                setattr(home(key), key, value)
 
     def servers(self):
-        with open(mcpbar.CODEX_MCP) as fh:
+        with open(mcpbar_codex.CODEX_MCP) as fh:
             data = json.load(fh)
         return {s["name"]: s for s in data["servers"]}, data
 
@@ -2571,7 +2578,7 @@ class CodexMCP(unittest.TestCase):
         self.assertEqual(servers["wiki"]["status"], "spawn ya ENOENT")
         # А у выключенного и живого сервера подсказка не выдумывается.
         self.assertEqual(servers["off-one"]["status"], "disabled")
-        self.assertEqual(mcpbar.codex_status_text("x", "ok", {}), "")
+        self.assertEqual(mcpbar_codex.codex_status_text("x", "ok", {}), "")
 
     def test_у_выключенного_сервера_число_инструментов_неизвестно(self):
         """app-server не поднимал его, значит пустой набор — это «не знаем», а не «их нет»."""
@@ -2621,32 +2628,32 @@ class CodexMCP(unittest.TestCase):
 
     def test_нет_codex_ничего_не_пишем(self):
         """На машине без Codex файл не должен появляться вовсе — иначе вкладка покажет пустую группу."""
-        shutil.rmtree(mcpbar.CODEX)
+        shutil.rmtree(mcpbar_codex.CODEX)
         message = self.refresh()
-        self.assertFalse(os.path.exists(mcpbar.CODEX_MCP))
+        self.assertFalse(os.path.exists(mcpbar_codex.CODEX_MCP))
         self.assertIn("codex", message.lower())
 
     def test_файл_пишется_только_владельцу(self):
         """Имена серверов и команды их запуска — не для чужих учёток на той же машине."""
         self.refresh()
-        self.assertEqual(stat.S_IMODE(os.stat(mcpbar.CODEX_MCP).st_mode), 0o600)
-        self.assertEqual(stat.S_IMODE(os.stat(mcpbar.CODEX_ROOT).st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(os.stat(mcpbar_codex.CODEX_MCP).st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(os.stat(mcpbar_codex.CODEX_ROOT).st_mode), 0o700)
         self.assertEqual(stat.S_IMODE(os.stat(mcpbar.ROOT).st_mode), 0o700)
 
     def test_ключ_записи_у_плагинного_сервера_другой(self):
         """Сервер из плагина Codex живёт в своей таблице; запись по общему пути его не выключит."""
-        self.assertEqual(mcpbar.codex_key_path("wiki", None, "enabled"),
+        self.assertEqual(mcpbar_codex.codex_key_path("wiki", None, "enabled"),
                          "mcp_servers.wiki.enabled")
-        self.assertEqual(mcpbar.codex_key_path("cua_repl", "openai-bundled", "disabled_tools"),
+        self.assertEqual(mcpbar_codex.codex_key_path("cua_repl", "openai-bundled", "disabled_tools"),
                          "plugins.openai-bundled.mcp_servers.cua_repl.disabled_tools")
 
     def test_переключение_инструмента_считает_новый_deny_список(self):
         """Пишем весь массив целиком, поэтому он должен строиться из текущего, а не с нуля."""
-        self.assertEqual(mcpbar.codex_deny_next(["Delete"], "Read", True), ["Delete", "Read"])
-        self.assertEqual(mcpbar.codex_deny_next(["Delete", "Read"], "Read", False), ["Delete"])
+        self.assertEqual(mcpbar_codex.codex_deny_next(["Delete"], "Read", True), ["Delete", "Read"])
+        self.assertEqual(mcpbar_codex.codex_deny_next(["Delete", "Read"], "Read", False), ["Delete"])
         # Повторное выключение уже выключенного — не повод удвоить запись в чужом конфиге.
-        self.assertEqual(mcpbar.codex_deny_next(["Read"], "Read", True), ["Read"])
-        self.assertIsNone(mcpbar.codex_deny_next(["Read"], "Read", True, only_changes=True),
+        self.assertEqual(mcpbar_codex.codex_deny_next(["Read"], "Read", True), ["Read"])
+        self.assertIsNone(mcpbar_codex.codex_deny_next(["Read"], "Read", True, only_changes=True),
                           "ничего не изменилось — значит и писать нечего")
 
     def test_карта_серверов_переезжает_в_шов_для_swift(self):
@@ -2656,9 +2663,24 @@ class CodexMCP(unittest.TestCase):
         repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         seam_dir = os.path.join(repo, "build", "seam")
         os.makedirs(seam_dir, exist_ok=True)
-        shutil.copyfile(mcpbar.CODEX_MCP, os.path.join(seam_dir, "codex-mcp.json"))
+        shutil.copyfile(mcpbar_codex.CODEX_MCP, os.path.join(seam_dir, "codex-mcp.json"))
 
 
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class Bundle(unittest.TestCase):
+    """mcpbar.py импортирует соседние модули из своего каталога. В DMG-канале скрипт живёт в
+    Contents/Resources/scripts, куда build.sh копирует файлы поимённо, — забытый там модуль
+    роняет каждый запуск бэкенда на ImportError, а тесты, импортирующие из scripts/, этого
+    не видят."""
+
+    def test_build_sh_кладёт_в_приложение_каждый_модуль_scripts(self):
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(repo, "build.sh")) as fh:
+            copied = [line for line in fh if line.startswith("cp ") and "Resources/scripts" in line]
+        for path in glob.glob(os.path.join(repo, "scripts", "*.py")):
+            name = "scripts/" + os.path.basename(path)
+            self.assertTrue(any(name in line for line in copied), name + " не копируется в .app")
