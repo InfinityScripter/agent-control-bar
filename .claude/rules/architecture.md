@@ -11,7 +11,7 @@ alwaysApply: false
 
 ## Контекст
 
-Проект состоит из трёх независимых слоёв: Node-хуки (`hooks/install.js`, `uninstall.js`, `update.js`, `lifecycle.js`), Python-скрипты (`hooks/bootstrap.py`, `hooks/statusline.py`, `scripts/mcpbar.py` с Codex-половиной в `scripts/mcpbar_codex.py`) и Swift UI (`Sources/*.swift`). Между слоями нет прямых импортов — обмен данными идёт только через JSON-файлы в `~/.claude/control-bar/`. Единственный межпроцессный вызов — Swift спавнит `mcpbar.py` как `Process` в `runBackend()` (`Sources/main.swift`, комментарий «the script writes mcp.json and the model re-reads it») и не парсит его stdout: скрипт пишет `mcp.json`, модель Swift перечитывает файл. Если это направление нарушить, слои начинают требовать друг у друга знания о внутреннем устройстве — ровно то, чего дизайн избегает.
+Проект состоит из трёх независимых слоёв: Node-хуки (`hooks/install.js`, `uninstall.js`, `update.js`, `lifecycle.js`), Python-скрипты (`hooks/bootstrap.py`, `hooks/statusline.py`, `scripts/mcpbar.py`) и Swift UI (`Sources/*.swift`). Между слоями нет прямых импортов — обмен данными идёт только через JSON-файлы в `~/.claude/control-bar/`. Единственный межпроцессный вызов — Swift спавнит `mcpbar.py` как `Process` в `runBackend()` (`Sources/main.swift`, комментарий «the script writes mcp.json and the model re-reads it») и не парсит его stdout: скрипт пишет `mcp.json`, модель Swift перечитывает файл. Если это направление нарушить, слои начинают требовать друг у друга знания о внутреннем устройстве — ровно то, чего дизайн избегает.
 
 ## Правила
 
