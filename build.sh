@@ -74,7 +74,8 @@ cp hooks/update.js hooks/lifecycle.js hooks/install.js hooks/uninstall.js hooks/
 # The MCP half runs out of the bundle in the brew/DMG channel — the plugin directory that
 # normally holds it does not exist there.
 mkdir -p "$STAGE_APP/Contents/Resources/scripts"
-cp scripts/mcpbar.py "$STAGE_APP/Contents/Resources/scripts/"
+# mcpbar_codex.py too: mcpbar.py imports it from its own directory on every run.
+cp scripts/mcpbar.py scripts/mcpbar_codex.py "$STAGE_APP/Contents/Resources/scripts/"
 cp assets/AppIcon.icns "$STAGE_APP/Contents/Resources/AppIcon.icns"
 cp CHANGELOG.md "$STAGE_APP/Contents/Resources/CHANGELOG.md"  # the menu's "What's new" reads it
 cp assets/completion.mp3 "$STAGE_APP/Contents/Resources/completion.mp3"
