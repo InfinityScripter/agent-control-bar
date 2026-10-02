@@ -7,6 +7,7 @@
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -367,6 +368,11 @@ class WorkingNode(unittest.TestCase):
         with open(settings, "w") as fh:
             json.dump(settings_with([ours, "echo keep-me"]), fh)
         dead = self._exe("dead-node", "kill -ABRT $$\n")
+        # The probe gives node NODE_PROBE_TIMEOUT (3 s) to start. On a fresh macOS runner this is
+        # the job's first node launch, and a cold start there has taken longer: the real node was
+        # then skipped as "did not answer", uninstall.js never ran, and the test failed at random.
+        # One untimed launch first; what is under test here is the dead node, not cold-start speed.
+        subprocess.run([shutil.which("node"), "-e", ""], check=False)
 
         names = ("ROOT", "SETTINGS", "OWNER", "PLUGIN_ROOT", "node_candidates")
         saved = {name: getattr(bootstrap, name) for name in names}
@@ -387,7 +393,8 @@ class WorkingNode(unittest.TestCase):
             else:
                 os.environ["HOME"] = saved_home
 
-        self.assertFalse(present, "дубли хуков приложения остались в settings.json")
+        self.assertFalse(present, "дубли хуков приложения остались в settings.json; problems.log:\n"
+                         + self._log())
         with open(os.path.join(root, "owner.json")) as fh:
             self.assertEqual(json.load(fh)["channel"], "plugin")
         with open(settings) as fh:
