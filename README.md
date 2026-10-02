@@ -16,7 +16,7 @@ A macOS menu bar app for **Claude Code**. It shows what Claude is doing and lets
 ### As a Claude Code plugin (recommended)
 
 ```bash
-/plugin marketplace add InfinityScripter/claude-control-bar
+/plugin marketplace add InfinityScripter/agent-control-bar
 ```
 
 ```bash

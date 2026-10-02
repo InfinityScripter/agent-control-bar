@@ -93,8 +93,8 @@ final class StatusController: NSObject, NSWindowDelegate {
     var uiConfigCache: (mtime: Date?, values: [String: Double])?
     // Stored state used by the extensions in Updates.swift, SessionRows.swift and
     // IconRender.swift — an extension cannot declare stored properties, so they live here.
-    let releaseAPIURL = "https://api.github.com/repos/InfinityScripter/claude-control-bar/releases/latest"
-    let releasePageURL = "https://github.com/InfinityScripter/claude-control-bar/releases/latest"
+    let releaseAPIURL = "https://api.github.com/repos/InfinityScripter/agent-control-bar/releases/latest"
+    let releasePageURL = "https://github.com/InfinityScripter/agent-control-bar/releases/latest"
     let brewCaskAPIURL = "https://formulae.brew.sh/api/cask/claude-control-bar.json"
     let brewUpgradeCommand = "brew upgrade --cask claude-control-bar"
     let brewInstallCommand = "brew install --cask claude-control-bar && open -a \"Claude Control Bar\""

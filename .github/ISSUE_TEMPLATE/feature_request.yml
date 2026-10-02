@@ -22,7 +22,7 @@ body:
           required: true
         - label: This is a single feature request (not multiple features)
           required: true
-        - label: I have read [CONTRIBUTING.md](https://github.com/InfinityScripter/claude-control-bar/blob/main/CONTRIBUTING.md#wont-be-merged) and understand what won't be merged
+        - label: I have read [CONTRIBUTING.md](https://github.com/InfinityScripter/agent-control-bar/blob/main/CONTRIBUTING.md#wont-be-merged) and understand what won't be merged
           required: true
         - label: This feature would work for both app and terminal users
           required: true

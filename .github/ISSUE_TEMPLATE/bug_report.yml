@@ -9,8 +9,8 @@ body:
         Thank you for taking the time to report a bug. Please fill out the sections below to help us understand and fix the issue.
 
         **Before submitting, please check:**
-        - You're using the [latest version](https://github.com/InfinityScripter/claude-control-bar/releases/latest)
-        - This issue hasn't already been reported by searching [existing issues](https://github.com/InfinityScripter/claude-control-bar/issues)
+        - You're using the [latest version](https://github.com/InfinityScripter/agent-control-bar/releases/latest)
+        - This issue hasn't already been reported by searching [existing issues](https://github.com/InfinityScripter/agent-control-bar/issues)
         - This is a bug, not a feature request or support question
 
   - type: checkboxes
@@ -19,9 +19,9 @@ body:
       label: Preflight Checklist
       description: Please confirm before submitting
       options:
-        - label: I have searched [existing issues](https://github.com/InfinityScripter/claude-control-bar/issues) and the [known issues](https://github.com/InfinityScripter/claude-control-bar/blob/main/TROUBLESHOOTING.md#known-issues) and this hasn't been reported yet
+        - label: I have searched [existing issues](https://github.com/InfinityScripter/agent-control-bar/issues) and the [known issues](https://github.com/InfinityScripter/agent-control-bar/blob/main/TROUBLESHOOTING.md#known-issues) and this hasn't been reported yet
           required: true
-        - label: I have checked the [Troubleshooting guide](https://github.com/InfinityScripter/claude-control-bar/blob/main/TROUBLESHOOTING.md) and my issue isn't covered there
+        - label: I have checked the [Troubleshooting guide](https://github.com/InfinityScripter/agent-control-bar/blob/main/TROUBLESHOOTING.md) and my issue isn't covered there
           required: true
         - label: This is a single bug report (please file separate reports for different bugs)
           required: true

@@ -16,7 +16,7 @@ https://github.com/user-attachments/assets/f44cc709-94be-40b7-88b3-2d2d4231e837
 ### Плагином Claude Code (рекомендуется)
 
 ```bash
-/plugin marketplace add InfinityScripter/claude-control-bar
+/plugin marketplace add InfinityScripter/agent-control-bar
 ```
 
 ```bash
