@@ -86,6 +86,25 @@ struct MCPChange {
     /// Servers falling over is news worth interrupting for. A tool count moving is not — the user
     /// usually moved it themselves, one click ago, in this very menu.
     var deservesNotification: Bool { !up.isEmpty || !down.isEmpty }
+
+    /// The banners this change posts, down before up: one server by name, several by count, with
+    /// every name in the body.
+    var notifications: [(title: String, body: String)] {
+        var out: [(title: String, body: String)] = []
+        if !down.isEmpty {
+            out.append((title: down.count == 1
+                            ? "MCP: \(mcpShortName(down[0])) went down"
+                            : "MCP: \(down.count) servers went down",
+                        body: down.map(mcpShortName).joined(separator: ", ")))
+        }
+        if !up.isEmpty {
+            out.append((title: up.count == 1
+                            ? "MCP: \(mcpShortName(up[0])) is back"
+                            : "MCP: \(up.count) servers are back",
+                        body: up.map(mcpShortName).joined(separator: ", ")))
+        }
+        return out
+    }
 }
 
 private struct MCPSnapshot {
