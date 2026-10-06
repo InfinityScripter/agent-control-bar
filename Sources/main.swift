@@ -217,6 +217,12 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// Which provider the switcher layout is showing. Remembered across opens: someone who
     /// switched to Codex was answering "how much Codex have I got left", not this once.
     var limitsProvider = "claude"
+    /// Which agents the bar and the panel show, as saved, or nil when nobody has picked: the
+    /// default then follows whether Codex is installed — see AgentDisplay.resolve.
+    var agentChoice: String?
+    var agentDisplay: AgentDisplay {
+        AgentDisplay.resolve(saved: agentChoice, codexInstalled: codexInstalled)
+    }
     var analytics = true            // the anonymous daily ping (Sources/Analytics.swift); env var and endpoint also gate it
     var soundThreshold: Double = 0  // 0 = off; else the min turn length (seconds) that chimes on completion
     var needsYouSound = NeedsYouSound.defaultChoice  // system sound name; "" = off
@@ -314,6 +320,7 @@ final class StatusController: NSObject, NSWindowDelegate {
         exactTerminalFocus = d.bool(forKey: "exactTerminalFocus")   // absent = off, which is the default
         if let s = d.string(forKey: "limitsLayout"), let l = PanelLimitsLayout(rawValue: s) { limitsLayout = l }
         if let s = d.string(forKey: "limitsProvider") { limitsProvider = s }
+        agentChoice = d.string(forKey: "agentDisplay")
         if d.object(forKey: "analytics") != nil { analytics = d.bool(forKey: "analytics") }
         if d.object(forKey: "soundThreshold") != nil { soundThreshold = d.double(forKey: "soundThreshold") }
         if let s = d.string(forKey: "needsYouSound") { needsYouSound = s }
@@ -1320,9 +1327,15 @@ final class StatusController: NSObject, NSWindowDelegate {
         return gauge.image(icon: icon)
     }
 
-    func currentGauge() -> Gauge { limitsBoard.gauge(at: Date().timeIntervalSince1970) }
+    func currentGauge() -> Gauge {
+        agentDisplay.limits(claude: limits?.set, codex: codexWindows, forBar: true)
+            .gauge(at: Date().timeIntervalSince1970)
+    }
 
-    var limitsBoard: LimitsBoard { LimitsBoard(claude: limits?.set, codex: codexWindows) }
+    /// The panel's limits: both agents' figures minus whichever the agent setting leaves out.
+    var limitsBoard: LimitsBoard {
+        agentDisplay.limits(claude: limits?.set, codex: codexWindows, forBar: false)
+    }
 
     // The session files currently on disk, both agents' (ignores the .tmp files mid-write).
     // Keyed "<provider>:<id>", because the two agents mint their ids independently and the
@@ -1432,8 +1445,10 @@ final class StatusController: NSObject, NSWindowDelegate {
 
     func evaluate() {
         let now = Date().timeIntervalSince1970
+        let agents = agentDisplay
         let rules = SessionBoard.Rules(soundThreshold: soundThreshold, stalePruneAge: stalePruneAge,
-                                       thinkingWords: thinkingWords, needsYou: !needsYouSound.isEmpty)
+                                       thinkingWords: thinkingWords, needsYou: !needsYouSound.isEmpty,
+                                       leads: agents.barProviders, cues: agents.panelProviders)
         let tick = board.tick(now: now, rules: rules, pidAlive: pidAlive,
                               frontmost: { NSWorkspace.shared.frontmostApplication?.bundleIdentifier })
         // The one write this app makes into a state directory: the file of a session whose
@@ -1447,8 +1462,11 @@ final class StatusController: NSObject, NSWindowDelegate {
         if tick.needsYou { playNeedsYou() }   // one cue per tick however many sessions asked at once
 
         let lead = tick.lead
-        setCrabMood(CrabMood.display(forEffectiveStates: sessions.values.map(\.eff), leadState: lead?.eff),
-                    working: sessions.values.filter { isWorkingState($0.eff) }.count)
+        // The mood counts the same agents the lead was picked from: a crab busy over sessions the
+        // bar was told not to show would be the one thing on it still showing them.
+        let barred = sessions.values.filter { agents.inBar($0.provider) }
+        setCrabMood(CrabMood.display(forEffectiveStates: barred.map(\.eff), leadState: lead?.eff),
+                    working: barred.filter { isWorkingState($0.eff) }.count)
         statusItem.button?.toolTip = lead.map(sessionMenuLine)  // repo · branch [· elapsed] on hover
 
         guard let lead = lead else { renderResting(); return }

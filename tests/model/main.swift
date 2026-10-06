@@ -2533,6 +2533,72 @@ do {
     check(LimitsBoard.showing("codex", among: ["claude"]) == "claude",
           "a remembered provider with no figures falls back to the first")
     check(LimitsBoard.showing("claude", among: []) == nil, "nothing to show, nothing picked")
+
+    // The agent setting takes figures away before LimitsBoard sees them, so its rules about who
+    // gets the icon's bars run on exactly what may be shown.
+    let codexOnly = AgentDisplay.codex.limits(claude: claude, codex: codex, forBar: true).gauge(at: now)
+    check(codexOnly.fiveHour == 0.1 && codexOnly.sevenDay == 0.2,
+          "Codex chosen: the icon draws Codex's bars even while Claude has figures")
+    check(AgentDisplay.claude.limits(claude: claude, codex: codex, forBar: false)
+            .shown(at: now).map(\.set.provider) == ["claude"],
+          "Claude chosen: the strip lists Claude alone")
+    check(AgentDisplay.hidden.limits(claude: claude, codex: codex, forBar: true).gauge(at: now).isEmpty,
+          "Hidden: no limit bars on the icon")
+    check(AgentDisplay.hidden.limits(claude: claude, codex: codex, forBar: false).shown(at: now).count == 2,
+          "Hidden: the panel's strip still has both")
+}
+
+// Which agents the bar and the panel show. Never picked, it follows what the app showed before
+// the setting existed — both agents where Codex is installed — so an update hides nothing.
+check(AgentDisplay.resolve(saved: nil, codexInstalled: false) == .claude,
+      "no pick, no Codex: Claude Code")
+check(AgentDisplay.resolve(saved: nil, codexInstalled: true) == .both,
+      "no pick, Codex installed: both, as before the setting")
+check(AgentDisplay.resolve(saved: "codex", codexInstalled: false) == .codex,
+      "a pick is kept whether or not Codex is installed")
+check(AgentDisplay.resolve(saved: "garbage", codexInstalled: false) == .claude,
+      "an unreadable pick falls back to the default")
+check(AgentDisplay.allCases.map(\.rawValue) == ["claude", "codex", "both", "hidden"],
+      "the saved spellings are pinned: a rename would forget everybody's pick")
+check(AgentDisplay.hidden.barProviders.isEmpty && AgentDisplay.hidden.panelProviders.count == 2,
+      "Hidden empties the bar and leaves the panel both agents")
+check(AgentDisplay.codex.inBar("codex") && !AgentDisplay.codex.inPanel("claude"),
+      "Codex chosen: Codex in the bar, Claude out of the panel")
+
+// The agent setting reaches the session board as two sets: who may lead the menu bar, and whose
+// turns make a sound. A session left out of both is still a session — still reaped, still counted.
+do {
+    let now = 1_800_000_000.0
+    let mtime = Date(timeIntervalSince1970: 1)
+    var disk: [String: [String: Any]] = [
+        "/claude/a.json": ["state": "thinking", "project": "c", "cwd": "/c", "pid": 21, "ts": now,
+                           "startedAt": now - 120],
+        "/codex/b.json": ["state": "permission", "project": "x", "cwd": "/x", "pid": 22, "ts": now],
+    ]
+    let files = [
+        SessionBoard.File(key: "claude:a", path: "/claude/a.json", provider: "claude", id: "a", mtime: mtime),
+        SessionBoard.File(key: "codex:b", path: "/codex/b.json", provider: "codex", id: "b", mtime: mtime),
+    ]
+    let board = SessionBoard(engine: SessionEngine())
+    board.reload(files, read: { disk[$0] }) { _ in "" }
+    var rules = SessionBoard.Rules(soundThreshold: 60, stalePruneAge: 900, thinkingWords: ["Musing"],
+                                   needsYou: true, leads: ["claude"], cues: ["claude"])
+    var tick = board.tick(now: now, rules: rules, pidAlive: { _ in true }, frontmost: { nil })
+    check(tick.lead?.provider == "claude",
+          "Claude chosen: a Codex session asking for permission does not lead the bar")
+    check(!tick.needsYou, "and its request makes no sound")
+    check(board.sessions.count == 2, "but it is still on the board")
+
+    rules.leads = []
+    rules.cues = nil
+    disk["/claude/a.json"]?["state"] = "done"
+    disk["/claude/a.json"]?["ts"] = now + 1
+    board.reload([SessionBoard.File(key: "claude:a", path: "/claude/a.json", provider: "claude",
+                                    id: "a", mtime: Date(timeIntervalSince1970: 2)), files[1]],
+                 read: { disk[$0] }) { _ in "" }
+    tick = board.tick(now: now + 1, rules: rules, pidAlive: { _ in true }, frontmost: { nil })
+    check(tick.lead == nil, "Hidden: nothing leads the bar")
+    check(tick.chime, "and a long turn finishing still chimes")
 }
 
 // What tells the two agents apart. The reap deletes files by stateDir, so a wrong directory here
