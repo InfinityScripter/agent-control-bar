@@ -80,6 +80,11 @@ final class SettingsStore: ObservableObject {
     var exactTerminalFocus: Binding<Bool> {
         bind({ $0.exactTerminalFocus }, { $0.applyExactTerminalFocus($1) }, or: false)
     }
+    /// Which agents the menu bar and the panel show. The fallback is the one the controller would
+    /// resolve to on a Mac without Codex; like every fallback here it is never actually shown.
+    var agentDisplay: Binding<AgentDisplay> {
+        bind({ $0.agentDisplay }, { $0.applyAgentDisplay($1) }, or: .claude)
+    }
     var limitsLayout: Binding<PanelLimitsLayout> {
         bind({ $0.limitsLayout }, { $0.applyLimitsLayout($1) }, or: .rows)
     }
@@ -291,6 +296,17 @@ extension StatusController {
         + "nothing but selecting the tab.\n\n"
         + "You can take it back at any time in System Settings → Privacy & Security → Automation. "
         + "Saying no also switches this off, so clicks go back to raising the terminal app."
+
+    /// Saved as soon as it is picked, even when it equals the default: a pick is a decision, and it
+    /// must not start following Codex being installed or removed the way the unpicked default does.
+    /// Nothing to re-read either — every figure stays loaded whichever agents show — so the next
+    /// tick redraws the bar, and the panel republishes here. Not an evaluate() of its own: that
+    /// is a whole session tick, reaps and chimes included, and the timer's next one is 0.4s away.
+    func applyAgentDisplay(_ pick: AgentDisplay) {
+        agentChoice = pick.rawValue
+        UserDefaults.standard.set(pick.rawValue, forKey: "agentDisplay")
+        refreshCounts()
+    }
 
     /// Nothing to re-read: the layout is only how the same figures are arranged, so the panel
     /// republishing is the whole effect.
