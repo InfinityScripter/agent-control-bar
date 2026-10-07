@@ -137,7 +137,7 @@ UNINSTALL_TIMEOUT = 20
 
 
 def node_candidates():
-    """Where a node may be, in the order the app tries them (nodeCandidates() in main.swift).
+    """Where a node may be, in the order the app tries them (HookInstall.nodeCandidates in Sources/Model).
 
     Three fixed paths cover a system or Homebrew install and nothing else. On a machine using
     nvm, volta or asdf there was no node here at all, so the app channel's hooks could not be

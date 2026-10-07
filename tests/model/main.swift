@@ -2663,5 +2663,130 @@ for (command, words) in backendGolden {
 }
 
 
+// Version order, used both to offer an update and to pick the newest nvm node.
+check(ReleaseVersion.isNewer("0.0.10", than: "0.0.9"), "versions compare per component, not as text")
+check(ReleaseVersion.isNewer("v20.19.0", than: "v9.11.2"), "a leading v is tolerated")
+check(!ReleaseVersion.isNewer("0.6.0-rc.1", than: "0.6.0"),
+      "a release candidate is never newer than the release it precedes")
+check(!ReleaseVersion.isNewer("1.0", than: "1.0.0") && !ReleaseVersion.isNewer("1.0.0", than: "1.0"),
+      "a missing component counts as zero")
+
+// Where the app looks for a node: the hooks' own two first, then the fixed spots, then nvm newest
+// first — as text "v9" sorts above "v20", which picked the oldest node on the machine.
+let nodeList = HookInstall.nodeCandidates(home: "/h", nvmVersions: ["v9.11.2", "v20.19.0", "v18.0.0"])
+check(nodeList == ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node",
+                   "/h/.volta/bin/node", "/h/.asdf/shims/node",
+                   "/h/.nvm/versions/node/v20.19.0/bin/node", "/h/.nvm/versions/node/v18.0.0/bin/node",
+                   "/h/.nvm/versions/node/v9.11.2/bin/node"],
+      "node candidates in order: \(nodeList)")
+check(HookInstall.shellAnswer("/usr/local/bin/node\nbye from .zlogout\n", isExecutable: { _ in true })
+        == "/usr/local/bin/node", "a shell's answer survives a .zlogout printing after it")
+check(HookInstall.shellAnswer("/a/node\n/b/node\n", isExecutable: { $0 == "/a/node" }) == "/a/node",
+      "and a node that cannot run is passed over")
+check(HookInstall.shellAnswer("node not found\n", isExecutable: { _ in true }) == nil,
+      "no path, no answer")
+
+// Session files: both agents' directories, keyed so their ids cannot mix, and a reaped session's
+// path computed from its own provider.
+let listedFiles = Provider.stateFiles(home: "/h") { dir in
+    dir.hasSuffix("/codex/state.d") ? ["abc.json", "abc.json.77.tmp"] : ["1.json", "2.tmp"]
+}
+check(listedFiles.map(\.key) == ["claude:1", "codex:abc"], "state files keyed by provider: \(listedFiles.map(\.key))")
+check(listedFiles.last?.path == "/h/.claude/control-bar/codex/state.d/abc.json"
+        && listedFiles.last?.id == "abc", "a Codex file keeps its own directory and id")
+check(Provider.statePath(provider: "codex", id: "abc", home: "/h") == "/h/.claude/control-bar/codex/state.d/abc.json"
+        && Provider.statePath(provider: "", id: "1", home: "/h") == "/h/.claude/control-bar/state.d/1.json",
+      "a session is reaped from its own agent's directory; no provider means Claude")
+
+// The banners an MCP change posts.
+let banners = MCPChange(at: Date(), up: ["claude.ai Figma"], down: ["wiki", "plugin:figma:figma"],
+                        appeared: [], vanished: [], toolDelta: 0).notifications
+check(banners.map { $0.title } == ["MCP: 2 servers went down", "MCP: Figma is back"]
+        && banners.map { $0.body } == ["wiki, figma", "Figma"],
+      "down before up, one by name, several by count: \(banners)")
+check(MCPChange(at: Date(), up: [], down: [], appeared: ["x"], vanished: [], toolDelta: 3)
+        .notifications.isEmpty, "a server appearing or a tool count moving posts nothing")
+
+// The mtime gate in front of codex/limits.json and codex/hooks.json.
+// A directory of their own: an earlier check removes `dir` once it is done with it.
+let splitDir = NSTemporaryDirectory() + "ccb-model-split-test/"
+try? FileManager.default.removeItem(atPath: splitDir)
+try! FileManager.default.createDirectory(atPath: splitDir, withIntermediateDirectories: true)
+let gateFile = splitDir + "gate.json"
+try? FileManager.default.removeItem(atPath: gateFile)
+var gate: Date? = Date()
+if case .missing = StateFileLook.at(gateFile, gate: &gate) { check(gate == nil, "no file is an answer, and clears the gate") }
+else { check(false, "no file reads as missing") }
+func writeGated(_ text: String, at stamp: Double) {
+    try! text.write(toFile: gateFile, atomically: true, encoding: .utf8)
+    try! FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: stamp)],
+                                           ofItemAtPath: gateFile)
+}
+writeGated(#"{"untrusted": 2}"#, at: 1_785_000_000)
+if case .changed(let object) = StateFileLook.at(gateFile, gate: &gate) {
+    check((object["untrusted"] as? NSNumber)?.intValue == 2, "a new file is parsed")
+} else { check(false, "a new file reads as changed") }
+if case .unchanged = StateFileLook.at(gateFile, gate: &gate) { check(true, "the same mtime is a stat and no parse") }
+else { check(false, "the same mtime reads as unchanged") }
+writeGated("{half a rewr", at: 1_785_000_100)
+if case .unchanged = StateFileLook.at(gateFile, gate: &gate) {
+    check(gate == Date(timeIntervalSince1970: 1_785_000_000), "a half-written file keeps the last parse")
+} else { check(false, "a half-written file reads as unchanged") }
+
+// When the app may quit on its own.
+let quitT0 = Date(timeIntervalSince1970: 1_785_000_000)
+var idle = IdleQuit(launchedAt: quitT0)
+check(idle.step(now: quitT0 + 1, inUse: false, needed: false) == .stay && idle.notNeededSince == nil,
+      "nothing is decided inside the launch grace")
+check(idle.step(now: quitT0 + 6, inUse: false, needed: false) == .stay && idle.notNeededSince == quitT0 + 6,
+      "the first idle look only starts the clock")
+check(idle.step(now: quitT0 + 8, inUse: false, needed: false) == .stay, "idle for less than the delay stays")
+check(idle.step(now: quitT0 + 9, inUse: false, needed: false) == .confirm, "idle past the delay asks the probes")
+check(idle.step(now: quitT0 + 10, inUse: true, needed: false) == .stay && idle.notNeededSince == nil,
+      "an open window resets the clock")
+_ = idle.step(now: quitT0 + 11, inUse: false, needed: false)
+check(idle.step(now: quitT0 + 20, inUse: false, needed: true) == .stay && idle.notNeededSince == nil,
+      "a session resets it too")
+_ = idle.step(now: quitT0 + 21, inUse: false, needed: false)
+idle.reset()
+check(idle.step(now: quitT0 + 30, inUse: false, needed: false) == .stay,
+      "a probe that found the app needed starts the clock over")
+
+// The branch a session row shows, read out of .git/HEAD.
+let gitRoot = splitDir + "git/"
+try? FileManager.default.removeItem(atPath: gitRoot)
+func gitWrite(_ path: String, _ text: String) {
+    let full = gitRoot + path
+    try! FileManager.default.createDirectory(atPath: (full as NSString).deletingLastPathComponent,
+                                             withIntermediateDirectories: true)
+    try! text.write(toFile: full, atomically: true, encoding: .utf8)
+}
+gitWrite("repo/.git/HEAD", "ref: refs/heads/main\n")
+try! FileManager.default.createDirectory(atPath: gitRoot + "repo/sub/deeper", withIntermediateDirectories: true)
+gitWrite("repo/.git/worktrees/wt/HEAD", "ref: refs/heads/feature/x\n")
+gitWrite("wt/.git", "gitdir: ../repo/.git/worktrees/wt\n")
+gitWrite("det/.git/HEAD", String(repeating: "ab12", count: 10) + "\n")
+try! FileManager.default.createDirectory(atPath: gitRoot + "plain", withIntermediateDirectories: true)
+let branches = GitBranches()
+check(branches.branch(gitRoot + "repo/sub/deeper") == "main", "a cwd inside a repo finds its HEAD upward")
+check(branches.branch(gitRoot + "wt") == "feature/x", "a worktree's relative gitdir is followed")
+check(branches.branch(gitRoot + "det") == "ab12ab1", "a detached HEAD shows a short SHA")
+check(branches.branch("") == "", "no cwd, no branch")
+let plainBranch = branches.branch(gitRoot + "plain")
+gitWrite("plain/.git/HEAD", "ref: refs/heads/dev\n")
+if plainBranch == "" {   // only if the temp directory is not itself inside a repository
+    check(branches.branch(gitRoot + "plain") == "", "a confirmed non-git directory is cached")
+    check(branches.fresh(gitRoot + "plain") == "dev", "a hook event re-reads a directory that just became a repo")
+}
+try! FileManager.default.removeItem(atPath: gitRoot + "det/.git/HEAD")
+check(branches.branch(gitRoot + "det") == "" && branches.headCache[gitRoot + "det"] == nil,
+      "a HEAD that went away drops its cached resolution")
+branches.keep(only: [gitRoot + "wt"])
+check(Array(branches.headCache.keys) == [gitRoot + "wt"], "only directories still in use stay cached")
+check(GitBranches.branch(fromHead: "ref: refs/tags/v1") == "v1", "any other ref shows its last component")
+check(GitBranches.branch(fromHead: String(repeating: "AB12", count: 10)) == "",
+      "uppercase hex is not a commit id git writes")
+
+
 print(failures == 0 ? "\nall model checks passed" : "\n\(failures) failed")
 exit(failures == 0 ? 0 : 1)

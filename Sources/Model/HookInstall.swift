@@ -247,3 +247,36 @@ enum HookInstall {
         problem ? age >= 10 : (noSessions && age >= 120)
     }
 }
+
+extension HookInstall {
+    /// Where a node may be, in the order they are tried. The two the hook commands put in front of
+    /// PATH come first, so whether the hooks' own node starts is always part of the answer.
+    /// `nvmVersions` is the listing of ~/.nvm/versions/node, in whatever order the disk gave it.
+    static func nodeCandidates(home: String, nvmVersions: [String]) -> [String] {
+        var candidates = hookPathPrefix.map { $0 + "/node" } + [
+            "/usr/bin/node",
+            "\(home)/.volta/bin/node",
+            "\(home)/.asdf/shims/node",
+        ]
+        let nvmDir = "\(home)/.nvm/versions/node"
+        // Component-wise, not alphabetical: as text "v9.11.2" sorts above "v20.19.0", so the
+        // newest-first intent picked the oldest Node on the machine — and the installer this
+        // runs uses APIs a Node that old does not have.
+        for v in nvmVersions.sorted(by: { ReleaseVersion.isNewer($0, than: $1) }) {
+            candidates.append("\(nvmDir)/\(v)/bin/node")
+        }
+        return candidates
+    }
+
+    /// The node a shell's `command -v node` named. The last line naming a node, not simply the
+    /// last line: stdout and stderr share one file there, and a .zshrc or .zlogout can print after
+    /// the answer.
+    static func shellAnswer(
+        _ output: String,
+        isExecutable: (String) -> Bool = FileManager.default.isExecutableFile(atPath:)
+    ) -> String? {
+        output.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .last { $0.hasPrefix("/") && $0.hasSuffix("/node") && isExecutable($0) }
+    }
+}
