@@ -18,9 +18,9 @@ from, and are kept so the history reads continuously.
   With animations off or Reduce Motion, the row holds the raised-hand frame.
 
 ### Fixed
-- **Accepted Codex question cards trigger Needs you.** Answers clear each question separately;
-  completing or starting a turn clears unanswered cards. Codex does not report local card
-  dismissal, so Skip and closing a card can leave the mark until the turn ends.
+- **Optional Codex question cards no longer leave a stale Needs you status.** Codex can close
+  these cards without recording their closure in the session log. Only blocking input requests
+  trigger the attention status and sound, which clear after an answer or a turn boundary.
 
 ## [0.24.2] - 2026-10-07
 

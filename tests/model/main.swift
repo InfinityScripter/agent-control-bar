@@ -327,41 +327,29 @@ let questionCall = codexLine(["type": "function_call", "name": "request_user_inp
                               "call_id": "q1", "arguments": questionArguments])
 let questionAccepted = codexLine(["type": "function_call_output", "call_id": "q1",
                                   "output": #"{"accepted":true}"#])
-func codexQuestionReply(_ index: Int, callID: String = "q1") -> String {
+func codexQuestionReply(_ index: Int) -> String {
     let questionId = String(decoding: try! JSONSerialization.data(
-        withJSONObject: ["request_user_input_async", callID, index]), as: UTF8.self)
+        withJSONObject: ["request_user_input_async", "q1", index]), as: UTF8.self)
     let answer = String(decoding: try! JSONSerialization.data(
         withJSONObject: [["questionItemId": questionId, "answer": "yes"]]), as: UTF8.self)
     return codexLine(["type": "message", "role": "user", "content": [["type": "input_text",
         "text": "<send_user_message_question_reply>\n\(answer)\n</send_user_message_question_reply>"]]])
 }
-let codexQuestionPath = writeTranscript("codex-question.jsonl", lines: [questionCall])
+let codexQuestionPath = writeTranscript("codex-question.jsonl", lines: [questionCall, questionAccepted])
 let codexQuestionSession = Session(json: ["provider": "codex", "state": "tool",
                                           "transcript": codexQuestionPath, "ts": nowTs,
                                           "pid": 1], id: "codex-question")
 check(engine.effectiveState(codexQuestionSession, now: nowTs) == "tool",
-      "an async question waits for the desktop to accept its card")
+      "an accepted async question cannot prove its locally dismissible card is still open")
 func appendCodexLine(_ line: String, to path: String) {
     let file = FileHandle(forWritingAtPath: path)!
     try! file.seekToEnd()
     try! file.write(contentsOf: Data(("\n" + line).utf8))
     try! file.close()
 }
-appendCodexLine(questionAccepted, to: codexQuestionPath)
-check(engine.effectiveState(codexQuestionSession, now: nowTs) == "permission",
-      "an accepted async Question needs the user while Codex keeps working")
-appendCodexLine(codexLine(["type": "function_call_output", "call_id": "another", "output": "ok"]),
-                to: codexQuestionPath)
-appendCodexLine(codexQuestionReply(0, callID: "another"), to: codexQuestionPath)
-check(engine.effectiveState(codexQuestionSession, now: nowTs) == "permission",
-      "an unrelated tool output or card reply does not clear the async Question")
 appendCodexLine(codexQuestionReply(0), to: codexQuestionPath)
-check(engine.effectiveState(codexQuestionSession, now: nowTs) == "permission",
-      "answering one async question keeps the unanswered sibling marked")
-appendCodexLine(codexQuestionReply(0), to: codexQuestionPath)
-appendCodexLine(codexQuestionReply(99), to: codexQuestionPath)
-check(engine.effectiveState(codexQuestionSession, now: nowTs) == "permission",
-      "a duplicate or out-of-range answer does not clear an unanswered sibling")
+check(engine.effectiveState(codexQuestionSession, now: nowTs) == "tool",
+      "an unanswered optional async question does not block the session")
 appendCodexLine(codexQuestionReply(1), to: codexQuestionPath)
 check(engine.effectiveState(codexQuestionSession, now: nowTs) == "tool",
       "the Codex Question clears after all its answers arrive")
@@ -373,47 +361,6 @@ let completedQuestionSession = Session(json: ["provider": "codex", "state": "don
                                              "pid": 1], id: "codex-completed")
 check(engine.effectiveState(completedQuestionSession, now: nowTs) == "idle",
       "an unanswered async Question stops needing input when Codex ends the turn")
-
-let rejectedQuestionPath = writeTranscript("codex-question-rejected.jsonl", lines: [questionCall,
-    codexLine(["type": "function_call_output", "call_id": "q1", "output": #"{"accepted":false}"#]),
-])
-var rejectedQuestions = CodexRollout.Questions()
-check(!rejectedQuestions.pending(in: rejectedQuestionPath),
-      "a rejected async card never asks for attention")
-
-let parallelQuestionPath = writeTranscript("codex-question-parallel.jsonl", lines: [
-    questionCall, questionAccepted,
-    questionCall.replacingOccurrences(of: "\"q1\"", with: "\"q2\""),
-    questionAccepted.replacingOccurrences(of: "\"q1\"", with: "\"q2\""),
-    codexQuestionReply(0), codexQuestionReply(1),
-])
-var parallelQuestions = CodexRollout.Questions()
-check(parallelQuestions.pending(in: parallelQuestionPath),
-      "answering one async card leaves the other card pending")
-appendCodexLine(codexQuestionReply(0, callID: "q2"), to: parallelQuestionPath)
-appendCodexLine(codexQuestionReply(1, callID: "q2"), to: parallelQuestionPath)
-check(!parallelQuestions.pending(in: parallelQuestionPath),
-      "answering every card clears async attention")
-
-let singleAnswer = #"{"questionItemId":"[\"request_user_input_async\",\"q1\",1]","answer":"yes"}"#
-let singleQuestionReply = codexLine(["type": "message", "role": "user", "content": [
-    ["type": "input_text", "text": "<send_user_message_question_reply>\n\(singleAnswer)\n</send_user_message_question_reply>"],
-]])
-let splitReplyPath = writeTranscript("codex-question-split-reply.jsonl", lines: [
-    questionCall, questionAccepted, codexQuestionReply(0),
-    singleQuestionReply.replacingOccurrences(of: "\"role\":\"user\"", with: "\"role\":\"assistant\""),
-])
-var splitQuestions = CodexRollout.Questions()
-check(splitQuestions.pending(in: splitReplyPath), "a quoted assistant reply does not answer a card")
-let replyBytes = Data(singleQuestionReply.utf8)
-let splitReplyFile = FileHandle(forWritingAtPath: splitReplyPath)!
-try! splitReplyFile.seekToEnd()
-try! splitReplyFile.write(contentsOf: Data([10]) + replyBytes.prefix(replyBytes.count / 2))
-check(splitQuestions.pending(in: splitReplyPath), "a half-written user reply keeps the card pending")
-try! splitReplyFile.write(contentsOf: replyBytes.suffix(replyBytes.count - replyBytes.count / 2))
-try! splitReplyFile.close()
-check(!splitQuestions.pending(in: splitReplyPath),
-      "a complete single-object reply without a trailing newline answers the card")
 
 let blockingQuestionCall = codexLine(["type": "function_call", "name": "request_user_input",
                                       "call_id": "blocking", "arguments": questionArguments])
@@ -438,11 +385,6 @@ for boundary in ["task_complete", "turn_complete", "turn_aborted", "task_started
     check(questions.pending(in: path), "a blocking input request is pending before \(boundary)")
     appendCodexLine(#"{"type":"event_msg","payload":{"type":""# + boundary + #""}}"#, to: path)
     check(!questions.pending(in: path), "\(boundary) clears a previous turn's blocking request")
-    let asyncPath = writeTranscript("codex-async-question-\(boundary).jsonl", lines: [questionCall, questionAccepted])
-    var asyncQuestions = CodexRollout.Questions()
-    check(asyncQuestions.pending(in: asyncPath), "an async card is pending before \(boundary)")
-    appendCodexLine(#"{"type":"event_msg","payload":{"type":""# + boundary + #""}}"#, to: asyncPath)
-    check(!asyncQuestions.pending(in: asyncPath), "\(boundary) clears the previous async card")
 }
 
 // The interrupt net: Esc / deny write a marker record but fire no hook.
@@ -2578,21 +2520,6 @@ do {
     check(questionBoard.tick(now: now + 3, rules: rules,
                              pidAlive: { alive.contains($0) }, frontmost: { "com.other" })
             .lead?.eff == "thinking", "answering the Question restores the working state")
-    appendCodexLine(questionCall, to: questionPath)
-    appendCodexLine(questionAccepted, to: questionPath)
-    let asyncAsked = questionBoard.tick(now: now + 4, rules: rules,
-                                       pidAlive: { alive.contains($0) }, frontmost: { "com.other" })
-    check(asyncAsked.needsYou && asyncAsked.lead?.eff == "permission",
-          "an accepted async Codex Question cues and leads while the agent keeps thinking")
-    appendCodexLine(codexQuestionReply(0), to: questionPath)
-    let asyncPartial = questionBoard.tick(now: now + 5, rules: rules,
-                                         pidAlive: { alive.contains($0) }, frontmost: { "com.other" })
-    check(!asyncPartial.needsYou && asyncPartial.lead?.eff == "permission",
-          "a partial async answer keeps the amber state without replaying the cue")
-    appendCodexLine(codexQuestionReply(1), to: questionPath)
-    check(questionBoard.tick(now: now + 6, rules: rules,
-                             pidAlive: { alive.contains($0) }, frontmost: { "com.other" })
-            .lead?.eff == "thinking", "all async answers restore the working state")
     try? FileManager.default.removeItem(atPath: questionPath)
 }
 
