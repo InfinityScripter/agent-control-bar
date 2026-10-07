@@ -335,8 +335,8 @@ let codexQuestionPath = writeTranscript("codex-question.jsonl", lines: [question
 let codexQuestionSession = Session(json: ["provider": "codex", "state": "tool",
                                           "transcript": codexQuestionPath, "ts": nowTs,
                                           "pid": 1], id: "codex-question")
-check(engine.effectiveState(codexQuestionSession, now: nowTs) == "permission",
-      "an accepted Codex Question needs the user even while tools continue")
+check(engine.effectiveState(codexQuestionSession, now: nowTs) == "tool",
+      "an accepted async question cannot prove its locally dismissible card is still open")
 func appendCodexLine(_ line: String, to path: String) {
     let file = FileHandle(forWritingAtPath: path)!
     try! file.seekToEnd()
@@ -344,8 +344,8 @@ func appendCodexLine(_ line: String, to path: String) {
     try! file.close()
 }
 appendCodexLine(codexQuestionReply(0), to: codexQuestionPath)
-check(engine.effectiveState(codexQuestionSession, now: nowTs) == "permission",
-      "answering one of two questions leaves the other pending")
+check(engine.effectiveState(codexQuestionSession, now: nowTs) == "tool",
+      "an unanswered optional async question does not block the session")
 appendCodexLine(codexQuestionReply(1), to: codexQuestionPath)
 check(engine.effectiveState(codexQuestionSession, now: nowTs) == "tool",
       "the Codex Question clears after all its answers arrive")
@@ -357,6 +357,31 @@ let completedQuestionSession = Session(json: ["provider": "codex", "state": "don
                                              "pid": 1], id: "codex-completed")
 check(engine.effectiveState(completedQuestionSession, now: nowTs) == "idle",
       "an unanswered async Question stops needing input when Codex ends the turn")
+
+let blockingQuestionCall = codexLine(["type": "function_call", "name": "request_user_input",
+                                      "call_id": "blocking", "arguments": questionArguments])
+let blockingQuestionAnswer = codexLine(["type": "function_call_output", "call_id": "blocking",
+                                        "output": #"{"answers":{"first":"yes"}}"#])
+let blockingQuestionPath = writeTranscript("codex-blocking-question.jsonl", lines: [blockingQuestionCall])
+let blockingQuestionSession = Session(json: ["provider": "codex", "state": "tool",
+                                              "transcript": blockingQuestionPath, "ts": nowTs,
+                                              "pid": 1], id: "codex-blocking-question")
+check(engine.effectiveState(blockingQuestionSession, now: nowTs) == "permission",
+      "a blocking Codex input request still needs the user")
+appendCodexLine(codexLine(["type": "function_call_output", "call_id": "another", "output": "ok"]),
+                to: blockingQuestionPath)
+check(engine.effectiveState(blockingQuestionSession, now: nowTs) == "permission",
+      "another tool result does not clear a blocking input request")
+appendCodexLine(blockingQuestionAnswer, to: blockingQuestionPath)
+check(engine.effectiveState(blockingQuestionSession, now: nowTs) == "tool",
+      "answering a blocking input request restores the working state")
+for boundary in ["task_complete", "turn_aborted", "task_started", "turn_started"] {
+    let path = writeTranscript("codex-question-\(boundary).jsonl", lines: [blockingQuestionCall])
+    var questions = CodexRollout.Questions()
+    check(questions.pending(in: path), "a blocking input request is pending before \(boundary)")
+    appendCodexLine(#"{"type":"event_msg","payload":{"type":""# + boundary + #""}}"#, to: path)
+    check(!questions.pending(in: path), "\(boundary) clears a previous turn's blocking request")
+}
 
 // The interrupt net: Esc / deny write a marker record but fire no hook.
 let interrupted = writeTranscript("interrupted.jsonl", lines: [
@@ -2454,7 +2479,7 @@ do {
           "a session with no cwd is not a second location")
 
     let questionPath = NSTemporaryDirectory() + "ccb-board-question.jsonl"
-    try! [questionCall, questionAccepted].joined(separator: "\n")
+    try! blockingQuestionCall
         .write(toFile: questionPath, atomically: true, encoding: .utf8)
     let questionBoard = SessionBoard(engine: SessionEngine())
     disk["/codex/q.json"] = ["state": "tool", "transcript": questionPath, "pid": 13,
@@ -2463,7 +2488,7 @@ do {
     let asked = questionBoard.tick(now: now, rules: rules,
                                   pidAlive: { alive.contains($0) }, frontmost: { "com.other" })
     check(asked.needsYou && asked.lead?.eff == "permission",
-          "a Codex Question cues and leads while the raw hook state is tool")
+          "a blocking Codex Question cues and leads while the raw hook state is tool")
     check(!questionBoard.tick(now: now + 1, rules: rules,
                               pidAlive: { alive.contains($0) }, frontmost: { "com.other" }).needsYou,
           "a pending Codex Question does not cue again on the next tick")
@@ -2473,8 +2498,7 @@ do {
     check(!questionBoard.tick(now: now + 2, rules: rules,
                               pidAlive: { alive.contains($0) }, frontmost: { "com.other" }).needsYou,
           "a new hook event does not replay the sound while the Question remains open")
-    appendCodexLine(codexQuestionReply(0), to: questionPath)
-    appendCodexLine(codexQuestionReply(1), to: questionPath)
+    appendCodexLine(blockingQuestionAnswer, to: questionPath)
     check(questionBoard.tick(now: now + 3, rules: rules,
                              pidAlive: { alive.contains($0) }, frontmost: { "com.other" })
             .lead?.eff == "thinking", "answering the Question restores the working state")
