@@ -7,11 +7,15 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
-## [Unreleased]
+## [0.24.3] - 2026-10-08
 
 ### Changed
 - **The app is now Agent Control Bar.** The name reflects support for Claude Code and Codex.
   Existing settings, hooks and installation commands are preserved.
+- **Needs you sessions are highlighted in yellow.** An amber edge and stronger status text
+  keep waiting sessions visible when they use a mascot.
+- **Codex waves when it needs your input.** The gesture appears in session rows and the menu bar.
+  With animations off or Reduce Motion, the row holds the raised-hand frame.
 
 ### Fixed
 - **Accepted Codex question cards trigger Needs you.** Answers clear each question separately;
