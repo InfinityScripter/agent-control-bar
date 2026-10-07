@@ -187,8 +187,8 @@ struct PanelSessionRow: View {
                                 if !session.tag.isEmpty { PanelTag(text: session.tag).fixedSize() }
                             }
                             Text(session.subtitle)
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
+                                .font(.system(size: 11, weight: session.eff == "permission" ? .semibold : .regular))
+                                .foregroundStyle(session.eff == "permission" ? .primary : .secondary)
                                 .lineLimit(1)
                                 .truncationMode(.tail)
                         }
@@ -215,6 +215,13 @@ struct PanelSessionRow: View {
             if open { PanelSessionDetailView(detail: session.detail, pct: session.pct,
                                              assumed: session.assumed) }
         }
+        .background(session.eff == "permission"
+            ? Color(nsColor: StatusController.amber).opacity(0.16) : .clear)
+        .overlay(alignment: .leading) {
+            if session.eff == "permission" {
+                Rectangle().fill(Color(nsColor: StatusController.amber)).frame(width: 3)
+            }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(session.name), \(session.subtitle)"
             + (session.pct.map { ", context \($0)%" } ?? ""))
@@ -230,7 +237,7 @@ struct PanelSessionRow: View {
     @ViewBuilder
     private var marker: some View {
         if let atlas = store.petAtlas(of: session.provider) {
-            PetView(atlas: atlas, state: session.eff)
+            PetView(atlas: atlas, state: session.eff, provider: session.provider)
         } else if session.working {
             PanelSpinner().padding(.top, 4)
         } else {

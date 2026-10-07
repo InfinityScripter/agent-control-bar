@@ -26,8 +26,8 @@ enum PetRow: Int {
     /// question "is this session working" is answered in one place for the whole app
     /// (`isWorkingState`, Sessions.swift) — asking it again here with its own list of strings is
     /// how a state added hook-side lights up the spinner everywhere and leaves the pet resting.
-    static func forSessionState(_ eff: String) -> PetRow {
-        if eff == "permission" { return .waiting }
+    static func forSessionState(_ eff: String, provider: String = Provider.claude.id) -> PetRow {
+        if eff == "permission" { return provider == Provider.codex.id ? .waving : .waiting }
         return isWorkingState(eff) ? .running : .idle
     }
 

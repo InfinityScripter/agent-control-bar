@@ -16,9 +16,10 @@ extension StatusController {
             var render = barRenders[provider] ?? BarRender(agent: agent)
             render.agent = agent
             var chosen: MenuBarIcon? = provider == "claude" ? animStyle : .pet(codexPetID)
+            let petRow = PetRow.forSessionState(agent.lead?.eff ?? "idle", provider: provider)
             var ticks: [NSImage]?
             if case .pet(let id) = chosen, let pet = petIconFrames(id: id, provider: provider) {
-                let frames = pet.frames(for: agent.mood.petRow)
+                let frames = pet.frames(for: petRow)
                 if !frames.isEmpty { ticks = frames }
             }
             if chosen?.isPet == true && ticks == nil { chosen = provider == "claude" ? .crab : nil }
@@ -34,7 +35,9 @@ extension StatusController {
             case .pet: render.fps = PetIconFrames.fps; render.frameCount = max(1, ticks?.count ?? 1)
             case nil: render.fps = 1; render.frameCount = 1
             }
-            let motionKey = (chosen?.raw ?? provider) + "|" + (chosen?.variant(mood: agent.mood) ?? "")
+            let variant = chosen?.isPet == true ? String(petRow.rawValue)
+                                               : (chosen?.variant(mood: agent.mood) ?? "")
+            let motionKey = (chosen?.raw ?? provider) + "|" + variant
                 + (render.animate ? "|animated" : "|still")
             render.motion.update(key: motionKey, fps: render.fps, now: now)
             render.label = agent.lead.map { isActiveState($0.eff) ? statusText($0, eff: $0.eff) : "" } ?? ""

@@ -56,7 +56,7 @@ extension StatusController {
         petIconCache = petIconCache.filter { $0.key == "claude:" + claudeID || $0.key == "codex:" + codexPetID }
         let pet = provider == "codex" ? petLibrary().first { $0.id == id }
                                      : Pet.chosen(id, from: petLibrary())
-        let frames = pet.flatMap { PetIconFrames($0) }
+        let frames = pet.flatMap { PetIconFrames($0, provider: provider) }
         petIconCache[key] = frames
         return frames
     }

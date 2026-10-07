@@ -10,7 +10,7 @@
       "name": "claude-control-bar",
       "displayName": "Agent Control Bar",
       "source": "./",
-      "version": "0.24.2",
+      "version": "0.24.3",
       "description": "Claude Code and Codex sessions, context usage, account limits and MCP server and tool switches in the macOS menu bar.",
       "license": "MIT",
       "homepage": "https://github.com/InfinityScripter/agent-control-bar"

@@ -2129,6 +2129,12 @@ check(PetLoop(images: [], durations: []).index(at: 3) == 0,
       "an empty loop never indexes out of bounds")
 
 check(PetRow.forSessionState("permission") == .waiting, "a session that needs you is waiting")
+check(PetRow.forSessionState("permission", provider: "codex") == .waving,
+      "Codex attracts attention with a wave when it needs you")
+check(PetRow.forSessionState("thinking", provider: "codex") == .running,
+      "Codex resumes its working animation once the user answers")
+check(PetRow.forSessionState("idle", provider: "codex") == .idle,
+      "Codex rests once its turn ends")
 check(PetRow.forSessionState("thinking") == .running, "a thinking session is working")
 check(PetRow.forSessionState("tool") == .running, "so is one running a tool")
 check(PetRow.forSessionState("idle") == .idle, "a resting session rests")
@@ -2356,14 +2362,15 @@ func writeMarkedAtlas(_ marks: [(row: PetRow, x: Int, y: Int, w: Int, h: Int)], 
     try! rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: path))
 }
 
-// Deliberately three different blocks: the widest is in the running row and the tallest in the
+// Deliberately different blocks: the widest is in the running row and the tallest in the
 // idle one, so a trim taken from either row alone would be visibly wrong.
 // Together they cover x 40…159 and y 70…129 — 120 across by 60 down, which is 2:1.
 let iconDir = iconPetDir + "marked/"
 try? FileManager.default.createDirectory(atPath: iconDir, withIntermediateDirectories: true)
 try! petManifest("marked", name: "Marked").write(toFile: iconDir + "pet.json",
                                                  atomically: true, encoding: .utf8)
-writeMarkedAtlas([(.idle, 70, 70, 40, 60), (.running, 40, 80, 120, 30), (.waiting, 80, 90, 20, 20)],
+writeMarkedAtlas([(.idle, 70, 70, 40, 60), (.running, 40, 80, 120, 30), (.waiting, 80, 90, 20, 20),
+                  (.waving, 100, 110, 20, 20)],
                  to: iconDir + "spritesheet.png")
 
 /// Whether anything was drawn at that point of a finished icon, counted from the TOP left the way
@@ -2376,16 +2383,23 @@ func iconHasInk(_ image: NSImage, x: Int, y: Int) -> Bool {
 
 let markedPet = Pet.load(directory: iconDir)
 check(markedPet != nil, "the marked atlas loads as a pet at all")
-let barFrames = PetIconFrames(markedPet!, height: 18)
+let barFrames = PetIconFrames(markedPet!, height: 18, provider: "codex")
 check(barFrames != nil, "a pet with art in it can be cut down to the bar")
 
 if let barFrames {
     let idle = barFrames.frames(for: .idle)
     let running = barFrames.frames(for: .running)
     let waiting = barFrames.frames(for: .waiting)
+    let waving = barFrames.frames(for: .waving)
+    check(!waving.isEmpty, "the Codex Needs you gesture is available in the menu bar")
+    check(waving.first.map { image in
+        (0..<Int(image.size.width)).contains { x in
+            (0..<Int(image.size.height)).contains { y in iconHasInk(image, x: x, y: y) }
+        }
+    } ?? false, "the Codex Needs you gesture contains visible mascot pixels")
     check(!idle.isEmpty && !running.isEmpty && !waiting.isEmpty,
           "every animation the bar can ask for was cut")
-    let sizes = Set((idle + running + waiting).map { "\($0.size)" })
+    let sizes = Set((idle + running + waiting + waving).map { "\($0.size)" })
     check(sizes.count == 1,
           "one size across every animation, or the icon resizes when a session starts working")
     check(idle.first?.size.height == 18, "cut to the height the bar has room for")
