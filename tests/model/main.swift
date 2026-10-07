@@ -263,6 +263,10 @@ check(mangled.project.isEmpty && mangled.cwd.isEmpty && mangled.transcript.isEmp
 check(SessionFormat.prettyModel("claude-fable-5-1") == "Fable 5.1", "model id reads as a name")
 check(SessionFormat.prettyModel("claude-opus-4-8-20260101") == "Opus 4.8",
       "a date suffix is not a version component")
+for id in ["gpt-6.1-sol", "gpt-6-astra", "gpt-5.6-sol", "o3", "custom-model-v2"] {
+    check(SessionFormat.prettyModel(id) == id,
+          "a non-Claude model keeps its full identifier: \(id) -> \(SessionFormat.prettyModel(id))")
+}
 check(SessionFormat.prettyModel("") == "" && SessionFormat.prettyModel("2-x") == "2-x",
       "an unrecognized id is shown as is, not mangled")
 check(SessionFormat.compact(87_956) == "88k" && SessionFormat.compact(1_000_000) == "1M"
