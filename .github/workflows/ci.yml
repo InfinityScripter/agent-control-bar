@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Dispatched by release-bump.yml on the release branch it pushes: a pull request opened with
+  # a workflow's own token starts no pull_request run, so the release would otherwise go untested.
+  workflow_dispatch:
 
 # A superseded push to the same PR cancels the run it obsoletes — macOS runners are the slow,
 # scarce kind. Runs on main are never cancelled: every merge commit keeps its full record.
