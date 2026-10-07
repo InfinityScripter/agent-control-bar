@@ -7,16 +7,16 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
-## [Unreleased]
+## [0.24.3] - 2026-10-08
 
 ### Changed
 - **The app is now Agent Control Bar.** The name reflects support for Claude Code and Codex.
   Existing settings, hooks and installation commands are preserved.
 
 ### Fixed
-- **Accepted Codex question cards trigger Needs you.** Answers clear each question separately;
-  completing or starting a turn clears unanswered cards. Codex does not report local card
-  dismissal, so Skip and closing a card can leave the mark until the turn ends.
+- **Optional Codex question cards no longer leave a stale Needs you status.** Codex can close
+  these cards without recording their closure in the session log. Only blocking input requests
+  trigger the attention status and sound, which clear after an answer or a turn boundary.
 
 ## [0.24.2] - 2026-10-07
 
