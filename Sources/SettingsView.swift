@@ -111,6 +111,13 @@ private struct GeneralSettings: View {
         + "iTerm only — every other terminal keeps the old behaviour, because none of them tells "
         + "anyone which tab is which. Revoke it any time in Privacy & Security → Automation."
 
+    // Said here because "Hidden" is the one choice whose reach is not obvious from its name: it
+    // quiets the bar, not the panel or the sounds.
+    private static let agentFooter: String = "Which agent's sessions and limits the menu bar "
+        + "follows; the panel's sessions, limits and MCP servers follow the same choice. Hidden "
+        + "keeps only the icon in the menu bar — no status, timer or limit bars — and the panel "
+        + "still lists both agents when you click it."
+
     // Worth spelling out, because "reads your Codex sessions" sounds like more than it is: the
     // numbers are already on disk, and nothing but them is looked at.
     private static let codexFooter: String = "Codex records how much of your OpenAI limits is gone "
@@ -153,11 +160,20 @@ private struct GeneralSettings: View {
 
     var body: some View {
         Form {
-            Section("Menu bar") {
+            Section {
+                Picker("Show", selection: store.agentDisplay) {
+                    ForEach(AgentDisplay.allCases) { pick in
+                        Text(pick.title).tag(pick)
+                    }
+                }
                 // "in menu bar", because the dropdown rows keep their own timers regardless: a
                 // switch reading "Show timer" that leaves timers visible reads as broken.
                 Toggle("Timer in menu bar", isOn: store.showTimer)
                 Toggle("Thinking words", isOn: store.thinkingWords)
+            } header: {
+                Text("Menu bar")
+            } footer: {
+                Text(Self.agentFooter)
             }
             Section {
                 Toggle("Exact terminal focus", isOn: store.exactTerminalFocus)

@@ -38,6 +38,7 @@ final class PanelStore: ObservableObject {
         let revision: Int
         let checking: Bool
         let showingChange: Bool
+        let agents: AgentDisplay
     }
     private var mcpKey: MCPKey?
     private var mcpCache = PanelMCP()
@@ -55,7 +56,8 @@ final class PanelStore: ObservableObject {
         guard let controller else { return }
         let key = MCPKey(revision: controller.mcp.revision,
                          checking: controller.mcpChecking,
-                         showingChange: controller.mcp.freshChange() != nil)
+                         showingChange: controller.mcp.freshChange() != nil,
+                         agents: controller.agentDisplay)
         if mcpKey != key {
             mcpCache = PanelMCP(controller)
             mcpKey = key
@@ -443,12 +445,12 @@ extension PanelSnapshot {
         width = c.boxWidth
         contentCap = c.panelContentCap
         sessions = c.panelSessions(now: now)
-        offerOpenClaude = sessions.isEmpty && c.desktopRunning
+        offerOpenClaude = sessions.isEmpty && c.desktopRunning && c.agentDisplay.inPanel(Provider.claude.id)
         // Asked of every session this app knows about, not of the rows above: a Codex session that
         // has simply been resting longer than the hide-idle age is missing from the list too, and
         // saying "hidden — approve its hooks" about THAT one names the wrong cause entirely. Once
         // Codex writes down a session at all, its hooks are running, whatever else is unapproved.
-        codexHooksBlocked = c.codexHooksUntrusted > 0
+        codexHooksBlocked = c.codexHooksUntrusted > 0 && c.agentDisplay.inPanel(Provider.codex.id)
             && !c.sessions.values.contains { $0.provider == "codex" }
         codexHooksUntrusted = c.codexHooksUntrusted
         codexHooksChecking = c.codexHooksChecking
@@ -472,7 +474,12 @@ extension PanelMCP {
         // copy retaining every server's nested tool list.
         // Both agents in one picture. Concatenated rather than merged by name: two agents can
         // have a server of the same name, and they are two different servers.
-        let shown = c.mcp.visible + (c.codexServers ? c.codexMCP.visible : [])
+        // Each agent's half only while the agent setting shows that agent: a Codex-only panel
+        // listing Claude's servers would be the one place the other agent was still in view.
+        let agents = c.agentDisplay
+        let claudeShown = agents.inPanel(Provider.claude.id)
+        let codexShown = c.codexServers && agents.inPanel(Provider.codex.id)
+        let shown = (claudeShown ? c.mcp.visible : []) + (codexShown ? c.codexMCP.visible : [])
         live = shown.filter { $0.state == "ok" }.count
         visible = shown.count
         // Short on purpose: the header has to fit a title, this, and two buttons across 300pt,
@@ -480,12 +487,12 @@ extension PanelMCP {
         let on = shown.reduce(0) { $0 + $1.liveTools }
         let total = shown.reduce(0) { $0 + max($1.tools.count, $1.reportedTools ?? 0) }
         toolsLine = "\(on)/\(total) tools"
-        if let moved = c.mcp.freshChange() {
+        if claudeShown, let moved = c.mcp.freshChange() {
             change = Self.wording(moved)
             changeIsBad = !moved.down.isEmpty
         }
         checking = c.mcpChecking
-        let all = c.mcp.servers + (c.codexServers ? c.codexMCP.servers : [])
+        let all = (claudeShown ? c.mcp.servers : []) + (codexShown ? c.codexMCP.servers : [])
         groups = mcpGroups.compactMap { group in
             let servers = all
                 .filter { $0.source == group.key }
@@ -494,13 +501,14 @@ extension PanelMCP {
             return servers.isEmpty ? nil : PanelServerGroup(id: group.key, title: group.title,
                                                             servers: servers)
         }
-        waitingAuth = c.mcp.waitingAuth.map(mcpShortName)
+        waitingAuth = claudeShown ? c.mcp.waitingAuth.map(mcpShortName) : []
         // Both, joined, rather than one masking the other: when `claude mcp list` and Codex's
         // app-server fail at the same moment — a network volume unmounted, a machine asleep —
         // showing one reason and discarding the other sends the user looking in one place for a
         // problem that is in two. Claude's comes first; its failure is the one that can empty
         // the whole tab.
-        let reasons = [c.mcp.error, c.codexServers ? c.codexMCP.error : nil].compactMap { $0 }
+        let reasons = [claudeShown ? c.mcp.error : nil,
+                       codexShown ? c.codexMCP.error : nil].compactMap { $0 }
         error = reasons.isEmpty ? nil : reasons.joined(separator: " · ")
         // Asked of whichever reason carries it: the buttons this unlocks reset THIS app's
         // network-volume decision, and that decision is the app's, not one agent's.

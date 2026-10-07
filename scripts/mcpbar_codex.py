@@ -200,8 +200,10 @@ def merge_codex_limits(previous, fresh):
     уже прошёл. Именно это и видел пользователь: панель застревала на резервной шкале и не
     возвращалась к обычным, потому что возвращаться было не к чему.
 
-    Поэтому окна живут дольше снимка, который их принёс, и ключ у них парный — пул и kind:
-    резервное окно тоже приходит под kind "primary" и обязано лежать отдельно от обычного.
+    Каждый снимок заменяет ВСЕ окна своего пула: после смены подписки недельное окно может
+    переехать из secondary в primary, а secondary стать null. Сохранять старый secondary
+    означало бы показать второй недельный лимит с прежними процентами и временем сброса.
+    Другой пул сохраняется отдельно: резервное primary не заменяет обычное primary.
 
     Возраст записи — самый СТАРЫЙ из замеров: подпись «measured N min ago» одна на всю
     группу, и свежесть резервного окна ничего не говорит про обычное, снятое утром.
@@ -210,18 +212,20 @@ def merge_codex_limits(previous, fresh):
         stamp = window.get("ts")
         return stamp if isinstance(stamp, (int, float)) and not isinstance(stamp, bool) else 0
 
-    windows = {}
-    for window in codex_known_windows(previous) + codex_known_windows(fresh):
-        key = (window["pool"], window["kind"])
-        # Побеждает более поздний замер, а не более поздний аргумент: снимки приезжают из
-        # разных файлов сессий, и снимок из позавчерашней сессии не должен лечь поверх
-        # сегодняшнего только потому, что его прочитали вторым.
-        if key not in windows or measured(window) >= measured(windows[key]):
-            windows[key] = window
-    if not windows:
+    previous_windows = codex_known_windows(previous)
+    fresh_windows = codex_known_windows(fresh)
+    pools = {}
+    for windows in (previous_windows, fresh_windows):
+        for pool in ("codex", "reserve"):
+            snapshot = [w for w in windows if w["pool"] == pool]
+            # Старый файл не должен вернуть окно, удалённое новым снимком. Root ts — возраст
+            # всей группы, поэтому сравниваются замеры именно этого пула.
+            if snapshot and max(map(measured, snapshot)) >= max(map(measured, pools.get(pool, [])), default=0):
+                pools[pool] = snapshot
+    if not pools:
         return fresh
     record = dict(fresh)
-    record["windows"] = sorted(windows.values(),
+    record["windows"] = sorted((w for snapshot in pools.values() for w in snapshot),
                                key=lambda w: (w["pool"] != "codex",
                                               CODEX_WINDOW_ORDER.get(w["kind"], 2), w["kind"]))
     stamps = [w["ts"] for w in record["windows"]

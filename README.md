@@ -159,6 +159,7 @@ The animation follows the **Motion** setting like everything else in the panel: 
 
 **General**
 
+- **Show** — which agent the menu bar follows: **Claude Code**, **Codex**, **Both**, or **Hidden**. The panel's sessions, limits and MCP servers follow the same choice. Hidden leaves only the icon in the menu bar (no status, timer or limit bars), and the panel still lists both agents. Until you pick, it shows what the app always did: Claude Code, plus Codex once Codex is installed.
 - **Timer in menu bar** — the running turn's elapsed time next to the icon. The session rows always show theirs.
 - **Thinking words** — one of Claude Code's own spinner verbs ("Manifesting…") in place of "Thinking…".
 - **Limits via Anthropic API** — the usage poll behind the 5h/7d bars; off means the request never happens (see [PRIVACY.md](PRIVACY.md)).

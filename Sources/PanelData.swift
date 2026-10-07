@@ -15,7 +15,11 @@ extension StatusController {
         // Gate ONLY the desktop app: opening a conversation there seeds an idle session without
         // real activity, so a desktop session stays out until a prompt or tool fires. CLI, terminal
         // and editor sessions are launched deliberately and surface the moment they start.
+        // An agent the setting leaves out is not listed at all — not even as the one row kept below
+        // so the panel never goes empty: that row would be exactly the session asked not to show.
+        let agents = agentDisplay
         let ordered = sessions.values.sorted { $0.ts > $1.ts }.filter { s in
+            guard agents.inPanel(s.provider) else { return false }
             let gated = s.entrypoint == "claude-desktop"
             return !gated || s.started || isActiveState(effState(s, now: now))
         }

@@ -26,6 +26,13 @@ final class SessionBoard {
         var thinkingWords: [String]
         /// Whether a confirmed request for the user cues a sound at all.
         var needsYou: Bool
+        /// The agents allowed to lead the menu bar; nil is every agent. A session of an agent left
+        /// out still lives, is reaped and is counted — it just never speaks for the icon.
+        var leads: Set<String>? = nil
+        /// The agents whose finished turns chime and whose requests cue a sound; nil is every
+        /// agent. Separate from `leads`: hiding the menu bar status is not asking for silence
+        /// about the sessions the panel still lists.
+        var cues: Set<String>? = nil
     }
 
     struct Tick {
@@ -105,9 +112,12 @@ final class SessionBoard {
             }
             sessions[key] = s
             pickWord(s, from: rules.thinkingWords)
-            if completionEdge(s, now: now, threshold: rules.soundThreshold) { out.chime = true }
+            // The edge is tracked for every session, so switching an agent back on cannot fire a
+            // chime for a turn that ended while it was out of sight.
+            let cues = rules.cues?.contains(s.provider) ?? true
+            if completionEdge(s, now: now, threshold: rules.soundThreshold), cues { out.chime = true }
             // The frontmost-app lookup is a workspace query, so it runs only on a confirmed edge.
-            if rules.needsYou, s.eff == "permission", previousEffective != "permission",
+            if rules.needsYou, cues, s.eff == "permission", previousEffective != "permission",
                NeedsYouSound.shouldCue(prevState: previousEffective, effective: s.eff,
                                        hostBundle: s.termBundle, frontmost: frontmost()) {
                 out.needsYou = true
@@ -115,7 +125,7 @@ final class SessionBoard {
             prevState[key] = s.state
         }
         nameClones()
-        out.lead = sessions.values.max { a, b in
+        out.lead = sessions.values.filter { rules.leads?.contains($0.provider) ?? true }.max { a, b in
             let pa = Self.priority(of: a.eff), pb = Self.priority(of: b.eff)
             return pa == pb ? a.ts < b.ts : pa < pb
         }

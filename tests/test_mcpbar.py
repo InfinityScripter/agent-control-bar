@@ -2105,6 +2105,39 @@ class CodexLimits(unittest.TestCase):
         self.assertEqual([(w["pool"], w["used_percentage"]) for w in merged["windows"]],
                          [("codex", 4), ("reserve", 29)])
 
+    def test_смена_подписки_не_оставляет_старое_недельное_окно(self):
+        previous = {"ts": 1_789_000_000, "source": "rollout", "plan": "pro", "windows": [
+            self.window("primary", used=15, minutes=300),
+            self.window("secondary", used=15, minutes=10080, resets=1_789_605_481),
+            self.window("primary", pool="reserve", minutes=10080, resets=1_789_616_476),
+        ]}
+        fresh = mcpbar_codex.codex_limits_record({
+            "primary": {"used_percent": 7, "window_minutes": 10080,
+                        "resets_at": 1_789_621_616},
+            "secondary": None, "plan_type": "pro",
+        }, ts=1_789_020_000)
+        merged = mcpbar_codex.merge_codex_limits(previous, fresh)
+        self.assertEqual(merged["windows"], [
+            self.window("primary", ts=1_789_020_000, used=7, minutes=10080,
+                        resets=1_789_621_616),
+            previous["windows"][2],
+        ])
+        self.assertEqual(mcpbar_codex.merge_codex_limits(merged, fresh), merged)
+
+    def test_старый_снимок_не_возвращает_удалённое_окно(self):
+        previous = {"ts": 1_789_000_000, "source": "rollout", "windows": [
+            self.window("primary", ts=1_789_020_000, used=7, minutes=10080,
+                        resets=1_789_621_616),
+            self.window("primary", pool="reserve", minutes=10080, resets=1_789_616_476),
+        ]}
+        stale = {"ts": 1_789_010_000, "source": "rollout", "windows": [
+            self.window("primary", ts=1_789_010_000, used=15, minutes=300),
+            self.window("secondary", ts=1_789_010_000, used=15, minutes=10080,
+                        resets=1_789_605_481),
+        ]}
+        merged = mcpbar_codex.merge_codex_limits(previous, stale)
+        self.assertEqual(merged, previous)
+
     def test_возраст_записи_это_самый_старый_замер(self):
         """Подпись «measured N min ago» одна на всю группу, и врать она обязана в свою
         сторону: свежесть резервного окна ничего не говорит про обычное, снятое утром."""

@@ -70,6 +70,15 @@ own spec in `docs/motion.md`.
 `refactor`, `docs`, `perf`. Explain *why* in the body — most fixes here exist because something
 was measured, and the measurement belongs in the message.
 
+## Releasing
+
+A user-facing change adds a line under `## [Unreleased]` in `CHANGELOG.md`: that section becomes
+the release notes and the app's "What's new" window. To cut a release, run **Actions → Release
+bump** and pick patch, minor or major. It opens a `release: x.y.z` pull request with the new
+version in both manifests and the Unreleased section named for it; merging that pull request is
+the release (`release.yml` tags it, builds the DMG and publishes it). The same bump runs locally
+as `node tools/release/bump.js <patch|minor|major>`.
+
 ## License
 
 MIT, same as upstream. Copyright for the original work remains with Mick Cesanek.
