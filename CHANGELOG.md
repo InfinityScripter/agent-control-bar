@@ -7,6 +7,15 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.24.2] - 2026-10-07
+
+### Fixed
+- **Codex limits follow the current subscription's windows.** When a plan changes from a
+  session-and-weekly pair to a single weekly window, the old weekly card is removed instead of
+  appearing twice and overriding the current percentage and reset time. Each fresh snapshot
+  replaces its own pool's windows, preserves the other pool, and rejects older snapshots that
+  would restore removed windows.
+
 ## [0.24.1] - 2026-10-07
 
 ### Fixed
