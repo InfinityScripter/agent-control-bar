@@ -4,14 +4,14 @@
   "owner": {
     "name": "Talalaev M"
   },
-  "description": "Claude Code in the macOS menu bar: sessions, context window, MCP servers and tools, usage limits.",
+  "description": "Claude Code and Codex in the macOS menu bar: sessions, context usage, account limits and MCP servers and tools.",
   "plugins": [
     {
       "name": "claude-control-bar",
-      "displayName": "Claude Control Bar",
+      "displayName": "Agent Control Bar",
       "source": "./",
       "version": "0.24.2",
-      "description": "Live sessions with context-window usage, MCP server and per-tool switches, and 5h/7d limit bars — in the macOS menu bar.",
+      "description": "Claude Code and Codex sessions, context usage, account limits and MCP server and tool switches in the macOS menu bar.",
       "license": "MIT",
       "homepage": "https://github.com/InfinityScripter/agent-control-bar"
     }

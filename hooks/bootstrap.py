@@ -66,7 +66,7 @@ def identity():
 ID = identity()
 BUNDLE_ID = ID.get("BUNDLE_ID", "io.github.infinityscripter.claude-control-bar")
 EXEC = ID.get("EXEC", "ClaudeControlBar")
-APP_NAME = ID.get("APP_NAME", "Claude Control Bar")
+APP_NAME = ID.get("APP_NAME", "Agent Control Bar")
 USER_APP = os.path.join(HOME, "Applications", APP_NAME + ".app")
 SYSTEM_APP = os.path.join("/Applications", APP_NAME + ".app")
 
@@ -110,6 +110,15 @@ def bundle_version(app):
         return info.get("CFBundleShortVersionString")
     except Exception:
         return None
+
+
+def installed_app(preferred):
+    # Keep existing installations in place, including Homebrew's old-named bundle. A new
+    # display name must not create another copy or launch an unrelated app with that filename.
+    for app in (preferred, os.path.join(os.path.dirname(preferred), "Claude Control Bar.app")):
+        if bundle_version(app):
+            return app
+    return None
 
 
 def running():
@@ -448,13 +457,19 @@ def main():
     # A brew/DMG install owns /Applications. Building over it would corrupt a bundle Homebrew
     # believes it manages, and both copies would sit in the menu bar at once. The plugin defers
     # to it and builds its own copy only when that slot is empty.
-    if bundle_version(SYSTEM_APP):
+    system_app = installed_app(SYSTEM_APP)
+    if system_app:
         if not running() and may_launch(payload):
-            subprocess.Popen(["/usr/bin/open", "-g", "-b", BUNDLE_ID],
+            subprocess.Popen(["/usr/bin/open", "-g", system_app],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return 0
 
-    if bundle_version(USER_APP) != plugin_version():
+    user_app = installed_app(USER_APP) or USER_APP
+    if os.path.lexists(user_app) and not bundle_version(user_app):
+        log_problem_once("cannot build the app: destination is not a recognized installation: "
+                         + user_app + "\n")
+        return 0
+    if bundle_version(user_app) != plugin_version():
         if not toolchain_present():
             # No prompt-free swiftc anywhere: running build.sh would pop the system's
             # developer-tools dialog from a background hook (see toolchain_present). An older
@@ -463,7 +478,7 @@ def main():
             log_problem_once("cannot build the app: Xcode Command Line Tools are not "
                              "installed (run `xcode-select --install`); the plugin will "
                              "retry once they appear\n")
-            if not bundle_version(USER_APP):
+            if not bundle_version(user_app):
                 return 0
         else:
             # One build at a time. Claude Code runs every matching SessionStart hook in
@@ -478,7 +493,7 @@ def main():
             except OSError:
                 return 0
             try:
-                if not build(USER_APP):
+                if not build(user_app):
                     return 0
                 # The previous version is still resident; a fresh build has to replace it.
                 subprocess.run(["/usr/bin/pkill", "-x", EXEC], capture_output=True)
@@ -494,7 +509,7 @@ def main():
                 lock.close()
 
     if not running() and may_launch(payload):
-        subprocess.Popen(["/usr/bin/open", "-g", "-b", BUNDLE_ID],
+        subprocess.Popen(["/usr/bin/open", "-g", user_app],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return 0
 

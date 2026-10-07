@@ -1,19 +1,26 @@
-# Claude Control Bar
+# Agent Control Bar
 
-**English** | [Русский](README.ru.md)
+English | [Русский](README.ru.md)
 
 https://github.com/user-attachments/assets/f44cc709-94be-40b7-88b3-2d2d4231e837
 
-A macOS menu bar app for **Claude Code**. It shows what Claude is doing and lets you manage sessions, MCP servers and usage limits from the menu bar.
+A macOS menu bar app for Claude Code and OpenAI Codex. See which sessions are working, which need your answer, and how much context and usage allowance they have used. Open the panel to jump to a session or switch MCP servers and tools on or off.
 
-- **Sessions.** An animated icon while Claude works, a yellow dot when it waits for your permission, a turn timer and context-window usage for each session. Click a session to focus the terminal or editor it runs in, or, with **Exact terminal focus** switched on, the exact window and tab.
-- **MCP.** Every server and every tool has its own switch. Mute a tool and it drops out of Claude's context at the next session start.
-- **Codex too.** If you also run **OpenAI Codex**, its sessions show up in the same list as Claude's: same states, same turn timer, same context figure, same "needs you" dot, and its MCP servers sit in the same tab with switches. Clicking a Codex row lands you where the session can actually be read: a desktop session opens its conversation through Codex's `codex://threads/` link, a terminal one raises its terminal. One catch: Codex asks you once to trust the hooks. Until you approve, its sessions stay invisible, and the panel says so rather than just looking empty; see [If you also use Codex](#if-you-also-use-codex) for what that approval covers. All of it is read from what Codex already writes on this machine.
-- **Limits.** The 5-hour and 7-day usage bars live in the menu bar; the panel lists them with reset times, plus Fable's weekly window on plans that have one. If you also use **OpenAI Codex**, its own windows appear beside Claude's, read from the session file Codex writes itself, without a token or a request.
+<img src="docs/screenshots/menu-bar.png" alt="Claude and Codex side by side in the menu bar, each with its own icon, status, timer and limit bars" width="680">
+
+With **Both** selected, Claude and Codex each get a block in the menu bar. Their status, timer and limits are independent; clicking either opens the same panel.
+
+The screenshots use demo sessions and example values from the current `main` build. A DMG contains the features of its published release; newer source changes need a new release.
 
 ## Install
 
-### As a Claude Code plugin (recommended)
+You need macOS 13+, Node.js and the system `/usr/bin/python3`, plus Claude Code or Codex. The plugin needs Claude Code and Xcode Command Line Tools. The DMG is already compiled and works with a Codex-only setup.
+
+The plugin command and DMG filename still use `claude-control-bar`. Existing installations keep their settings. If your installed copy is still named `Claude Control Bar.app`, use that name in the commands below.
+
+### Claude Code plugin
+
+Run these commands inside Claude Code:
 
 ```bash
 /plugin marketplace add InfinityScripter/agent-control-bar
@@ -23,202 +30,196 @@ A macOS menu bar app for **Claude Code**. It shows what Claude is doing and lets
 /plugin install claude-control-bar
 ```
 
-The app compiles from source on your Mac at the next session start, so you need the Xcode Command Line Tools (`xcode-select --install`). Updates arrive with the plugin.
+The next session start builds the app on your Mac. Install the Command Line Tools with `xcode-select --install` if needed; the first build can take a few minutes. Plugin updates come through Claude Code.
 
 ### DMG
 
-1. Download `claude-control-bar.dmg` from [the latest release](../../releases/latest).
-2. Drag **Claude Control Bar** into Applications.
-3. Launch it once to install the hooks. With no Claude session running it may quit again right away, and that's fine: the hooks are in.
+1. Download `claude-control-bar.dmg` from [the latest release](https://github.com/InfinityScripter/agent-control-bar/releases/latest).
+2. Drag Agent Control Bar into Applications.
+3. Launch it once to install its hooks, then start a new Claude Code or Codex session.
 
-> [!IMPORTANT]
-> The DMG isn't notarized, so macOS blocks the first launch. Open **System Settings → Privacy & Security** and press **Open Anyway**, or run
-> `xattr -dr com.apple.quarantine "/Applications/Claude Control Bar.app"`.
+The DMG is not notarized. If macOS blocks the first launch, open **System Settings → Privacy & Security → Open Anyway**, or run:
 
-Updating a DMG install is one click. When a newer release is out, the panel opens with an **Update available** card. Click it to read what changed, then **Download and install**. The app fetches the release DMG from GitHub and checks its size and SHA-256 against what GitHub advertises, and, once release signing is set up, its Ed25519 signature against the key built into the app. Then it swaps itself in place and restarts. An image without a digest is not installed. No Gatekeeper prompt the second time: the app clears the quarantine flag from the copy it installs itself.
+```bash
+xattr -dr com.apple.quarantine "/Applications/Agent Control Bar.app"
+```
 
-Pick one install channel. If both are installed every hook runs twice; the app resolves the conflict in favor of the plugin, but there is no reason to keep both.
+Choose one install channel. The plugin takes ownership of the hooks if both are present.
 
-## First launch
+## First session
 
-The app lives in the **menu bar**, in the top-right corner of the screen, next to the clock. It has no Dock icon. Clicking the icon drops a panel under it; Settings (⌘,) opens a window of its own, and while that window is open the app appears in the Dock like any other, going back to icon-only when you close it. You don't open it yourself: it starts with the first Claude Code session and quits when the last one ends.
+Look for the icon near the clock in the menu bar. Click it to open **Sessions** and **MCP**; limits stay above both tabs. Click **Settings** at the bottom or press ⌘, to open settings. The app has no Dock icon unless that window is open.
 
-After installing:
+Session hooks start the app automatically. It stays open while it detects active sessions or agent processes, or while its panel or settings are open. A manual launch with no active session may close again after installing the hooks.
 
-1. **Start a new Claude Code session** — `claude` in a terminal, or a Code session in the desktop app. Sessions that were already open before the install show up only after their next prompt or tool call.
-2. **Plugin channel: wait out the first build.** The first session start compiles the app from source, which takes a minute or three; the icon appears when the build finishes. If it never does, look in `~/.claude/control-bar/problems.log`.
-3. **Find the crab in the menu bar.** With no session working it sleeps; it walks while Claude works, and a yellow dot means a session waits for your permission. Click the icon: the panel has two tabs, **Sessions** and **MCP**, with the usage limits pinned above both; the settings have a window of their own.
+Start a new session after installation. An existing Claude Code session may appear after its next prompt or tool call. For a plugin install, let the first build finish before looking for the icon. Build failures are recorded in `~/.claude/control-bar/problems.log`.
 
-No icon?
+### Approve the Codex hooks
 
-- A DMG-installed app opened by hand **quits right away when no session is active**. That's by design, not a crash. Launch it once so it installs its hooks, then start a session.
-- The most common cause is a full menu bar: macOS parks items that don't fit behind the `›` overflow chevron, which from the outside looks exactly like "the app didn't start". Cmd-drag a few icons out of the bar to free a slot.
-- `pgrep -x ClaudeControlBar` in a terminal: a number means the app is running and only the icon is hidden; no output means it isn't: start a session, or see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+Installation adds eight hooks to `~/.codex/hooks.json` and preserves your other entries. Codex requires approval before it runs them. Until then, the bar cannot receive Codex session state, and the panel shows a hook notice. Codex still writes its own session files.
 
-### If you also use Codex
+Click **Approve** in that notice or in **Settings → General → Codex**. You can also approve the hooks in Codex's own review screen. **What gets approved** reveals `~/.codex/hooks.json` so you can inspect the commands first. The app asks Codex to approve only its own entries, and only after your click.
 
-Codex has a hook system of its own, and the app uses it the same way it uses Claude Code's. On install it merges eight entries into `~/.codex/hooks.json`; hooks you put there yourself are left untouched.
+**Settings → About → Install hooks again** repairs the installation; approval is a separate step. To remove the hooks, use the [uninstall instructions](#uninstall) below.
 
-**Codex runs no hook it hasn't been told to trust.** Approve them once (with **Approve** in the panel or in **Settings → Codex**, with **Install hooks again** in **Settings → About**, or on the review screen Codex itself shows) and Codex sessions appear in the panel beside Claude's. The app approves only on your click, never on its own at launch, and only its own eight entries: Codex records the approval with the hash it computes itself, exactly as its review screen would. Until then Codex writes down no session at all, and the Sessions tab says exactly that rather than looking like Codex isn't running.
+<details>
+<summary>What the Codex hooks do</summary>
 
-Codex's desktop app lists hooks under **Settings → Hooks** only for the projects open in it, so with no project open that page reads *No hooks found* even while `~/.codex/hooks.json` holds this app's entries.
+The hooks run two local scripts, `~/.claude/control-bar/update.js` and `lifecycle.js`, on session start/end, prompts, tool calls, permission requests, stop and interrupt events.
 
-Approving means saying yes to eight shell commands, so here is what is behind them:
-
-| | |
+| Action | Scope |
 | --- | --- |
-| **Which scripts** | `~/.claude/control-bar/update.js` on six events (`UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop`, `Interrupt`) and `~/.claude/control-bar/lifecycle.js` on `SessionStart` and `SessionEnd`. Both are installed by this app, and they are the same two files Claude Code's hooks run. |
-| **What they write** | One small JSON file per session under `~/.claude/control-bar/codex/state.d/`, mode `0600`: state, project folder, branch, turn id, context figure, pid. Everything else they write is in that same folder: a marker file that throttles the app-is-running check, and `problems.log` when a write fails. Nothing outside `~/.claude/control-bar/`. |
-| **What they read** | The hook payload on stdin, plus the first line and the tail of that session's own rollout file: the first line names the surface, the tail carries the token count Codex reports. |
-| **What they run** | `git status --porcelain` in the session's folder for the "uncommitted" count, `pgrep` to see whether the menu bar app is up, and `open -g -b …` to start it if it isn't. |
-| **What they send** | Nothing. The hooks make no network request of any kind. |
-| **Dependencies** | None: only Node's own `fs`/`os`/`path`/`child_process`, no npm packages. |
+| Read | The hook payload and the head/tail of that session's rollout file for its surface and token counts. |
+| Write | Small state files and diagnostic markers under `~/.claude/control-bar/codex/`. |
+| Run | `git status --porcelain` for the uncommitted-file count, `pgrep` to check the app, and `open -g -b …` to start it. |
+| Send | No network requests. The scripts use Node's built-in modules, without npm dependencies. |
 
-The panel's block for this has two buttons: **What gets approved** opens `~/.codex/hooks.json` in the Finder so you can read the real entries before deciding, and **Approve** has Codex record the approval, then asks it again. With nothing left to approve it only asks again, which is also the way to check an approval given inside Codex.
+More on local files and permissions: [PRIVACY.md](PRIVACY.md).
 
-Afterwards the standing answer lives in **Settings → Codex**: *Hooks approved*, *N hooks not approved*, or *not asked yet* when Codex hasn't been reachable to answer. To take the trust back, remove this app's entries from `~/.codex/hooks.json`, or run the uninstall script, which removes them for you, and Codex will ask again if they ever reappear.
+</details>
 
-## Usage
+## Read and open sessions
 
-Sessions, limits and MCP switches live in the panel under the menu bar icon; the settings have a window of their own. The app starts and quits on its own, as described above.
+<img src="docs/screenshots/sessions.png" alt="Sessions panel with Claude and Codex limits, several session states and an expanded Codex model and context row" width="430">
 
-### Crab mascot
+The yellow dot marks a session waiting for permission or an answer. Expand a row for model and context details. Codex keeps the complete model identifier, such as `gpt-6.1-sol`.
 
-**Crab Walking** is the default animation on a fresh install. The mascot changes with the number of Claude Code sessions working in parallel. Only sessions that are currently thinking or running a tool count; open but idle ones do not.
-
-| Working sessions | What the Crab does |
-| ---: | --- |
-| 0 | Sleeps |
-| 1 | Relaxes with a cigar |
-| 2–3 | Walks — at an easy pace with two sessions, at full tempo with three |
-| 4–5 | Turns red, sways and sweats |
-| 6+ | Its head catches fire |
-
-These previews use the same runtime frames and timing as the menu-bar app:
-
-| 0 · Sleeping | 1 · Cigar | 2–3 · Walking |
-| :---: | :---: | :---: |
-| ![Crab sleeping animation](assets/crab-moods/sleeping.gif) | ![Crab cigar animation](assets/crab-moods/cigar.gif) | ![Crab walking animation](assets/crab-moods/walking.gif) |
-| 4–5 · Overheated | 6+ · On fire | Permission needed |
-| ![Overheated Crab animation](assets/crab-moods/overheated.gif) | ![Crab on fire animation](assets/crab-moods/on-fire.gif) | ![Crab waiting for permission animation](assets/crab-moods/permission.gif) |
-
-When a session needs permission, the Crab switches to a separate waiting scene: it holds up a sign with a question mark, then looks at the screen. A yellow warning dot stays beside it, and the status text reads `Needs you`. Once permission is handled, it returns to the state for the current number of working sessions.
-
-The sprite is lit from the top left (a lighter rim on top, a darker one underneath), so it reads as a shape rather than a sticker at menu-bar size. In the System color it becomes a shaded monochrome silhouette. Inside a band the tempo follows the exact count: the sweating crab pants faster with a fifth session, and the fire flickers faster the more sessions burn.
-
-Server and tool switches apply to new sessions: Claude Code assembles the tool list at session start, so sessions that are already open keep their old set.
-
-### The menu bar icon
-
-**Settings → Appearance → Menu bar icon** is a chooser of pictures rather than a list of names: the three animations this app draws itself (Crab Walking, Claude Spark and Claude Code), followed by every pet it can find, each one playing at exactly the size the menu bar will show it. Eighteen points is small, and seeing it that small is the point: a character drawn for a panel row can turn out to be unreadable up there, and this is where it's worth finding out.
-
-A pet in the bar shows the same three things a pet in a row does: resting, working, waiting for you. The crab has six moods for the same job. The crab still says *how many* sessions are working; a pet says only that some are. That's a real difference, and it's why the crab remains the default.
-
-A pet is always drawn in its own colours, so the **Color** setting doesn't apply to one: Orange and System fill a single shape with a single colour, and a painted sprite has nothing left of itself once flattened into one. If the pet you chose goes away (you removed the ChatGPT app or deleted the folder), the bar falls back to the crab and your choice is kept, so the pet returns when it does.
-
-### Session pets
-
-The menu bar icon says how busy everything is at once. A **pet** says it one session at a time: a small animated character at the head of each session row in the panel, playing that session's own state.
-
-| Session | What the pet does |
+| State | What you see |
 | --- | --- |
-| Idle | Rests |
-| Thinking, or running a tool | Works |
-| Waiting for your permission | Looks up |
+| Idle | A resting icon or pet. |
+| Thinking or running a tool | An animated icon, current activity and elapsed turn time. |
+| Needs you | A yellow dot and a waiting icon or pet. |
 
-Pick one in **Settings → Appearance → Session rows**. The chooser shows the pets themselves rather than a list of names, each one animating, because a name like *Null Signal* tells you nothing about what will turn up beside your sessions. **None** puts back the dot and the spinner.
+Each row shows its project and branch, turn timer and context usage when available. The timer belongs to the current turn, not the whole session. Turning **Timer in menu bar** off leaves the row timers visible.
 
-Claude rows and Codex rows are chosen separately, so a list holding both agents can be told apart without reading it. Where the ChatGPT desktop app is installed, Codex rows start out with the Codex companion; Claude rows start out with the crab. There is no Codex chooser on a Mac with no Codex on it.
+Click a row to return to its terminal or editor. Codex desktop sessions open their conversation through a `codex://threads/` link when available. By default, a terminal click brings its app forward. **Settings → General → Exact terminal focus** targets the session's window and tab in Terminal or iTerm; it is off by default and requires macOS Automation permission.
 
-A pet can also stand in the menu bar itself; see [The menu bar icon](#the-menu-bar-icon).
+## Usage limits
 
-Three places are looked in, and the first one to claim a name keeps it:
+The bars show the percentage used. Claude's limits include its 5-hour and 7-day windows, plus a separate Fable weekly window on plans that report one. Reset times appear in the panel. Codex reports its own window lengths; they are not always a 5-hour/week pair.
 
-1. **This app.** One pet ships with it: Clawd, the menu bar crab, drawn from the very same frames, so the two can never fall out of step.
-2. **`~/.codex/pets`.** Codex's own pets folder. Anything installed there shows up, whether it came from Codex's `hatch-pet` or from one of the community galleries ([awesome-codex-pets](https://github.com/BeiXiao/awesome-codex-pets), [petdex](https://petdex.dev)). The folder is re-read every time the Settings window opens, so a pet installed while the app is running needs no restart.
-3. **The ChatGPT desktop app, if you have it.** It carries nine Codex companions inside itself, and they are read out of it where it sits: nothing is copied onto your disk. Remove that app and those pets go with it.
+Codex can report an ordinary pool and a reserve pool. The menu bar prefers the ordinary pool. If only reserve figures are available, it uses them and identifies the fallback in the tooltip. The panel lists all reported pools. A provider with no usable figures gets no limit bars; it does not inherit the other provider's numbers.
 
-These are the nine, each playing one loop of what it does in a session row: resting, working, then waiting for you. The previews are cut from the same sheets at the same tempo the panel uses.
+After a recorded reset time passes, that window shows zero used until the next measurement, with no old reset countdown. Codex snapshots without enough timing information are omitted.
 
-| | | |
+In **Settings → Appearance → Limits strip**, **Two rows** shows both providers together. **Switcher** gives one provider the full width; the other remains behind its tab, with a thin usage indicator under the name.
+
+Claude figures come from Anthropic's usage API using the OAuth token Claude Code stores locally. Turn **Limits via Anthropic API** off in General to stop the poll. Codex figures are read from local rollout files in `~/.codex/sessions`; **Codex limits** stops that read. No OpenAI token or API request is needed for them.
+
+## Switch MCP servers and tools
+
+<img src="docs/screenshots/mcp.png" alt="MCP tab with an expanded Claude server and its tool switches, plus a separate Codex server group" width="430">
+
+Expand a server to see its tools. Each server and tool has a switch, so you can keep a server available while disabling tools you do not use. Claude and Codex appear in separate groups.
+
+Claude Code picks up tool changes in new sessions. Codex changes are saved to its MCP configuration; if a current conversation keeps the old tool list, start a new session.
+
+**Check MCP now** (⌘R) refreshes health and tool counts. **Open settings.json** opens Claude's settings file. Claude switches are saved there with backups; Codex switches update its own MCP configuration.
+
+Health checks start configured MCP servers to ask for their tools. Remote servers may receive connections. If Codex server discovery is slow, turn **Codex MCP servers** off in General. The app sends macOS notifications when a server goes down or comes back; a **Notifications are off** notice opens the relevant System Settings page.
+
+## Choose what stays in the menu bar
+
+<img src="docs/screenshots/settings-general.png" alt="General settings with the Show selector, timer and thinking-word controls, limits options and Codex hook status" width="820">
+
+**Settings → General → Show** controls the menu bar and the panel's contents:
+
+| Show | Result |
+| --- | --- |
+| Claude Code | Claude's icon, status, timer and limits; Claude sessions and MCP servers in the panel. |
+| Codex | The same controls for Codex. |
+| Both | Two independent blocks in one menu bar item, with both agents in the shared panel. |
+| Hidden | An icon-only launcher. The panel and sounds still cover both agents. |
+
+Before you choose a mode, the app includes Codex when it is installed. **Thinking words** replaces *Thinking…* with Claude Code's spinner verbs, such as *Manifesting…*. Both blocks follow the timer and wording preferences.
+
+The settings window has five pages: General, Appearance, Motion, Sounds and About. General also holds the limits, MCP discovery, hook approval and anonymous-ping controls. About has update checks and hook repair.
+
+## Icons, pets and sounds
+
+<img src="docs/screenshots/settings-appearance.png" alt="Appearance settings with animated menu bar icon previews, separate Claude and Codex companions and limits layout choices" width="820">
+
+Pick Claude's icon in **Settings → Appearance → Menu bar icon**: Crab Walking, Claude Spark, the Claude Code spinner or a pet. **Color** offers Orange or System; pets keep their own colors. The separate **Session rows** chooser controls Claude's row icons. **Codex icon and session rows** chooses the companion for both Codex's menu bar block and its rows. **None** restores the plain row indicators.
+
+The default crab counts working sessions: it sleeps at zero, has a cigar at one, walks at two or three, sweats at four or five, and catches fire at six or more. Idle sessions do not count. When a session needs you, it holds up a question-mark sign. Pets show three states: resting, working and waiting.
+
+Clawd, the crab, comes with the app. The chooser also finds pets in `~/.codex/pets` and companions bundled with Codex or ChatGPT desktop apps. Reopen Settings after adding a pet; no restart is needed. If selected artwork disappears, Claude's menu bar icon falls back to the crab and Codex's to its glyph; the selection is kept.
+
+<details>
+<summary>Crab animation previews</summary>
+
+These GIFs use the app's animation frames and timing.
+
+| Sleeping | One working session | Two or three |
 | :---: | :---: | :---: |
-| **Codex** | **BSOD** | **Dewey** |
-| ![Codex, a Codex companion](assets/codex-pets/codex.gif) | ![BSOD, a Codex companion](assets/codex-pets/bsod.gif) | ![Dewey, a Codex companion](assets/codex-pets/dewey.gif) |
-| **Fireball** | **Hoots** | **Null Signal** |
-| ![Fireball, a Codex companion](assets/codex-pets/fireball.gif) | ![Hoots, a Codex companion](assets/codex-pets/hoots.gif) | ![Null Signal, a Codex companion](assets/codex-pets/null-signal.gif) |
-| **Rocky** | **Seedy** | **Stacky** |
-| ![Rocky, a Codex companion](assets/codex-pets/rocky.gif) | ![Seedy, a Codex companion](assets/codex-pets/seedy.gif) | ![Stacky, a Codex companion](assets/codex-pets/stacky.gif) |
+| ![Sleeping crab](assets/crab-moods/sleeping.gif) | ![Crab with a cigar](assets/crab-moods/cigar.gif) | ![Walking crab](assets/crab-moods/walking.gif) |
+| Four or five | Six or more | Needs you |
+| ![Sweating crab](assets/crab-moods/overheated.gif) | ![Crab on fire](assets/crab-moods/on-fire.gif) | ![Crab waiting for permission](assets/crab-moods/permission.gif) |
 
-Making your own is the same sprite sheet Codex uses: a transparent PNG or WebP, 192 × 208 cells, eight columns, one row per animation (idle, running right, running left, waving, jumping, failed, waiting, running, review). Either published size works: 1536 × 1872 for nine rows, or 1536 × 2288 for eleven. Put it in `~/.codex/pets/<name>/` beside a `pet.json` naming it, and it appears in the chooser. A sheet at any other size is skipped on its own and leaves the rest alone, which is what keeps a change to that format from taking the panel down with it. `tools/pet-sheet` builds this app's own sheet from the crab frames and is the worked example.
+</details>
 
-The animation follows the **Motion** setting like everything else in the panel: *Off*, or macOS's own Reduce Motion, leaves the pet standing still rather than removing it. It runs only while the panel is open.
+<details>
+<summary>Companion previews and custom pets</summary>
 
-### Settings
+These previews show a selection of Codex companions. Each cycles through resting, working and waiting.
 
-**Settings** at the bottom of the panel, or ⌘, — a window with five pages.
+| Codex | BSOD | Dewey |
+| :---: | :---: | :---: |
+| ![Codex companion](assets/codex-pets/codex.gif) | ![BSOD companion](assets/codex-pets/bsod.gif) | ![Dewey companion](assets/codex-pets/dewey.gif) |
+| Fireball | Hoots | Null Signal |
+| ![Fireball companion](assets/codex-pets/fireball.gif) | ![Hoots companion](assets/codex-pets/hoots.gif) | ![Null Signal companion](assets/codex-pets/null-signal.gif) |
+| Rocky | Seedy | Stacky |
+| ![Rocky companion](assets/codex-pets/rocky.gif) | ![Seedy companion](assets/codex-pets/seedy.gif) | ![Stacky companion](assets/codex-pets/stacky.gif) |
 
-**General**
+Community galleries: [awesome-codex-pets](https://github.com/BeiXiao/awesome-codex-pets) and [petdex](https://petdex.dev).
 
-- **Show** — which agent the menu bar follows: **Claude Code**, **Codex**, **Both**, or **Hidden**. The panel's sessions, limits and MCP servers follow the same choice. Hidden leaves only the icon in the menu bar (no status, timer or limit bars), and the panel still lists both agents. Until you pick, it shows what the app always did: Claude Code, plus Codex once Codex is installed.
-- **Timer in menu bar** — the running turn's elapsed time next to the icon. The session rows always show theirs.
-- **Thinking words** — one of Claude Code's own spinner verbs ("Manifesting…") in place of "Thinking…".
-- **Limits via Anthropic API** — the usage poll behind the 5h/7d bars; off means the request never happens (see [PRIVACY.md](PRIVACY.md)).
-- **Exact terminal focus** — off by default, and the only switch here that costs a macOS permission. Off, a click on a session brings its terminal to the front and macOS lands you on whichever window you used last; on, it jumps to the exact window and tab that session runs in. macOS asks once, on the next click, and the app explains what it is asking for first. Terminal and iTerm only: no other terminal publishes which tab is which, so the rest keep the old behaviour. Saying no also switches it back off, and you can revoke it any time in Privacy & Security → Automation.
-- **Codex limits** — Codex's own 5-hour and weekly windows in the strip, read from the newest file in `~/.codex/sessions`. Nothing is sent anywhere, and a figure older than the window it measures is dropped rather than shown, so the row disappears until Codex runs again. When Codex has moved you onto its **reserve** model (what it does once the ordinary limit runs out), the window says `RESERVE` rather than its length, because from then on the figure measures the reserve pool and not the limit you were watching.
-- **Codex MCP servers** — Codex's own servers in the MCP tab, in their own groups, with the same switches. Asking Codex for the tool names starts each configured server the way Codex itself does, so with a slow server this is the switch to turn off.
-- **Anonymous usage ping** — once a day: app version, macOS version, chip, install channel, and no identifier, so the project can count copies in use. Off means the request never happens; `CONTROL_BAR_NO_ANALYTICS=1` in the environment does the same. Exact bytes in [PRIVACY.md](PRIVACY.md).
+For a custom pet, put `pet.json` and a transparent PNG or WebP sprite sheet in `~/.codex/pets/<name>/`. Cells are 192 × 208, with eight columns. Accepted sheet sizes are 1536 × 1872 (nine rows) and 1536 × 2288 (eleven rows); other sizes are skipped. Rows describe idle, right/left movement, waving, jumping, failure, waiting, working and review. [tools/pet-sheet](tools/pet-sheet) builds Clawd's sheet as an example.
 
-**Appearance**
+</details>
 
-- **Menu bar icon** — Crab Walking (default), Claude Spark, Claude Code (the terminal glyph spinner), or any pet, each shown at the size the bar draws it. See [The menu bar icon](#the-menu-bar-icon).
-- **Color** — Orange, or System for an adaptive black/white icon. It does not apply to a pet, which is always drawn in its own colours.
-- **Session rows** — which pet stands at the head of each session row, or *None* for the plain dot and spinner. Claude rows and Codex rows are chosen separately. See [Session pets](#session-pets).
-- **Limits strip** — how the strip shows two providers. *Two rows* (default) stacks Claude and Codex, each under its own name and next reset. *Switcher* gives one the full width and puts the other behind a tab, with a hairline of its fullest window under the tab name. With one provider the strip is a single row either way.
+**Motion** controls panel transitions and session-row pets. Off stops those animations, Subtle (default) animates controls, and Expressive adds row entrances. macOS Reduce Motion limits movement and leaves panel pets still. Menu-bar status animations keep running; panel pets animate only while the panel is open.
 
-**Motion** — how much the panel itself moves. *Off* stops every animation; *Subtle* (default) moves the panel, its cards and its switches; *Expressive* adds a staggered entrance for the rows in a list. macOS's own Reduce Motion is honoured on top of the choice: movement becomes a crossfade rather than nothing at all, so a change of state is still visible.
+In **Sounds → When a turn finishes**, choose a chime after every turn or only after turns longer than 1, 5 or 15 minutes; it is off by default. **When Claude needs you** controls the attention sound for both agents. That sound stays quiet when the session's terminal or app is already in front. Choose Off, Tink, Purr, Ping, Glass, Hero or Submarine; selecting a sound plays a preview.
 
-**Sounds** — two events. *When a turn finishes*: off (default), every turn, or only turns longer than 1, 5 or 15 minutes. *When Claude needs you*: a short macOS alert sound the moment a session starts waiting for your permission — Tink by default, or Purr, Ping, Glass, Hero, Submarine; picking one plays it. It stays quiet when the terminal or app hosting that session is already in front: the prompt is on your screen and you don't need to hear about it.
+Sounds follow the **Show** selection. Both and Hidden cover both agents.
 
-**Check MCP now** (⌘R) and **Open settings.json** sit in the MCP tab's header rather than here: they are actions, not settings. Every server and tool switch is written to `~/.claude/settings.json`.
+## Privacy
 
-The app also posts a macOS notification when an MCP server goes down or comes back. If you declined notifications, a *Notifications are off* row in the panel opens the right System Settings pane.
+Session state, context figures and Codex limits are read locally. The app does not send your conversations or project paths to the developer. The hooks make no network requests.
 
-### Slash commands
+The app itself checks for updates, can poll Anthropic for Claude usage, and can connect to your configured MCP servers. Its anonymous usage ping is on by default: at most once a day, starting 24 hours after the first launch. It contains the app version, macOS major version, CPU architecture and install channel, with no device identifier. Turn **Anonymous usage ping** off in General, or set `CONTROL_BAR_NO_ANALYTICS` in the app's environment to any value.
 
-The plugin adds two commands inside Claude Code:
+[PRIVACY.md](PRIVACY.md) lists the network requests, local files, permissions and debug-log behavior.
 
-- `/mcp-health` — the MCP map as text: which servers answered, tool counts, what is switched off, plus the context window of every open session and the limits.
-- `/limits-capture install|uninstall|status` — the optional second source for the limit bars. It wraps your `statusLine` command so the figures refresh from the payload Claude Code hands it, fresher than the API poll while a terminal session is active; `uninstall` restores the previous command exactly.
+## Updates and Claude Code commands
 
-Layout knobs, `defaults write` switches and the diagnostic modes are listed in [TROUBLESHOOTING.md](TROUBLESHOOTING.md#knobs-and-diagnostics).
+Plugin installs update through Claude Code. For a DMG install, click the panel's **Update available** card, read the release notes, then choose **Download and install**. The app verifies the download's GitHub SHA-256 digest before replacing itself and restarting. **Settings → About → Check now** checks manually. Release history is in [CHANGELOG.md](CHANGELOG.md).
 
-The Claude limit figures come from the same Anthropic usage endpoint that the `/usage` command asks. The app polls it with the OAuth token Claude Code keeps in your Keychain and sends it to `api.anthropic.com` only. The poll has an off switch in Settings → General. The Codex figures are local: Codex records its own remaining limits into the session file it keeps in `~/.codex/sessions`, and the app reads the newest one: no token, no request, nothing sent. [PRIVACY.md](PRIVACY.md) lists every file the app writes and every request it makes.
+The plugin adds these commands inside Claude Code:
 
-## Requirements
-
-- macOS 13+
-- [Claude Code](https://claude.com/claude-code) (CLI or Desktop app)
-- Node.js and the system `/usr/bin/python3`
-- Xcode Command Line Tools for the plugin channel (it compiles the app locally); the DMG doesn't need them
+- `/mcp-health` prints server health, tool counts, disabled tools, session context and limits.
+- `/limits-capture install|uninstall|status` optionally wraps your `statusLine` command to read the limits Claude Code supplies. `uninstall` restores the previous command.
 
 ## Uninstall
 
-Installed as a plugin: run `/plugin uninstall claude-control-bar`, then drag `~/Applications/Claude Control Bar.app` to the Trash.
+For a plugin install, run `/plugin uninstall claude-control-bar`, then move `~/Applications/Agent Control Bar.app` to the Trash.
 
-Installed from the DMG:
+For a DMG install, remove the hooks first:
 
 ```bash
-node "/Applications/Claude Control Bar.app/Contents/Resources/uninstall.js"
+node "/Applications/Agent Control Bar.app/Contents/Resources/uninstall.js"
 ```
 
-The script removes the hooks; after that drag the app to the Trash. State lives in `~/.claude/control-bar/`.
+Then move the app to the Trash. If you installed it elsewhere, adjust the command's path. The script preserves other hooks and restores your previous `statusLine` command when possible. It does not delete the app or its data folder, `~/.claude/control-bar/`.
 
-## Troubleshooting
+## If the icon is missing
 
-See [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+Run `pgrep -x ClaudeControlBar`. A PID means the app is running; check whether other menu bar items leave it enough room. No output means it is not running: start a new session and check `~/.claude/control-bar/problems.log`. For Codex, also check hook approval in General.
 
-## Acknowledgements & license
+More fixes, layout controls and diagnostics: [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
-The project grew out of [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar) by Mick Cesanek, merged with [claude-mcp-bar](https://github.com/InfinityScripter/claude-mcp-bar). Contributors are listed in [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md).
+## Credits and license
 
-MIT, see [LICENSE](LICENSE). This is an unofficial project with no affiliation to Anthropic. "Claude" is a trademark of Anthropic, used nominatively.
+Agent Control Bar grew out of [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar) by Mick Cesanek and [claude-mcp-bar](https://github.com/InfinityScripter/claude-mcp-bar). See [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md) for contributors.
+
+Released under the [MIT license](LICENSE). This is an unofficial project, unaffiliated with Anthropic or OpenAI. "Claude" is a trademark of Anthropic.

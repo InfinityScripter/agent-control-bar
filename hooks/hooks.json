@@ -7,7 +7,7 @@
             "type": "command",
             "command": "/usr/bin/python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/bootstrap.py\"",
             "timeout": 300,
-            "statusMessage": "Claude Control Bar…"
+            "statusMessage": "Agent Control Bar…"
           },
           { "type": "command", "command": "PATH=\"/opt/homebrew/bin:/usr/local/bin${PATH:+:$PATH}\" node \"${CLAUDE_PLUGIN_ROOT}/hooks/lifecycle.js\" start" }
         ]

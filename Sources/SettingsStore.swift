@@ -160,7 +160,10 @@ final class SettingsStore: ObservableObject {
     // where this copy stands when someone comes looking for it. The one thing it follows live is
     // a check, since "Check now" is pressed here: the controller announces its start and its end.
 
-    var appName: String { controller?.appName ?? "Claude Control Bar" }
+    var appName: String {
+        controller?.appName ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String)
+            ?? ProcessInfo.processInfo.processName
+    }
     var version: String { controller?.currentVersion ?? "0" }
 
     /// The newer version on offer, or nil when this copy is current.

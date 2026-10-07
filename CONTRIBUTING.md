@@ -46,7 +46,7 @@ Visual polish and new animations too.
 macOS 12+, Swift toolchain (Command Line Tools), Node.js, and the system `/usr/bin/python3`.
 
 ```bash
-./build.sh          # -> "build/Claude Control Bar.app"
+./build.sh          # -> "build/Agent Control Bar.app"
 ./build.sh --dmg    # also builds a .dmg
 ```
 
