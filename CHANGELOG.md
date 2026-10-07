@@ -7,6 +7,14 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.24.1] - 2026-10-07
+
+### Fixed
+- **Codex no longer leaves a false “Needs you” status after an optional question disappears.**
+  Codex can dismiss these cards locally without recording their closure in the session log.
+  Optional async questions therefore no longer trigger the attention status or sound; blocking
+  input requests still do, and clear when answered or when the turn ends or a new turn starts.
+
 ## [0.24.0] - 2026-10-06
 
 ### Added
