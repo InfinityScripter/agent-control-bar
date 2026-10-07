@@ -5,13 +5,17 @@
 """
 
 import json
+import contextlib
+import io
 import os
+import plistlib
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks"))
 
@@ -149,7 +153,7 @@ class QuitIntent(unittest.TestCase):
         saved_platform = sys.platform
         bootstrap.bundle_version = (
             lambda app: system_version if app == bootstrap.SYSTEM_APP
-            else bootstrap.plugin_version())
+            else bootstrap.plugin_version() if app == bootstrap.USER_APP else None)
         bootstrap.running = lambda: False
         bootstrap.subprocess.Popen = lambda *a, **kw: launches.append(a[0]) or None
         sys.stdin = io.StringIO(json.dumps(payload))
@@ -180,6 +184,68 @@ class QuitIntent(unittest.TestCase):
         rc, launches = self._run_main({"source": "startup"}, system_version="9.9.9")
         self.assertEqual(rc, 0)
         self.assertEqual(len(launches), 1)
+
+
+class RenamedAppInstall(unittest.TestCase):
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        root = self._dir.name
+        self.system = os.path.join(root, "system", "Agent Control Bar.app")
+        self.user = os.path.join(root, "user", "Agent Control Bar.app")
+        self.old_system = os.path.join(root, "system", "Claude Control Bar.app")
+        self.old_user = os.path.join(root, "user", "Claude Control Bar.app")
+        self.stack = contextlib.ExitStack()
+        self.addCleanup(self.stack.close)
+        self.stack.enter_context(mock.patch.multiple(bootstrap, SYSTEM_APP=self.system, USER_APP=self.user,
+                                                    ROOT=root))
+        self.stack.enter_context(mock.patch.object(sys, "platform", "darwin"))
+        self.stack.enter_context(mock.patch.object(sys, "stdin", io.StringIO('{"source":"startup"}')))
+        for name in ("write_paths", "claim_hooks", "log_problem_once"):
+            self.stack.enter_context(mock.patch.object(bootstrap, name))
+        self.stack.enter_context(mock.patch.object(bootstrap, "running", return_value=False))
+        self.stack.enter_context(mock.patch.object(bootstrap, "toolchain_present", return_value=False))
+        self.build = self.stack.enter_context(mock.patch.object(bootstrap, "build", return_value=False))
+        self.launch = self.stack.enter_context(mock.patch.object(bootstrap.subprocess, "Popen"))
+
+    def write_bundle(self, path, bundle_id=None):
+        os.makedirs(os.path.join(path, "Contents"))
+        with open(os.path.join(path, "Contents", "Info.plist"), "wb") as fh:
+            plistlib.dump({"CFBundleIdentifier": bundle_id or bootstrap.BUNDLE_ID,
+                          "CFBundleShortVersionString": bootstrap.plugin_version()}, fh)
+
+    def test_existing_old_system_copy_is_launched_without_building_a_second_app(self):
+        self.write_bundle(self.old_system)
+        self.assertEqual(bootstrap.main(), 0)
+        self.build.assert_not_called()
+        self.launch.assert_called_once_with(["/usr/bin/open", "-g", self.old_system],
+                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def test_existing_old_user_copy_remains_usable_without_the_toolchain(self):
+        self.write_bundle(self.old_user)
+        self.assertEqual(bootstrap.main(), 0)
+        self.build.assert_not_called()
+        self.launch.assert_called_once_with(["/usr/bin/open", "-g", self.old_user],
+                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def test_current_name_is_preferred_when_both_system_copies_exist(self):
+        self.write_bundle(self.old_system)
+        self.write_bundle(self.system)
+        self.assertEqual(bootstrap.main(), 0)
+        self.launch.assert_called_once_with(["/usr/bin/open", "-g", self.system],
+                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def test_unrelated_bundle_with_old_name_is_not_launched(self):
+        self.write_bundle(self.old_system, "com.example.someone-else")
+        self.assertEqual(bootstrap.main(), 0)
+        self.launch.assert_not_called()
+
+    def test_unrelated_user_bundle_is_not_overwritten_by_a_build(self):
+        self.write_bundle(self.user, "com.example.someone-else")
+        with mock.patch.object(bootstrap, "toolchain_present", return_value=True):
+            self.assertEqual(bootstrap.main(), 0)
+        self.build.assert_not_called()
+        self.launch.assert_not_called()
 
 
 class BuildTimeout(unittest.TestCase):

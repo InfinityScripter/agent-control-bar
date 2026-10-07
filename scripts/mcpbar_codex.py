@@ -450,7 +450,7 @@ def codex_rpc(method, params=None, timeout=30):
     try:
         for request in ({"jsonrpc": "2.0", "id": 1, "method": "initialize",
                          "params": {"clientInfo": {"name": "claude-control-bar",
-                                                   "title": "Claude Control Bar",
+                                                   "title": "Agent Control Bar",
                                                    "version": "1"}}},
                         {"jsonrpc": "2.0", "id": 2, "method": method,
                          "params": params or {}}):

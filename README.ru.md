@@ -1,6 +1,8 @@
-# Claude Control Bar
+# Agent Control Bar
 
 [English](README.md) | Русский
+
+https://github.com/user-attachments/assets/f44cc709-94be-40b7-88b3-2d2d4231e837
 
 Приложение для строки меню macOS, которое следит за Claude Code и OpenAI Codex. Показывает, какие сессии работают, какие ждут вашего ответа, сколько контекста и лимитов израсходовано. Из панели можно вернуться к сессии или включить и выключить MCP-серверы и инструменты.
 
@@ -13,6 +15,8 @@
 ## Установка
 
 Нужны macOS 13+, Node.js, системный `/usr/bin/python3` и Claude Code или Codex. Плагину нужны Claude Code и Xcode Command Line Tools. В DMG приложение уже собрано; этот способ подходит и тем, кто пользуется только Codex.
+
+В команде установки плагина и имени DMG пока используется `claude-control-bar`. Настройки старых установок сохраняются. Если установленная копия ещё называется `Claude Control Bar.app`, используйте это имя в командах ниже.
 
 ### Плагин Claude Code
 
@@ -31,13 +35,13 @@
 ### DMG
 
 1. Скачайте `claude-control-bar.dmg` из [последнего релиза](https://github.com/InfinityScripter/agent-control-bar/releases/latest).
-2. Перетащите Claude Control Bar в «Программы».
+2. Перетащите Agent Control Bar в «Программы».
 3. Запустите приложение один раз, чтобы установить хуки, затем откройте новую сессию Claude Code или Codex.
 
 DMG не нотаризован. Если macOS блокирует первый запуск, откройте **Системные настройки → Конфиденциальность и безопасность → Всё равно открыть** или выполните:
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/Claude Control Bar.app"
+xattr -dr com.apple.quarantine "/Applications/Agent Control Bar.app"
 ```
 
 Выберите один способ установки. Если установлены оба, хуками управляет плагин.
@@ -144,7 +148,7 @@ Clawd, краб, поставляется с приложением. В выбо
 <details>
 <summary>Превью анимаций краба</summary>
 
-В GIF используются кадры и темп анимации приложения. В [раннем видеодемо](https://github.com/user-attachments/assets/f44cc709-94be-40b7-88b3-2d2d4231e837) можно посмотреть панель в работе.
+В GIF используются кадры и темп анимации приложения.
 
 | Сон | Одна работающая сессия | Две или три |
 | :---: | :---: | :---: |
@@ -198,12 +202,12 @@ Clawd, краб, поставляется с приложением. В выбо
 
 ## Удаление
 
-Если установили плагином, выполните `/plugin uninstall claude-control-bar`, затем переместите `~/Applications/Claude Control Bar.app` в Корзину.
+Если установили плагином, выполните `/plugin uninstall claude-control-bar`, затем переместите `~/Applications/Agent Control Bar.app` в Корзину.
 
 Если установили из DMG, сначала удалите хуки:
 
 ```bash
-node "/Applications/Claude Control Bar.app/Contents/Resources/uninstall.js"
+node "/Applications/Agent Control Bar.app/Contents/Resources/uninstall.js"
 ```
 
 Затем переместите приложение в Корзину. Если оно установлено в другой папке, измените путь в команде. Скрипт сохраняет чужие хуки и по возможности восстанавливает прежнюю команду `statusLine`. Само приложение и его папку данных, `~/.claude/control-bar/`, он не удаляет.
@@ -216,6 +220,6 @@ node "/Applications/Claude Control Bar.app/Contents/Resources/uninstall.js"
 
 ## Благодарности и лицензия
 
-Claude Control Bar вырос из [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar) Мика Цесанека и [claude-mcp-bar](https://github.com/InfinityScripter/claude-mcp-bar). Контрибьюторы перечислены в [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md).
+Agent Control Bar вырос из [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar) Мика Цесанека и [claude-mcp-bar](https://github.com/InfinityScripter/claude-mcp-bar). Контрибьюторы перечислены в [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md).
 
 [Лицензия MIT](LICENSE). Это неофициальный проект, не связанный с Anthropic или OpenAI. «Claude» — товарный знак Anthropic.

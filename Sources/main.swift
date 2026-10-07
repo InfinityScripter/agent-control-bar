@@ -113,7 +113,7 @@ final class StatusController: NSObject, NSWindowDelegate {
     let releasePageURL = "https://github.com/InfinityScripter/agent-control-bar/releases/latest"
     let brewCaskAPIURL = "https://formulae.brew.sh/api/cask/claude-control-bar.json"
     let brewUpgradeCommand = "brew upgrade --cask claude-control-bar"
-    let brewInstallCommand = "brew install --cask claude-control-bar && open -a \"Claude Control Bar\""
+    let brewInstallCommand = "brew install --cask claude-control-bar && open -b \"\(Bundle.main.bundleIdentifier ?? "")\""
     var whatsNewWindow: NSWindow?
     let logoSet: [NSImage] = Data(base64Encoded: claudeLogoPNG).flatMap(NSImage.init(data:)).map { [$0] } ?? []
     var lastLifecycleCheck: Double = 0  // the quit decision is sampled far slower than the UI

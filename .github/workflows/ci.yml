@@ -118,7 +118,7 @@ jobs:
       # wrong place to learn that the runner cannot do it — by then the release already exists
       # without its asset.
       - name: Build the app and the DMG
-        run: CONTROL_BAR_APP="$RUNNER_TEMP/Claude Control Bar.app" bash build.sh --dmg
+        run: CONTROL_BAR_APP="$RUNNER_TEMP/Agent Control Bar.app" bash build.sh --dmg
 
       # The DMG this run just proved it can build is worth keeping for a week: a reviewer of a
       # visual change installs it from the run page instead of building the branch by hand.
@@ -126,7 +126,7 @@ jobs:
       - name: Keep the DMG
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: Claude-Control-Bar-dmg
+          name: Agent-Control-Bar-dmg
           path: build/*.dmg
           retention-days: 7
           if-no-files-found: error
@@ -143,7 +143,7 @@ jobs:
       # against the text of build.sh — a hardcoded plist would otherwise pass review forever.
       - name: One version everywhere
         run: |
-          /usr/bin/python3 - "$RUNNER_TEMP/Claude Control Bar.app" <<'PY'
+          /usr/bin/python3 - "$RUNNER_TEMP/Agent Control Bar.app" <<'PY'
           import json, plistlib, sys
           want = json.load(open('.claude-plugin/plugin.json'))['version']
           market = json.load(open('.claude-plugin/marketplace.json'))['plugins']
@@ -163,7 +163,7 @@ jobs:
       # keeps the two from drifting apart, which is how a rename half-applies.
       - name: Identity is consistent
         run: |
-          /usr/bin/python3 - "$RUNNER_TEMP/Claude Control Bar.app" <<'PY'
+          /usr/bin/python3 - "$RUNNER_TEMP/Agent Control Bar.app" <<'PY'
           import plistlib, sys
           ident = {}
           for line in open('identity.env'):

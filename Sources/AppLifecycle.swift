@@ -73,7 +73,7 @@ extension StatusController {
             let theirs = other.bundleURL?.path ?? ""
             if systemWide && !theirs.hasPrefix("/Applications/") {
                 other.terminate()
-            } else if !systemWide {
+            } else {
                 NSLog("ClaudeControlBar: \(theirs) already running, standing down")
                 NSApp.terminate(nil)
                 return

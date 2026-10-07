@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Claude Control Bar are documented here. This project follows
+All notable changes to Agent Control Bar are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
 Entries up to and including 0.4.3 belong to
@@ -8,6 +8,15 @@ Entries up to and including 0.4.3 belong to
 from, and are kept so the history reads continuously.
 
 ## [Unreleased]
+
+### Changed
+- **The app is now Agent Control Bar.** The name reflects support for Claude Code and Codex.
+  Existing settings, hooks and installation commands are preserved.
+
+### Fixed
+- **Accepted Codex question cards trigger Needs you.** Answers clear each question separately;
+  completing or starting a turn clears unanswered cards. Codex does not report local card
+  dismissal, so Skip and closing a card can leave the mark until the turn ends.
 
 ## [0.24.2] - 2026-10-07
 

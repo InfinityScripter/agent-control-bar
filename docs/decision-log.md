@@ -1,4 +1,4 @@
-# Claude Control Bar: Decision Log
+# Agent Control Bar: Decision Log
 
 ---
 

@@ -1,6 +1,8 @@
-# Claude Control Bar
+# Agent Control Bar
 
 English | [Русский](README.ru.md)
+
+https://github.com/user-attachments/assets/f44cc709-94be-40b7-88b3-2d2d4231e837
 
 A macOS menu bar app for Claude Code and OpenAI Codex. See which sessions are working, which need your answer, and how much context and usage allowance they have used. Open the panel to jump to a session or switch MCP servers and tools on or off.
 
@@ -13,6 +15,8 @@ The screenshots use demo sessions and example values from the current `main` bui
 ## Install
 
 You need macOS 13+, Node.js and the system `/usr/bin/python3`, plus Claude Code or Codex. The plugin needs Claude Code and Xcode Command Line Tools. The DMG is already compiled and works with a Codex-only setup.
+
+The plugin command and DMG filename still use `claude-control-bar`. Existing installations keep their settings. If your installed copy is still named `Claude Control Bar.app`, use that name in the commands below.
 
 ### Claude Code plugin
 
@@ -31,13 +35,13 @@ The next session start builds the app on your Mac. Install the Command Line Tool
 ### DMG
 
 1. Download `claude-control-bar.dmg` from [the latest release](https://github.com/InfinityScripter/agent-control-bar/releases/latest).
-2. Drag Claude Control Bar into Applications.
+2. Drag Agent Control Bar into Applications.
 3. Launch it once to install its hooks, then start a new Claude Code or Codex session.
 
 The DMG is not notarized. If macOS blocks the first launch, open **System Settings → Privacy & Security → Open Anyway**, or run:
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/Claude Control Bar.app"
+xattr -dr com.apple.quarantine "/Applications/Agent Control Bar.app"
 ```
 
 Choose one install channel. The plugin takes ownership of the hooks if both are present.
@@ -144,7 +148,7 @@ Clawd, the crab, comes with the app. The chooser also finds pets in `~/.codex/pe
 <details>
 <summary>Crab animation previews</summary>
 
-These GIFs use the app's animation frames and timing. An [earlier video demo](https://github.com/user-attachments/assets/f44cc709-94be-40b7-88b3-2d2d4231e837) shows the panel in use.
+These GIFs use the app's animation frames and timing.
 
 | Sleeping | One working session | Two or three |
 | :---: | :---: | :---: |
@@ -198,12 +202,12 @@ The plugin adds these commands inside Claude Code:
 
 ## Uninstall
 
-For a plugin install, run `/plugin uninstall claude-control-bar`, then move `~/Applications/Claude Control Bar.app` to the Trash.
+For a plugin install, run `/plugin uninstall claude-control-bar`, then move `~/Applications/Agent Control Bar.app` to the Trash.
 
 For a DMG install, remove the hooks first:
 
 ```bash
-node "/Applications/Claude Control Bar.app/Contents/Resources/uninstall.js"
+node "/Applications/Agent Control Bar.app/Contents/Resources/uninstall.js"
 ```
 
 Then move the app to the Trash. If you installed it elsewhere, adjust the command's path. The script preserves other hooks and restores your previous `statusLine` command when possible. It does not delete the app or its data folder, `~/.claude/control-bar/`.
@@ -216,6 +220,6 @@ More fixes, layout controls and diagnostics: [TROUBLESHOOTING.md](TROUBLESHOOTIN
 
 ## Credits and license
 
-Claude Control Bar grew out of [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar) by Mick Cesanek and [claude-mcp-bar](https://github.com/InfinityScripter/claude-mcp-bar). See [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md) for contributors.
+Agent Control Bar grew out of [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar) by Mick Cesanek and [claude-mcp-bar](https://github.com/InfinityScripter/claude-mcp-bar). See [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md) for contributors.
 
 Released under the [MIT license](LICENSE). This is an unofficial project, unaffiliated with Anthropic or OpenAI. "Claude" is a trademark of Anthropic.

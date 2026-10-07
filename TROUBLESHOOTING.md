@@ -6,7 +6,7 @@ from the outside that is indistinguishable from an app that failed to start. Mea
 guessing:
 
 ```bash
-CONTROL_BAR_DIAGNOSE=1 "/Applications/Claude Control Bar.app/Contents/MacOS/ClaudeControlBar"
+CONTROL_BAR_DIAGNOSE=1 "/Applications/Agent Control Bar.app/Contents/MacOS/ClaudeControlBar"
 ```
 
 It prints the item's window frame against the screen and says which of the two it is. A real
@@ -33,7 +33,7 @@ a clock or a percentage) is usually enough. Cmd-drag rearranges menu bar items.
 - Make sure a Claude session is actually running, not just a terminal window open. Start a new session (or restart Claude Code) and the bar appears automatically.
 - A session that was already running *before* you installed won't show up until you start a fresh session.
 - Confirm it's running with `pgrep -x ClaudeControlBar`: a number means it's running (it may just be hidden), no output means it exited because no Claude session is active.
-- If first-launch setup never took, run the installer manually: `node "/Applications/Claude Control Bar.app/Contents/Resources/install.js"`. Installed as a plugin, the app lives in `~/Applications` instead.
+- If first-launch setup never took, run the installer manually: `node "/Applications/Agent Control Bar.app/Contents/Resources/install.js"`. Installed as a plugin, the app lives in `~/Applications` instead.
 
 **Sessions tab says *Session hooks aren't installed* or *Session hooks can't run*?** Every row comes from files the hooks write, so the app checks them itself: at launch, every few minutes while something is wrong, and when you open the panel on an empty Sessions tab. The line under the warning is the cause, taken from whatever failed:
 - `… does not start: Library not loaded: libllhttp.9.3.dylib` (or another library): Homebrew upgraded something node was built against. `brew upgrade node` fixes it; the warning clears on the app's next look, or press **Try again**.
@@ -59,7 +59,7 @@ the Sessions tab carries the line *Codex sessions hidden — approve its hooks* 
 showing nothing. An empty tab and an unapproved hook look identical otherwise, which is what
 sent people looking for a fault that was not there.
 
-Check what the app sees with `/usr/bin/python3 "/Applications/Claude Control Bar.app/Contents/Resources/scripts/mcpbar.py" doctor` — it prints the newest Codex session file it found, how many Codex MCP servers it knows about, and how many of our hooks Codex has not been told to trust.
+Check what the app sees with `/usr/bin/python3 "/Applications/Agent Control Bar.app/Contents/Resources/scripts/mcpbar.py" doctor` — it prints the newest Codex session file it found, how many Codex MCP servers it knows about, and how many of our hooks Codex has not been told to trust.
 
 **Seeing 2 icons?** The desktop app shows its own menu bar icon (the quick-screenshot one). To avoid two icons sitting side by side, open Claude's **Settings → General** and turn that built-in menu bar item off.
 
@@ -71,7 +71,7 @@ later check fails with `EPERM`, and macOS never asks again on its own. The panel
 under the failed check and offers both ways out:
 
 - **Grant access to network volumes…** opens System Settings → Privacy & Security → Files &
-  Folders — enable Claude Control Bar there; or
+  Folders — enable Agent Control Bar there; or
 - copy the **Ask again** command (`tccutil reset SystemPolicyNetworkVolumes <bundle id>`), run it
   in a terminal, and the original permission dialog returns on the next check.
 

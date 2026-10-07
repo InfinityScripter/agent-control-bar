@@ -1,9 +1,9 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "claude-control-bar",
-  "displayName": "Claude Control Bar",
+  "displayName": "Agent Control Bar",
   "version": "0.24.2",
-  "description": "macOS menu bar app for Claude Code: live sessions with context-window usage, MCP servers with per-tool switches, and 5h/7d limit bars. Fork of m1ckc3s/claude-status-bar merged with InfinityScripter/claude-mcp-bar.",
+  "description": "macOS menu bar app for Claude Code and Codex: session status, context usage, account limits and MCP server and tool switches. Fork of m1ckc3s/claude-status-bar merged with InfinityScripter/claude-mcp-bar.",
   "author": {
     "name": "Talalaev M"
   },

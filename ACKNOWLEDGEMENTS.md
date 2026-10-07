@@ -1,6 +1,6 @@
 # Acknowledgements
 
-Claude Control Bar is a fork of
+Agent Control Bar is a fork of
 **[claude-status-bar](https://github.com/m1ckc3s/claude-status-bar)** by
 **[@m1ckc3s](https://github.com/m1ckc3s)** (Mick Cesanek), merged with
 [claude-mcp-bar](https://github.com/InfinityScripter/claude-mcp-bar). The sessions model, the

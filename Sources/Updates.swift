@@ -77,7 +77,7 @@ extension StatusController {
             if let self, Self.versionIsNewer(ver, than: self.currentVersion),
                UserDefaults.standard.string(forKey: "updateNotifiedVersion") != ver {
                 UserDefaults.standard.set(ver, forKey: "updateNotifiedVersion")
-                self.notify(title: "Claude Control Bar \(ver) is available",
+                self.notify(title: "\(self.appName) \(ver) is available",
                             body: "The panel has \u{201C}What\u{2019}s new in \(ver)\u{201D} and the update.")
             }
             self?.updateCheckFinished(problem: nil)
@@ -142,7 +142,7 @@ extension StatusController {
         // of what happened.
         guard let last, Self.versionIsNewer(currentVersion, than: last) else { return }
         whatsNewUnseen = currentVersion
-        notify(title: "Claude Control Bar \(currentVersion)",
+        notify(title: "\(appName) \(currentVersion)",
                body: "Updated from \(last). \u{201C}What\u{2019}s new\u{201D} in the menu has the changes.")
     }
 

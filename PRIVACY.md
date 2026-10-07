@@ -1,6 +1,6 @@
 # Privacy
 
-Claude Control Bar keeps no data about you and runs no account or cloud service. Everything it
+Agent Control Bar keeps no data about you and runs no account or cloud service. Everything it
 shows happens on your Mac. The one thing it sends the developer is a daily count of one, with
 nothing in it that names a machine — described in full under "The anonymous ping" below, with
 the switch that stops it.
