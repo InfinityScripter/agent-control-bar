@@ -48,18 +48,26 @@ extension StatusController {
 
     /// The menu bar pet, cut down to the bar's own size. Built once per pick and kept: it is a
     /// couple of dozen pictures 18 points tall, and building it costs a decode of the whole sheet.
-    func petIconFrames() -> PetIconFrames? {
-        guard case .pet(let id) = animStyle else { return nil }
-        if petIconID == id { return petIconCache }
-        petIconID = id
-        petIconCache = Pet.chosen(id, from: petLibrary()).flatMap { PetIconFrames($0) }
-        return petIconCache
+    func petIconFrames(id: String, provider: String) -> PetIconFrames? {
+        let key = provider + ":" + id
+        if let cached = petIconCache[key] { return cached }
+        let claudeID: String
+        if case .pet(let picked) = animStyle { claudeID = picked } else { claudeID = "" }
+        petIconCache = petIconCache.filter { $0.key == "claude:" + claudeID || $0.key == "codex:" + codexPetID }
+        let pet = provider == "codex" ? petLibrary().first { $0.id == id }
+                                     : Pet.chosen(id, from: petLibrary())
+        let frames = pet.flatMap { PetIconFrames($0) }
+        petIconCache[key] = frames
+        return frames
     }
 
     func reloadPetLibrary() {
         petLibraryCache = nil
         petAtlasCache = [:]
-        petIconID = nil
+        petIconCache = [:]
+        for provider in barRenders.keys { barRenders[provider]?.cacheKey = "" }
+        barCompositeKey = ""
+        barImageKey = ""
     }
 
     /// The archive of the desktop app that carries the Codex companions, when it is installed.

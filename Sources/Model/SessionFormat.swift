@@ -69,7 +69,8 @@ enum SessionFormat {
     // shapes fall through untouched: a wrong pretty name is worse than a raw id.
     static func prettyModel(_ id: String) -> String {
         var parts = id.lowercased().split(separator: "-").map(String.init)
-        if parts.first == "claude" { parts.removeFirst() }
+        guard parts.first == "claude" else { return id }
+        parts.removeFirst()
         guard let family = parts.first, !family.isEmpty, family.first!.isLetter else { return id }
         let digits = parts.dropFirst().prefix { $0.allSatisfy(\.isNumber) && $0.count < 8 }
         let version = digits.joined(separator: ".")

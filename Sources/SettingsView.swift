@@ -228,8 +228,8 @@ private struct AppearanceSettings: View {
         + "but it has one animation for working rather than the crab's four degrees of busy."
 
     private static let codexPetFooter: String =
-        "Codex rows get their own pet, so a list holding both agents can be read without reading "
-        + "it. The Codex companion is the default where the ChatGPT app is installed."
+        "Codex uses this pet in its menu bar icon and session rows. The Codex companion is the "
+        + "default where the desktop app is installed. Missing art shows the Codex symbol in the bar."
 
     private static let petFooter: String =
         "A small animated character at the head of each session row: it rests while the session "
@@ -263,9 +263,9 @@ private struct AppearanceSettings: View {
             if store.codexPresent {
                 Section {
                     PetPicker(store: store, selection: store.codexPet,
-                              role: "the pet your Codex rows use")
+                              role: "the pet your Codex icon and rows use")
                 } header: {
-                    Text("Codex session rows")
+                    Text("Codex icon and session rows")
                 } footer: {
                     Text(Self.codexPetFooter)
                 }

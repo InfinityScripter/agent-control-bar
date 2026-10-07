@@ -32,11 +32,18 @@ struct LimitsBoard {
         if !pair.isEmpty { return pair }
         // A window whose length Codex never reported has no honest two-character label, so it
         // gets no bar rather than a guessed one.
-        let live = (codex?.drawable(at: now) ?? []).filter { $0.shortTitle != nil }.prefix(2)
+        let live = codexBarWindows(at: now)
         guard let first = live.first else { return Gauge() }
         let second = live.count > 1 ? live.last : nil
         return Gauge(fiveHour: first.window.fraction, sevenDay: second?.window.fraction,
                      labels: (first.shortTitle ?? "", second?.shortTitle ?? ""))
+    }
+
+    /// Reserve is a separate pool, not a second ordinary window. Never mix it into a pair.
+    func codexBarWindows(at now: Double) -> [NamedWindow] {
+        let labelled = (codex?.drawable(at: now) ?? []).filter { $0.shortTitle != nil }
+        let ordinary = labelled.filter { !$0.key.hasPrefix("reserve:") }
+        return Array((ordinary.isEmpty ? labelled : ordinary).prefix(2))
     }
 
     /// Which provider the switcher shows. A remembered pick that has no figures right now falls

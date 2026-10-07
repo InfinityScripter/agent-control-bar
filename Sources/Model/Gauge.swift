@@ -86,6 +86,7 @@ struct Gauge {
     /// highlighted. A dynamic colour dodges the question: it resolves at draw time, against
     /// whatever appearance the menu bar is actually drawing in.
     func image(icon: NSImage?) -> NSImage {
+        if isEmpty { return icon ?? NSImage(size: .zero) }
         let shown = rows
         let h = NSStatusBar.system.thickness
         // The icon keeps its own aspect: crab frames are 25.5x18, and forcing them into an 18pt

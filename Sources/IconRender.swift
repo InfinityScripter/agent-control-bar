@@ -4,95 +4,116 @@ import Cocoa
 extension StatusController {
     // MARK: render
 
-    func render(label: String, color: NSColor?, animate: Bool, startedAt: Double, badge: Bool = false) {
-        guard let button = statusItem.button else { return }
-        button.contentTintColor = nil // we paint the icon color ourselves; template-tint is unreliable
-        activeBase = label
-        activeColor = color
-        self.startedAt = startedAt
-        if activeBadge != badge {
-            activeBadge = badge
-            iconCacheKey = ""
-            iconCache.removeAll()
-            button.image = nil
+    func renderMenuBar(now: Double) {
+        var agents = MenuBarAgent.shown(agentDisplay, board: board, claude: limits?.set,
+                                       codex: codexWindows, now: now)
+        if agents.isEmpty {
+            agents = [MenuBarAgent(provider: .claude, lead: nil, mood: .sleeping, working: 0, gauge: Gauge())]
         }
-
-        if animate {
-            if animTimer == nil {
-                let t = Timer(timeInterval: 1.0 / fps, repeats: true) { [weak self] _ in self?.animStep() }
-                RunLoop.main.add(t, forMode: .common)
-                animTimer = t
+        barOrder = agents.map(\.provider.id)
+        for agent in agents {
+            let provider = agent.provider.id
+            var render = barRenders[provider] ?? BarRender(agent: agent)
+            render.agent = agent
+            var chosen: MenuBarIcon? = provider == "claude" ? animStyle : .pet(codexPetID)
+            var ticks: [NSImage]?
+            if case .pet(let id) = chosen, let pet = petIconFrames(id: id, provider: provider) {
+                let frames = pet.frames(for: agent.mood.petRow)
+                if !frames.isEmpty { ticks = frames }
             }
-        } else {
+            if chosen?.isPet == true && ticks == nil { chosen = provider == "claude" ? .crab : nil }
+            render.icon = chosen
+            render.ticks = ticks
+            render.color = chosen == .crab && agent.mood.keepsColorInSystem ? brand : iconColor
+            render.animate = agent.animates(chosen)
+            switch chosen {
+            case .web: render.fps = spriteFPS; render.frameCount = max(1, frames.count)
+            case .code: render.fps = Double(codeGlyphs.count * codeSub) / codeCycle; render.frameCount = codeGlyphs.count * codeSub
+            case .crab: render.fps = agent.mood.framesPerSecond(working: agent.working)
+                render.frameCount = max(1, crabFrameSet.frames(for: agent.mood).count)
+            case .pet: render.fps = PetIconFrames.fps; render.frameCount = max(1, ticks?.count ?? 1)
+            case nil: render.fps = 1; render.frameCount = 1
+            }
+            let motionKey = (chosen?.raw ?? provider) + "|" + (chosen?.variant(mood: agent.mood) ?? "")
+                + (render.animate ? "|animated" : "|still")
+            render.motion.update(key: motionKey, fps: render.fps, now: now)
+            render.label = agent.lead.map { isActiveState($0.eff) ? statusText($0, eff: $0.eff) : "" } ?? ""
+            let marker = agent.markerColor(fallback: chosen == nil, permissionColor: Self.amber)
+            let cacheKey = [motionKey, marker.map { "\($0)" } ?? "", render.color.map { "\($0)" } ?? "template",
+                            agent.gauge.signature, NSApp.effectiveAppearance.name.rawValue].joined(separator: "|")
+            if render.cacheKey != cacheKey { render.cacheKey = cacheKey; render.frames = [:] }
+            barRenders[provider] = render
+        }
+        let rate = barOrder.compactMap { barRenders[$0] }.filter(\.animate).map(\.fps).max() ?? 0
+        if barTimerFPS != rate {
             animTimer?.invalidate(); animTimer = nil
-            frameIdx = 0
-            let icon = restingIcon(color: color)
-            button.image = decorate(badge ? attentionBadgeIcon(icon, color: Self.amber) : icon)
+            barTimerFPS = rate
+            if rate > 0 {
+                let timer = Timer(timeInterval: 1 / rate, repeats: true) { [weak self] _ in self?.animStep() }
+                RunLoop.main.add(timer, forMode: .common)
+                animTimer = timer
+            }
         }
-        applyTitle()
-        // Only the animated path can arrive here imageless (the badge flip above cleared it and
-        // the first animStep is a frame away); the resting path assigned its image just above.
-        if animate, button.image == nil { button.image = cachedIcon(frame: frameIdx) }
+        renderMenuBarFrame(now: now)
     }
 
-    func animStep() {
-        frameIdx = (frameIdx + 1) % frameCount
-        statusItem.button?.image = cachedIcon(frame: frameIdx)
-        applyTitle() // refresh the elapsed clock
-    }
+    func animStep() { renderMenuBarFrame(now: Date().timeIntervalSince1970) }
 
-    /// The animation cycles through a small fixed set of frames forever, and each one is a bitmap
-    /// composite with the limit bars drawn over it. Rebuilding the same handful of images twenty
-    /// times a second was a large part of what the app did while Claude worked.
-    ///
-    /// Everything that can change what a frame looks like is in the key — the appearance included,
-    /// because a cached image must not outlive a switch between a light and a dark menu bar.
-    func cachedIcon(frame: Int) -> NSImage? {
-        let key = [drawnIcon.raw,
-                   drawnIcon.variant(mood: crabMood),
-                   activeBadge ? "badge" : "",
-                   activeColor.map { "\($0)" } ?? "template",
-                   currentGauge().signature,
-                   NSApp.effectiveAppearance.name.rawValue].joined(separator: "|")
-        if key != iconCacheKey {
-            iconCacheKey = key
-            iconCache.removeAll()
-        }
-        if let hit = iconCache[frame] { return hit }
-        let icon = iconImage(color: activeColor, frame: frame)
-        let made = decorate(activeBadge ? attentionBadgeIcon(icon, color: Self.amber) : icon)
-        iconCache[frame] = made
-        return made
-    }
-
-    func applyTitle() {
+    func renderMenuBarFrame(now: Double) {
         guard let button = statusItem.button else { return }
-        // Joined rather than concatenated: with the word switched off the old form left the
-        // separator behind, so the bar read "  4m 12s" with a hole where the word had been.
-        var parts: [String] = []
-        if !activeBase.isEmpty { parts.append(activeBase) }
-        if showTimer, startedAt > 0 {
-            parts.append(elapsed(max(0, (Date().timeIntervalSince1970 - startedAt).clampedInt)))
+        var blocks: [MenuBarImage.Block] = []
+        var keys: [String] = [], frames: [String] = [], descriptions: [String] = []
+        for provider in barOrder {
+            guard var render = barRenders[provider] else { continue }
+            let frame = render.animate ? render.motion.frame(at: now, count: render.frameCount) : 0
+            let image: NSImage
+            if let cached = render.frames[frame] { image = cached }
+            else {
+                let icon = iconImage(icon: render.icon, mood: render.agent.mood, ticks: render.ticks,
+                                     color: render.color, frame: frame, animate: render.animate)
+                let badged = render.agent.markedIcon(icon, fallback: render.icon == nil, permissionColor: Self.amber)
+                let size = NSSize(width: Gauge.iconMaxW, height: 18)
+                let fixed = NSImage(size: size, flipped: false) { _ in
+                    let width = min(size.width, badged.size.width)
+                    badged.draw(in: NSRect(x: (size.width - width) / 2, y: 0, width: width, height: 18),
+                                from: .zero, operation: .sourceOver, fraction: 1)
+                    return true
+                }
+                fixed.isTemplate = badged.isTemplate
+                image = render.agent.gauge.image(icon: fixed)
+                render.frames[frame] = image
+                barRenders[provider] = render
+            }
+            let timer = render.agent.timer(show: showTimer, now: now)
+            blocks.append(.init(image: image, label: render.label, timer: timer))
+            keys.append(render.cacheKey + "|" + render.label + "|" + timer)
+            frames.append(String(frame))
+            let session = render.agent.lead
+            var description = "\(render.agent.provider.title): \(session?.eff ?? "idle")"
+            if let session { description += ", " + sessionMenuLine(session) }
+            let gauge = render.agent.gauge
+            if !gauge.isEmpty {
+                description += render.agent.reserve ? ", Reserve: " : ", limits: "
+                description += gauge.rows.map { "\(Gauge.spoken($0.0)) \(($0.1 * 100).rounded().clampedInt)%" }.joined(separator: ", ")
+            }
+            descriptions.append(description)
         }
-        let text = parts.joined(separator: "  ")
-        // Assigning a title re-lays-out and redraws the whole status item. This is called on
-        // every animation frame — twenty times a second — and the text it would write is the
-        // same one nineteen times out of twenty, since the clock only moves once a second.
-        guard text != renderedTitle else { return }
-        renderedTitle = text
-        if text.isEmpty {
+        let key = keys.joined(separator: ";")
+        if barCompositeKey != key { barCompositeKey = key; barCompositeFrames = [:] }
+        let frameKey = frames.joined(separator: ":")
+        let imageKey = key + "|" + frameKey
+        if barImageKey != imageKey {
+            let image = barCompositeFrames[frameKey] ?? MenuBarImage.compose(blocks)
+            if barCompositeFrames.count >= 128 { barCompositeFrames = [:] }
+            barCompositeFrames[frameKey] = image
+            button.contentTintColor = nil
             button.imagePosition = .imageOnly
             button.attributedTitle = NSAttributedString(string: "")
-            return
+            button.image = image
+            barImageKey = imageKey
         }
-        button.imagePosition = .imageLeading
-        // labelColor adapts: white on a dark menu bar, black on a light one. Monospaced
-        // digits keep the elapsed clock from nudging neighboring menu bar icons.
-        let attrs: [NSAttributedString.Key: Any] = [
-            .foregroundColor: NSColor.labelColor,
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 0, weight: .regular),
-        ]
-        button.attributedTitle = NSAttributedString(string: " \(text)", attributes: attrs)
+        let description = agentDisplay == .hidden ? "Open Claude and Codex session panel" : descriptions.joined(separator: "\n")
+        if button.toolTip != description { button.toolTip = description; button.setAccessibilityLabel(description) }
     }
 
     // MARK: icon
@@ -102,10 +123,18 @@ extension StatusController {
         list.compactMap { Data(base64Encoded: $0).flatMap(NSImage.init(data:)) }
     }
 
-    func iconImage(color: NSColor?, frame: Int) -> NSImage {
-        if let pet = petIcon(frame: frame) { return pet }
-        if drawnIcon == .web { return tint(frames, color: color, frame: frame) }
-        if drawnIcon == .crab { return crabIcon(color: color, frame: frame) }
+    func iconImage(icon: MenuBarIcon?, mood: CrabMood, ticks: [NSImage]?,
+                   color: NSColor?, frame: Int, animate: Bool) -> NSImage {
+        if let ticks, !ticks.isEmpty { return ticks[frame % ticks.count] }
+        guard let icon else {
+            let symbol = NSImage(systemSymbolName: Provider.codex.glyph, accessibilityDescription: Provider.codex.title)
+                ?? NSImage(size: NSSize(width: 18, height: 18))
+            symbol.isTemplate = true
+            return symbol
+        }
+        if icon == .crab { return crabIcon(color: color, frame: frame, mood: mood) }
+        if !animate { return tint(logoSet.isEmpty ? frames : logoSet, color: color, frame: 0) }
+        if icon == .web { return tint(frames, color: color, frame: frame) }
         let i = (frame / codeSub) % codeGlyphs.count
         let local = (CGFloat(frame % codeSub) + 0.5) / CGFloat(codeSub) // 0…1 within this glyph
         // Scale envelope per glyph: rise, hold at peak, fall, so each lands before the swap.
@@ -167,29 +196,9 @@ extension StatusController {
         }
     }
 
-    func restingIcon(color: NSColor?) -> NSImage {
-        if let pet = petIcon(frame: 0) { return pet }
-        if drawnIcon == .crab { return crabIcon(color: color, frame: 0) }
-        return tint(logoSet.isEmpty ? frames : logoSet, color: color, frame: 0)
-    }
-
-    /// The menu bar pet's picture for this step, or nil when the bar is not drawing one.
-    ///
-    /// No colour argument: the two drawn styles are a single shape that the System setting turns
-    /// black or white with the menu bar, and a pet is a painted sprite with nothing left of itself
-    /// once it is flattened into one colour. So a pet is always itself, and the Color setting says
-    /// as much rather than silently doing nothing.
-    func petIcon(frame: Int) -> NSImage? {
-        guard let ticks = petIconTicks, !ticks.isEmpty else { return nil }
-        return ticks[frame % ticks.count]
-    }
-
     // nil color (System) => adaptive shaded template (see adaptiveCrabFrame in CrabRender.swift);
     // non-nil (Orange) => the original full-color sprite, drawn as-is.
-    /// `mood` is the one showing now unless the caller names another, which the Settings picker
-    /// does: there the crab walks whatever the machine happens to be doing.
-    func crabIcon(color: NSColor?, frame: Int, mood asked: CrabMood? = nil) -> NSImage {
-        let mood = asked ?? crabMood
+    func crabIcon(color: NSColor?, frame: Int, mood: CrabMood) -> NSImage {
         let fullColor = crabFrameSet.frames(for: mood)
         let pool = color == nil ? (crabTemplateFrames[mood] ?? fullColor) : fullColor
         guard !pool.isEmpty else { return NSImage(size: NSSize(width: 18, height: 18)) }
