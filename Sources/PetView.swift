@@ -15,6 +15,7 @@ struct PetView: View {
     let atlas: PetAtlas
     /// The session's effective state — the string the hooks write, not a display label.
     let state: String
+    var provider = Provider.claude.id
 
     /// Ten ticks a second. Every frame duration in PetRow.timing is a multiple of it, so this is
     /// the slowest schedule that still shows each frame for exactly as long as it asks for.
@@ -27,7 +28,7 @@ struct PetView: View {
     /// the thing being chosen rather than a marker beside a name.
     var height: CGFloat = 32
 
-    private var loop: PetLoop { atlas.loop(for: PetRow.forSessionState(state)) }
+    private var loop: PetLoop { atlas.loop(for: PetRow.forSessionState(state, provider: provider)) }
 
     var body: some View {
         if Motion.moves {
@@ -45,11 +46,13 @@ struct PetView: View {
     private func sprite(at seconds: Double) -> some View {
         let loop = self.loop
         let cell = atlas.pet.format
+        let frame = !Motion.moves && state == "permission" && provider == Provider.codex.id
+            ? loop.images.count / 2 : loop.index(at: seconds)
         return Group {
             if !loop.images.isEmpty {
                 // .none: the art is pixels drawn at a size, and smoothing them turns a crab into
                 // a smudge at the sizes a row has room for.
-                Image(nsImage: loop.images[loop.index(at: seconds)])
+                Image(nsImage: loop.images[frame])
                     .interpolation(.none).resizable().scaledToFit()
             }
         }
