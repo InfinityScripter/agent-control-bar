@@ -70,17 +70,14 @@ enum CodexRollout {
                         turn: payload["turn_id"] as? String ?? "")
     }
 
-    /// Blocking requests wait for a tool result; accepted async cards wait for per-question
-    /// user replies. Codex does not record local Skip/X/timeout actions, so an unanswered async
-    /// card can only be cleared reliably when the turn ends or a new one starts.
+    /// Only blocking input requests prove that Codex still needs the user. The desktop dismisses
+    /// async cards locally (including after 30 seconds) without recording that in the rollout,
+    /// so an `accepted` async question cannot establish the current attention state.
     /// Consume appended records once rather than rereading the conversation on every panel tick.
     struct Questions {
         private static let callType = Data("\"type\":\"function_call\"".utf8)
         private static let syncName = Data("\"name\":\"request_user_input\"".utf8)
-        private static let asyncName = Data("\"name\":\"request_user_input_async\"".utf8)
         private static let outputType = Data("\"type\":\"function_call_output\"".utf8)
-        private static let replyTag = "<send_user_message_question_reply>"
-        private static let replyNeedle = Data(replyTag.utf8)
         private static let eventType = Data("\"type\":\"event_msg\"".utf8)
         private static let boundaryNeedles = endTypes.union(startTypes).map { Data("\"type\":\"\($0)\"".utf8) }
 
@@ -89,11 +86,6 @@ enum CodexRollout {
         private var mtime: Date = .distantPast
         private var inode: UInt64 = 0
         private var waiting: Set<String> = []
-        private var asyncWaiting: [String: (remaining: Set<Int>, accepted: Bool)] = [:]
-
-        private var hasPending: Bool {
-            !waiting.isEmpty || asyncWaiting.values.contains { $0.accepted }
-        }
 
         mutating func pending(in path: String) -> Bool {
             guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
@@ -108,7 +100,7 @@ enum CodexRollout {
                 self = Questions()
             }
             if currentSize == size && currentMtime == mtime && currentInode == inode {
-                return hasPending
+                return !waiting.isEmpty
             }
             guard let file = FileHandle(forReadingAtPath: path) else { return false }
             defer { try? file.close() }
@@ -125,77 +117,39 @@ enum CodexRollout {
                         offset += UInt64(last.count)
                     }
                 }
-            } catch { return hasPending }
+            } catch { return !waiting.isEmpty }
             size = currentSize
             mtime = currentMtime
             inode = currentInode
-            return hasPending
+            return !waiting.isEmpty
         }
 
         private mutating func consume(_ data: Data) {
             let call = data.range(of: Self.callType) != nil
-                && (data.range(of: Self.syncName) != nil || data.range(of: Self.asyncName) != nil)
-            let output = (!waiting.isEmpty || !asyncWaiting.isEmpty)
-                && data.range(of: Self.outputType) != nil
-            let reply = !asyncWaiting.isEmpty && data.range(of: Self.replyNeedle) != nil
+                && data.range(of: Self.syncName) != nil
+            let output = !waiting.isEmpty && data.range(of: Self.outputType) != nil
             let boundary = data.range(of: Self.eventType) != nil
                 && Self.boundaryNeedles.contains(where: { data.range(of: $0) != nil })
-            guard call || output || reply || boundary else { return }
+            guard call || output || boundary else { return }
             guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let payload = root["payload"] as? [String: Any],
                   let type = payload["type"] as? String else { return }
             if root["type"] as? String == "event_msg" {
                 if endTypes.contains(type) || startTypes.contains(type) {
                     waiting.removeAll()
-                    asyncWaiting.removeAll()
                 }
                 return
             }
             guard root["type"] as? String == "response_item" else { return }
-            if type == "function_call", let name = payload["name"] as? String,
-               name == "request_user_input" || name == "request_user_input_async",
+            if type == "function_call", payload["name"] as? String == "request_user_input",
                let id = payload["call_id"] as? String,
                let arguments = payload["arguments"] as? String,
                let argumentData = arguments.data(using: .utf8),
                let values = try? JSONSerialization.jsonObject(with: argumentData) as? [String: Any],
                let questions = values["questions"] as? [[String: Any]], !questions.isEmpty {
-                if name == "request_user_input" {
-                    waiting.insert(id)
-                } else {
-                    asyncWaiting[id] = (Set(questions.indices), false)
-                }
+                waiting.insert(id)
             } else if type == "function_call_output", let id = payload["call_id"] as? String {
                 waiting.remove(id)
-                if asyncWaiting[id] != nil {
-                    let output = (payload["output"] as? String)?.data(using: .utf8)
-                    let values = output.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
-                    if values?["accepted"] as? Bool == true {
-                        asyncWaiting[id]?.accepted = true
-                    } else {
-                        asyncWaiting[id] = nil
-                    }
-                }
-            } else if type == "message", payload["role"] as? String == "user",
-                      let content = payload["content"] as? [[String: Any]] {
-                let closingTag = "</send_user_message_question_reply>"
-                for item in content {
-                    guard let text = item["text"] as? String else { continue }
-                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard trimmed.hasPrefix(Self.replyTag), trimmed.hasSuffix(closingTag),
-                          let json = trimmed.dropFirst(Self.replyTag.count).dropLast(closingTag.count)
-                            .data(using: .utf8),
-                          let values = try? JSONSerialization.jsonObject(with: json) else { continue }
-                    let replies = values as? [[String: Any]] ?? (values as? [String: Any]).map { [$0] } ?? []
-                    for reply in replies {
-                        guard let key = (reply["questionItemId"] as? String)?.data(using: .utf8),
-                              let parts = try? JSONSerialization.jsonObject(with: key) as? [Any],
-                              parts.count == 3, parts[0] as? String == "request_user_input_async",
-                              let id = parts[1] as? String, let index = parts[2] as? Int,
-                              reply["answer"] is String else { continue }
-                        asyncWaiting[id]?.remaining.remove(index)
-                        if asyncWaiting[id]?.remaining.isEmpty == true { asyncWaiting[id] = nil }
-                    }
-                }
             }
         }
     }
