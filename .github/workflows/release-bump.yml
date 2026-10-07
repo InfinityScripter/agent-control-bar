@@ -1,0 +1,89 @@
+name: Release bump
+
+# The button that prepares a release: Actions → Release bump → Run workflow, pick patch, minor or
+# major. It runs tools/release/bump.js on main — both manifests get the next version, and
+# CHANGELOG.md's `## [Unreleased]` section becomes that version's section — then pushes the
+# commit to a `release/<version>` branch and opens a pull request for it.
+#
+# Nothing is released here. Merging that pull request is the release: the merge changes
+# plugin.json's version on main, and release.yml takes it from there. A human decides when.
+#
+# A pull request opened with this workflow's token starts no `pull_request` workflows — GitHub
+# does that on purpose, so a workflow cannot set off an endless chain of others. CI is therefore
+# dispatched on the branch explicitly, and its checks land on the pull request's head commit
+# like any other run. Opening the pull request at all needs "Allow GitHub Actions to create and
+# approve pull requests" under Settings → Actions → General; without it the last step fails and
+# prints the link to open it by hand, and the branch is already pushed.
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Which part of the version to raise"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: main
+
+      # The input goes through env, not ${{ }}-interpolation inside the script, the way
+      # release.yml handles its own: the shell sees it as data.
+      - name: Bump the version and name the Unreleased section
+        id: bump
+        env:
+          BUMP: ${{ github.event.inputs.bump }}
+        run: |
+          VERSION="$(node tools/release/bump.js "$BUMP")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "branch=release/$VERSION" >> "$GITHUB_OUTPUT"
+          git diff --stat
+
+      - name: Push the release branch
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+          BRANCH: ${{ steps.bump.outputs.branch }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null; then
+            echo "tag v$VERSION already exists — refusing to prepare a release that is out"
+            exit 1
+          fi
+          git switch -c "$BRANCH"
+          git -c user.name=github-actions -c user.email=github-actions@github.com \
+            commit -am "release: $VERSION"
+          git push origin "$BRANCH"
+
+      # Before the pull request, so the branch is checked even when opening it fails below.
+      - name: Run CI on the release branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.bump.outputs.branch }}
+        run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
+
+      - name: Open the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.bump.outputs.version }}
+          BRANCH: ${{ steps.bump.outputs.branch }}
+        run: |
+          printf '%s\n\n%s\n' \
+            "Version $VERSION in both manifests, and CHANGELOG.md's Unreleased section named for it." \
+            "Merging this releases $VERSION: release.yml tags it, builds the DMG and publishes the release." \
+            > body.md
+          if ! gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
+               --title "release: $VERSION" --body-file body.md; then
+            echo "::error::Could not open the pull request. Enable 'Allow GitHub Actions to create and approve pull requests' in Settings → Actions → General, or open it by hand: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/main...$BRANCH?expand=1"
+            exit 1
+          fi

@@ -108,9 +108,15 @@ extension StatusController {
         return gauge.image(icon: icon)
     }
 
-    func currentGauge() -> Gauge { limitsBoard.gauge(at: Date().timeIntervalSince1970) }
+    func currentGauge() -> Gauge {
+        agentDisplay.limits(claude: limits?.set, codex: codexWindows, forBar: true)
+            .gauge(at: Date().timeIntervalSince1970)
+    }
 
-    var limitsBoard: LimitsBoard { LimitsBoard(claude: limits?.set, codex: codexWindows) }
+    /// The panel's limits: both agents' figures minus whichever the agent setting leaves out.
+    var limitsBoard: LimitsBoard {
+        agentDisplay.limits(claude: limits?.set, codex: codexWindows, forBar: false)
+    }
 
     // Where a session's own file lives — see Provider.statePath, so the reap in evaluate()
     // cannot delete out of the wrong agent's directory.
@@ -150,8 +156,10 @@ extension StatusController {
 
     func evaluate() {
         let now = Date().timeIntervalSince1970
+        let agents = agentDisplay
         let rules = SessionBoard.Rules(soundThreshold: soundThreshold, stalePruneAge: stalePruneAge,
-                                       thinkingWords: thinkingWords, needsYou: !needsYouSound.isEmpty)
+                                       thinkingWords: thinkingWords, needsYou: !needsYouSound.isEmpty,
+                                       leads: agents.barProviders, cues: agents.panelProviders)
         let tick = board.tick(now: now, rules: rules, pidAlive: pidAlive,
                               frontmost: { NSWorkspace.shared.frontmostApplication?.bundleIdentifier })
         // The one write this app makes into a state directory: the file of a session whose
@@ -163,8 +171,11 @@ extension StatusController {
         if tick.needsYou { playNeedsYou() }   // one cue per tick however many sessions asked at once
 
         let lead = tick.lead
-        setCrabMood(CrabMood.display(forEffectiveStates: sessions.values.map(\.eff), leadState: lead?.eff),
-                    working: sessions.values.filter { isWorkingState($0.eff) }.count)
+        // The mood counts the same agents the lead was picked from: a crab busy over sessions the
+        // bar was told not to show would be the one thing on it still showing them.
+        let barred = sessions.values.filter { agents.inBar($0.provider) }
+        setCrabMood(CrabMood.display(forEffectiveStates: barred.map(\.eff), leadState: lead?.eff),
+                    working: barred.filter { isWorkingState($0.eff) }.count)
         statusItem.button?.toolTip = lead.map(sessionMenuLine)  // repo · branch [· elapsed] on hover
 
         guard let lead = lead else { renderResting(); return }

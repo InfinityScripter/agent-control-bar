@@ -91,8 +91,8 @@ final class StatusController: NSObject, NSWindowDelegate {
     var uiConfigCache: (mtime: Date?, values: [String: Double])?
     // Stored state used by the extensions in Updates.swift, SessionRows.swift and
     // IconRender.swift — an extension cannot declare stored properties, so they live here.
-    let releaseAPIURL = "https://api.github.com/repos/InfinityScripter/claude-control-bar/releases/latest"
-    let releasePageURL = "https://github.com/InfinityScripter/claude-control-bar/releases/latest"
+    let releaseAPIURL = "https://api.github.com/repos/InfinityScripter/agent-control-bar/releases/latest"
+    let releasePageURL = "https://github.com/InfinityScripter/agent-control-bar/releases/latest"
     let brewCaskAPIURL = "https://formulae.brew.sh/api/cask/claude-control-bar.json"
     let brewUpgradeCommand = "brew upgrade --cask claude-control-bar"
     let brewInstallCommand = "brew install --cask claude-control-bar && open -a \"Claude Control Bar\""
@@ -215,6 +215,12 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// Which provider the switcher layout is showing. Remembered across opens: someone who
     /// switched to Codex was answering "how much Codex have I got left", not this once.
     var limitsProvider = "claude"
+    /// Which agents the bar and the panel show, as saved, or nil when nobody has picked: the
+    /// default then follows whether Codex is installed — see AgentDisplay.resolve.
+    var agentChoice: String?
+    var agentDisplay: AgentDisplay {
+        AgentDisplay.resolve(saved: agentChoice, codexInstalled: codexInstalled)
+    }
     var analytics = true            // the anonymous daily ping (Sources/Analytics.swift); env var and endpoint also gate it
     var soundThreshold: Double = 0  // 0 = off; else the min turn length (seconds) that chimes on completion
     var needsYouSound = NeedsYouSound.defaultChoice  // system sound name; "" = off
@@ -312,6 +318,7 @@ final class StatusController: NSObject, NSWindowDelegate {
         exactTerminalFocus = d.bool(forKey: "exactTerminalFocus")   // absent = off, which is the default
         if let s = d.string(forKey: "limitsLayout"), let l = PanelLimitsLayout(rawValue: s) { limitsLayout = l }
         if let s = d.string(forKey: "limitsProvider") { limitsProvider = s }
+        agentChoice = d.string(forKey: "agentDisplay")
         if d.object(forKey: "analytics") != nil { analytics = d.bool(forKey: "analytics") }
         if d.object(forKey: "soundThreshold") != nil { soundThreshold = d.double(forKey: "soundThreshold") }
         if let s = d.string(forKey: "needsYouSound") { needsYouSound = s }
