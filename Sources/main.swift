@@ -72,7 +72,25 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// togglePanel().
     var panelClosedAt: Double = 0
     lazy var panelStore = PanelStore(controller: self)
-    var frameIdx = 0
+    struct BarRender {
+        var agent: MenuBarAgent
+        var icon: MenuBarIcon? = nil
+        var ticks: [NSImage]? = nil
+        var color: NSColor? = nil
+        var animate = false
+        var fps: Double = 1
+        var frameCount = 1
+        var motion = MenuBarMotion()
+        var label = ""
+        var cacheKey = ""
+        var frames: [Int: NSImage] = [:]
+    }
+    var barRenders: [String: BarRender] = [:]
+    var barOrder: [String] = []
+    var barTimerFPS: Double = 0
+    var barCompositeKey = ""
+    var barCompositeFrames: [String: NSImage] = [:]
+    var barImageKey = ""
 
     /// Whether the app may quit on its own yet; see checkLifecycle().
     var idleQuit = IdleQuit(launchedAt: Date())
@@ -98,8 +116,6 @@ final class StatusController: NSObject, NSWindowDelegate {
     let brewInstallCommand = "brew install --cask claude-control-bar && open -a \"Claude Control Bar\""
     var whatsNewWindow: NSWindow?
     let logoSet: [NSImage] = Data(base64Encoded: claudeLogoPNG).flatMap(NSImage.init(data:)).map { [$0] } ?? []
-    var activeBase = ""        // label without the elapsed clock
-    var renderedTitle: String? // what the status item is actually showing, to skip identical redraws
     var lastLifecycleCheck: Double = 0  // the quit decision is sampled far slower than the UI
     var notificationsDenied = false     // the one macOS permission this app has; see notify()
     var lastNotifiedChangeAt: Date?     // dedupe: notifyMCPChange runs on every reload, the change lives 45 s
@@ -165,12 +181,6 @@ final class StatusController: NSObject, NSWindowDelegate {
                 root + "/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"]
             .contains { FileManager.default.isExecutableFile(atPath: $0) }
     }
-    var iconCache: [Int: NSImage] = [:]  // composed menu bar frames, rebuilt only when the look changes
-    var iconCacheKey = ""
-    var startedAt: Double = 0  // unix seconds the current turn began (0 = no clock)
-    var activeColor: NSColor? = nil
-    var activeBadge = false
-
     let brand = NSColor(srgbRed: 0.851, green: 0.467, blue: 0.341, alpha: 1) // #d97757, Anthropic's official "Orange" accent
     /// Static because the panel needs it too, and a SwiftUI view has no controller to ask.
     static let amber = NSColor(srgbRed: 0.95, green: 0.73, blue: 0.18, alpha: 1) // "Needs you" badge
@@ -187,15 +197,13 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// other agent's own, and somebody running both wants to tell the two apart in the list at a
     /// glance — which is exactly what one pet for both would take away.
     var codexPetID = StatusController.codexDefaultPet
-    /// What a Mac with the ChatGPT app calls the Codex mascot. Only a default: with that app
-    /// absent the id resolves to nothing in particular and the usual fallback picks a pet.
+    /// The Codex mascot where the desktop app is installed; missing art keeps its provider glyph.
     static let codexDefaultPet = "codex"
     var petLibraryCache: [Pet]?
     var petAtlasCache: [String: PetAtlas?] = [:]
     var petPreviewCache: [(pet: Pet, atlas: PetAtlas?)] = []
     var iconPreviewCache: [(icon: MenuBarIcon, name: String, frames: [NSImage])] = []
-    var petIconCache: PetIconFrames?
-    var petIconID: String?
+    var petIconCache: [String: PetIconFrames?] = [:]
     var showTimer = false
     var iconSystem = false // false = brand Orange; true = adaptive black/white (template image)
     var useThinkingWords = true     // rotate a playful verb ("Manifesting…") in place of "Thinking…"
@@ -273,39 +281,6 @@ final class StatusController: NSObject, NSWindowDelegate {
         CrabMood.allCases.map { mood in
             (mood, crabFrameSet.frames(for: mood).map(adaptiveCrabFrame))
         })
-    var crabMood: CrabMood = .sleeping
-    var crabWorking = 0   // sessions working right now; sets the tempo inside a mood
-    var fps: Double {
-        if petIconTicks != nil { return PetIconFrames.fps }
-        switch drawnIcon {
-        case .web: return spriteFPS
-        case .code: return Double(codeGlyphs.count * codeSub) / codeCycle
-        case .crab, .pet: return crabMood.framesPerSecond(working: crabWorking)
-        }
-    }
-    var frameCount: Int {
-        if let ticks = petIconTicks { return ticks.count }
-        switch drawnIcon {
-        case .web: return max(1, frames.count)
-        case .code: return codeGlyphs.count * codeSub
-        case .crab, .pet: return max(1, crabFrameSet.frames(for: crabMood).count)
-        }
-    }
-
-    /// The icon actually on screen. A pet whose pictures are gone — the app that carried it was
-    /// uninstalled, the folder was deleted — falls back to the crab, and every question about the
-    /// icon has to be answered about the thing being drawn rather than about the saved choice.
-    /// The choice itself is left alone, so the pet comes back if its app does.
-    var drawnIcon: MenuBarIcon { animStyle.isPet && petIconTicks == nil ? .crab : animStyle }
-
-    /// The menu bar pet's pictures for the state showing now, or nil when the bar is not drawing
-    /// a pet at all. One picture per tick, so stepping through them needs no durations.
-    var petIconTicks: [NSImage]? {
-        guard animStyle.isPet, let built = petIconFrames() else { return nil }
-        let ticks = built.frames(for: crabMood.petRow)
-        return ticks.isEmpty ? nil : ticks
-    }
-
     override init() {
         super.init()
         let d = UserDefaults.standard
@@ -334,7 +309,7 @@ final class StatusController: NSObject, NSWindowDelegate {
         // reach us — see PanelWindow.swift for why it is not an NSMenu any more.
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePanel)
-        render(label: "", color: iconColor, animate: false, startedAt: 0)
+        renderMenuBar(now: Date().timeIntervalSince1970)
         let t = Timer(timeInterval: 0.4, repeats: true) { [weak self] _ in self?.tick() }
         RunLoop.main.add(t, forMode: .common)
         pollTimer = t
@@ -408,8 +383,10 @@ final class StatusController: NSObject, NSWindowDelegate {
         } else if ProcessInfo.processInfo.environment["CONTROL_BAR_DIAGNOSE"] != nil {
             Timer.scheduledTimer(withTimeInterval: 2, repeats: false) { [weak self] _ in
                 guard let self else { return }
-                let gauge = self.currentGauge()
-                print("gauge 5h=\(gauge.fiveHour as Any) 7d=\(gauge.sevenDay as Any)")
+                for provider in self.barOrder {
+                    guard let gauge = self.barRenders[provider]?.agent.gauge else { continue }
+                    print("\(provider) gauge \(gauge.signature)")
+                }
                 print("sessions=\(self.sessions.count) mcp servers=\(self.mcp.servers.count)")
                 guard let button = self.statusItem.button else {
                     print("no status item button at all"); NSApp.terminate(nil); return

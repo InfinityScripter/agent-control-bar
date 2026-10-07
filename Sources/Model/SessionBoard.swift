@@ -125,11 +125,15 @@ final class SessionBoard {
             prevState[key] = s.state
         }
         nameClones()
-        out.lead = sessions.values.filter { rules.leads?.contains($0.provider) ?? true }.max { a, b in
+        out.lead = lead(for: rules.leads)
+        return out
+    }
+
+    func lead(for providers: Set<String>? = nil) -> Session? {
+        sessions.values.filter { providers?.contains($0.provider) ?? true }.max { a, b in
             let pa = Self.priority(of: a.eff), pb = Self.priority(of: b.eff)
             return pa == pb ? a.ts < b.ts : pa < pb
         }
-        return out
     }
 
     /// Rank an EFFECTIVE state for surfacing, so a session awaiting permission is never hidden

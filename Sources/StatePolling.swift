@@ -99,20 +99,6 @@ extension StatusController {
         refreshCounts()
     }
 
-    /// Bars ride in the same status item as the icon. A second status item would be cleaner to
-    /// build and cost another ~33pt of a menu bar that, on this machine, is already ~220pt past
-    /// what fits beside the notch — and overflow there does not clip, it disappears.
-    func decorate(_ icon: NSImage?) -> NSImage? {
-        let gauge = currentGauge()
-        guard !gauge.isEmpty else { return icon }
-        return gauge.image(icon: icon)
-    }
-
-    func currentGauge() -> Gauge {
-        agentDisplay.limits(claude: limits?.set, codex: codexWindows, forBar: true)
-            .gauge(at: Date().timeIntervalSince1970)
-    }
-
     /// The panel's limits: both agents' figures minus whichever the agent setting leaves out.
     var limitsBoard: LimitsBoard {
         agentDisplay.limits(claude: limits?.set, codex: codexWindows, forBar: false)
@@ -170,56 +156,6 @@ extension StatusController {
         if tick.chime { completionSound?.play() }
         if tick.needsYou { playNeedsYou() }   // one cue per tick however many sessions asked at once
 
-        let lead = tick.lead
-        // The mood counts the same agents the lead was picked from: a crab busy over sessions the
-        // bar was told not to show would be the one thing on it still showing them.
-        let barred = sessions.values.filter { agents.inBar($0.provider) }
-        setCrabMood(CrabMood.display(forEffectiveStates: barred.map(\.eff), leadState: lead?.eff),
-                    working: barred.filter { isWorkingState($0.eff) }.count)
-        statusItem.button?.toolTip = lead.map(sessionMenuLine)  // repo · branch [· elapsed] on hover
-
-        guard let lead = lead else { renderResting(); return }
-        switch lead.eff {
-        case "permission":
-            render(label: statusText(lead, eff: lead.eff), color: crabRenderColor,
-                   animate: drawnIcon.restsInMotion || crabMood != .sleeping,
-                   startedAt: 0, badge: true)
-        case "thinking", "tool":
-            render(label: statusText(lead, eff: lead.eff), color: crabRenderColor, animate: true, startedAt: lead.startedAt)
-        default:
-            renderResting()
-        }
-    }
-
-    var crabRenderColor: NSColor? {
-        drawnIcon == .crab && crabMood.keepsColorInSystem ? brand : iconColor
-    }
-
-    func setCrabMood(_ mood: CrabMood, working: Int) {
-        let tempoChanged = mood.framesPerSecond(working: working) != crabMood.framesPerSecond(working: crabWorking)
-        crabWorking = working
-        guard mood != crabMood || tempoChanged else { return }
-        let previous = crabMood
-        crabMood = mood
-        switch drawnIcon {
-        case .web, .code:
-            return                                     // one picture, nothing to restart
-        case .crab:
-            animTimer?.invalidate(); animTimer = nil   // recreated at the new tempo by render()
-            guard mood != previous else { return }
-        case .pet:
-            // A pet runs every animation at the same tick, so the timer can keep going. But four
-            // of the six moods draw the same one, and restarting a walk that was already walking
-            // is a visible stutter standing for no change at all.
-            guard mood.petRow != previous.petRow else { return }
-        }
-        frameIdx = 0
-        iconCacheKey = ""
-        iconCache.removeAll()
-        statusItem.button?.image = nil
-    }
-
-    func renderResting() {
-        render(label: "", color: crabRenderColor, animate: drawnIcon.restsInMotion, startedAt: 0)
+        renderMenuBar(now: now)
     }
 }

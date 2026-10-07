@@ -263,6 +263,10 @@ check(mangled.project.isEmpty && mangled.cwd.isEmpty && mangled.transcript.isEmp
 check(SessionFormat.prettyModel("claude-fable-5-1") == "Fable 5.1", "model id reads as a name")
 check(SessionFormat.prettyModel("claude-opus-4-8-20260101") == "Opus 4.8",
       "a date suffix is not a version component")
+for id in ["gpt-6.1-sol", "gpt-6-astra", "gpt-5.6-sol", "o3", "custom-model-v2"] {
+    check(SessionFormat.prettyModel(id) == id,
+          "a non-Claude model keeps its full identifier: \(id) -> \(SessionFormat.prettyModel(id))")
+}
 check(SessionFormat.prettyModel("") == "" && SessionFormat.prettyModel("2-x") == "2-x",
       "an unrecognized id is shown as is, not mangled")
 check(SessionFormat.compact(87_956) == "88k" && SessionFormat.compact(1_000_000) == "1M"
@@ -916,9 +920,9 @@ if !appSources.isEmpty {
           "a Codex pet nobody has chosen follows whether pets are on at all")
     check(mainSource.contains("\"Needs you\"") && !mainSource.contains("Awaiting permission"),
           "permission uses the short Needs you status-bar label")
-    check(mainSource.contains("badge: true") && !mainSource.contains("dot: true"),
+    check(mainSource.contains(".markedIcon(") && !mainSource.contains("dot: true"),
           "permission renders a badge over the mascot instead of replacing it with a dot")
-    check(mainSource.contains("CrabMood.display("),
+    check(mainSource.contains("MenuBarAgent.shown("),
           "the status-bar mood is selected with the permission-aware display model")
 } else {
     check(false, "Sources/*.swift are readable for the presentation defaults contract")
@@ -2623,6 +2627,135 @@ do {
     tick = board.tick(now: now + 1, rules: rules, pidAlive: { _ in true }, frontmost: { nil })
     check(tick.lead == nil, "Hidden: nothing leads the bar")
     check(tick.chime, "and a long turn finishing still chimes")
+}
+
+// Each menu bar block owns its sessions, limits and clock even while the other agent needs us.
+do {
+    let now = 1_800_000_000.0
+    let board = SessionBoard(engine: SessionEngine())
+    let questionPath = NSTemporaryDirectory() + "ccb-dual-question.jsonl"
+    try! blockingQuestionCall.write(toFile: questionPath, atomically: true, encoding: .utf8)
+    defer { try? FileManager.default.removeItem(atPath: questionPath) }
+    let entries: [(String, String, String, Double)] = [
+        ("claude", "old", "thinking", now - 10),
+        ("claude", "new", "tool", now),
+        ("codex", "wait", "permission", now - 20),
+        ("codex", "work", "thinking", now),
+    ]
+    let files = entries.map { provider, id, _, _ in
+        SessionBoard.File(key: provider + ":" + id, path: id, provider: provider, id: id,
+                          mtime: Date(timeIntervalSince1970: 1))
+    }
+    board.reload(files, read: { id in
+        let row = entries.first { $0.1 == id }!
+        return ["state": row.2, "pid": 42, "ts": row.3, "startedAt": now - 120,
+                "transcript": id == "wait" ? questionPath : ""]
+    }) { _ in "" }
+    let rules = SessionBoard.Rules(soundThreshold: 0, stalePruneAge: 900,
+                                   thinkingWords: ["Musing"], needsYou: true)
+    let tick = board.tick(now: now, rules: rules, pidAlive: { _ in true }, frontmost: { nil })
+    let claude = LimitsSet(provider: "claude", windows: [
+        NamedWindow(key: "five_hour", title: "5h", badge: nil, minutes: 300,
+                    window: LimitWindow(used: 40, resets: now + 600)),
+    ], source: "oauth", ts: now, plan: nil)
+    let codex = LimitsSet(provider: "codex", windows: [
+        NamedWindow(key: "primary", title: "1h", badge: nil, minutes: 60,
+                    window: LimitWindow(used: 80, resets: now + 600)),
+    ], source: "rollout", ts: now, plan: nil)
+    let both = MenuBarAgent.shown(.both, board: board, claude: claude, codex: codex, now: now)
+    check(both.map(\.provider.id) == ["claude", "codex"], "Both draws two ordered provider blocks")
+    check(both[0].lead?.id == "new" && both[1].lead?.id == "wait",
+          "each provider picks its own priority and newest working session")
+    check(both[0].mood == .walking && both[0].working == 2 && !both[0].badge,
+          "a Codex permission prompt does not stop Claude's working mood")
+    check(both[1].mood == .waitingPermission && both[1].working == 1 && both[1].badge,
+          "Codex owns its permission badge and working count")
+    check(both[0].startedAt == now - 120 && both[1].startedAt == 0,
+          "each timer belongs to its working lead; permission gets no clock")
+    check(both[0].gauge.fiveHour == 0.4 && both[1].gauge.fiveHour == 0.8
+          && both[1].gauge.labels.0 == "1h", "each block draws its own labelled limits")
+    check(tick.lead?.id == "wait" && board.word(for: "claude:old") == "Musing",
+          "building provider blocks does not tick the board or change its edge state")
+    for pick in [AgentDisplay.claude, .codex] {
+        let only = MenuBarAgent.shown(pick, board: board, claude: claude, codex: codex, now: now)
+        check(only.count == 1 && only[0].provider.id == pick.rawValue, "single-agent mode draws only \(pick.rawValue)")
+    }
+    check(MenuBarAgent.shown(.hidden, board: board, claude: claude, codex: codex, now: now).isEmpty,
+          "Hidden has no status, clocks or bars to compose")
+    let empty = SessionBoard(engine: SessionEngine())
+    let resting = MenuBarAgent.shown(.both, board: empty, claude: claude, codex: nil, now: now)
+    check(resting.count == 2 && resting.allSatisfy { $0.lead == nil && $0.mood == .sleeping && $0.startedAt == 0 },
+          "both icons remain present with no sessions")
+    check(resting[0].gauge.fiveHour == 0.4 && resting[1].gauge.isEmpty,
+          "missing Codex limits omit only Codex bars without borrowing Claude's")
+    let reserve = NamedWindow(key: "reserve:primary", title: "Reserve", badge: "7d", minutes: 10080,
+                              window: LimitWindow(used: 36, resets: now - 1))
+    let mixed = LimitsSet(provider: "codex", windows: codex.windows + [reserve],
+                          source: "rollout", ts: now - 60, plan: nil)
+    let honest = MenuBarAgent.shown(.codex, board: board, claude: nil, codex: mixed, now: now)[0]
+    check(honest.gauge.fiveHour == 0.8 && honest.gauge.sevenDay == nil,
+          "ordinary Codex windows do not borrow an expired reserve as a second bar")
+    let reserveOnly = LimitsSet(provider: "codex", windows: [reserve], source: "rollout", ts: now - 60, plan: nil)
+    let fallback = MenuBarAgent.shown(.codex, board: board, claude: nil, codex: reserveOnly, now: now)[0]
+    check(fallback.gauge.fiveHour == 0 && fallback.gauge.labels.0 == "7d" && fallback.reserve,
+          "reserve-only fallback keeps its reported duration and reset behaviour")
+    check(both[0].timer(show: true, now: now) == "2m 0s"
+          && both[1].timer(show: true, now: now).isEmpty
+          && both[0].timer(show: false, now: now).isEmpty,
+          "Show Timer controls each working clock without exposing a permission clock")
+    check(both[0].timer(show: true, now: now - 121) == "0s"
+          && both[0].timer(show: true, now: now + 100 * 3600) == "99h+",
+          "timers clamp future starts and bound very long runs")
+    var firstMotion = MenuBarMotion(), secondMotion = MenuBarMotion()
+    firstMotion.update(key: "claude:walking", fps: 4, now: 100)
+    secondMotion.update(key: "codex:running", fps: 10, now: 100)
+    check(firstMotion.frame(at: 101, count: 12) == 4 && secondMotion.frame(at: 101, count: 12) == 10,
+          "one shared timer samples each provider at its own frame rate")
+    firstMotion.update(key: "claude:sleeping", fps: 2, now: 101)
+    check(firstMotion.frame(at: 101, count: 12) == 0 && secondMotion.frame(at: 101, count: 12) == 10,
+          "changing Claude's mood restarts only Claude's animation")
+    secondMotion.update(key: "codex:running", fps: 20, now: 101)
+    check(secondMotion.frame(at: 101, count: 12) == 10 && secondMotion.frame(at: 101.125, count: 12) == 0,
+          "tempo changes preserve animation progress rather than restarting the provider")
+    let left = NSImage(size: NSSize(width: 28, height: 18)), right = NSImage(size: NSSize(width: 28, height: 18))
+    left.isTemplate = true; right.isTemplate = true
+    let composed = MenuBarImage.compose([.init(image: left, label: "", timer: ""),
+                                         .init(image: right, label: "", timer: "")])
+    check(composed.size.width > 56 && composed.isTemplate, "two empty-status blocks retain two adaptive icons with a gap")
+    let short = MenuBarImage.compose([.init(image: left, label: "Musing…", timer: "3s")])
+    let long = MenuBarImage.compose([.init(image: left, label: String(repeating: "x", count: 400), timer: "99h+")])
+    check(short.size.width == long.size.width && short.size.width > 100 && short.size.width < 120,
+          "status and timer columns stay bounded and stable across words and clock changes")
+    let bare = NSImage(size: NSSize(width: 18, height: 18))
+    check(Gauge().image(icon: bare) === bare, "an empty gauge returns the bare icon without a blank strip")
+}
+
+// Permission keeps the chosen drawn animation; absent Codex art still shows work with both texts off.
+do {
+    var permission = Session(json: ["state": "permission"], id: "claude-wait")
+    permission.eff = "permission"
+    let waiting = MenuBarAgent(provider: .claude, lead: permission, mood: .waitingPermission,
+                               working: 0, gauge: Gauge())
+    check(waiting.animates(.web) && waiting.animates(.code),
+          "permission keeps Claude's selected spark and glyph animations running")
+    let resting = MenuBarAgent(provider: .claude, lead: nil, mood: .sleeping, working: 0, gauge: Gauge())
+    check(!resting.animates(.web) && !resting.animates(.code), "resting drawn styles remain still")
+    var work = Session(json: ["state": "thinking", "provider": "codex"], id: "codex-work")
+    work.eff = "thinking"
+    let busy = MenuBarAgent(provider: .codex, lead: work, mood: .cigar, working: 1, gauge: Gauge())
+    let idle = MenuBarAgent(provider: .codex, lead: nil, mood: .sleeping, working: 0, gauge: Gauge())
+    let symbol = NSImage(systemSymbolName: Provider.codex.glyph, accessibilityDescription: "Codex")!
+    symbol.isTemplate = true
+    let busySymbol = busy.markedIcon(symbol, fallback: true, permissionColor: badgeAmber)
+    let idleSymbol = idle.markedIcon(symbol, fallback: true, permissionColor: badgeAmber)
+    check(busySymbol.size.width > idleSymbol.size.width && idleSymbol === symbol,
+          "missing-art Codex has a visible working marker which disappears at idle")
+    check(crabHasPixel(busySymbol) { $0.alphaComponent > 0.5 }, "the busy fallback still draws its provider symbol")
+    check(busy.markedIcon(symbol, fallback: false, permissionColor: badgeAmber) === symbol,
+          "a real companion keeps its own animation without an extra busy marker")
+    let permissionSymbol = waiting.markedIcon(symbol, fallback: true, permissionColor: badgeAmber)
+    check(crabHasPixel(permissionSymbol) { $0.redComponent > 0.8 && $0.greenComponent > 0.55 && $0.blueComponent < 0.35 },
+          "a waiting fallback retains the distinct amber permission badge")
 }
 
 // What tells the two agents apart. The reap deletes files by stateDir, so a wrong directory here

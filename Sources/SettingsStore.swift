@@ -205,13 +205,13 @@ extension StatusController {
     func applyShowTimer(_ on: Bool) {
         showTimer = on
         UserDefaults.standard.set(on, forKey: "showTimer")
-        applyTitle()
+        renderMenuBar(now: Date().timeIntervalSince1970)
     }
 
     func applyThinkingWords(_ on: Bool) {
         useThinkingWords = on
         UserDefaults.standard.set(on, forKey: "thinkingWords")
-        evaluate()   // re-render the bar label immediately with or without the rotating word
+        renderMenuBar(now: Date().timeIntervalSince1970)   // re-render the bar label immediately with or without the rotating word
     }
 
     /// Off is a real choice here, not decoration: the poll authenticates with the user's own
@@ -225,6 +225,8 @@ extension StatusController {
         // rewrite: off must drop oauth-sourced numbers on the next tick, on must re-adopt them.
         limitsMTime = nil
         if on { pollLimits() }
+        loadLimits()
+        renderMenuBar(now: Date().timeIntervalSince1970)
     }
 
     /// Off empties the Codex groups in the MCP tab rather than leaving a stale list: the list is
@@ -253,6 +255,7 @@ extension StatusController {
             runQuietCommand(.limits(provider: "codex"))
         }
         loadCodexLimits()
+        renderMenuBar(now: Date().timeIntervalSince1970)
         refreshCounts()
     }
 
@@ -299,12 +302,11 @@ extension StatusController {
 
     /// Saved as soon as it is picked, even when it equals the default: a pick is a decision, and it
     /// must not start following Codex being installed or removed the way the unpicked default does.
-    /// Nothing to re-read either — every figure stays loaded whichever agents show — so the next
-    /// tick redraws the bar, and the panel republishes here. Not an evaluate() of its own: that
-    /// is a whole session tick, reaps and chimes included, and the timer's next one is 0.4s away.
+    /// Rendering and panel republishing apply the pick without another session tick or sound edge.
     func applyAgentDisplay(_ pick: AgentDisplay) {
         agentChoice = pick.rawValue
         UserDefaults.standard.set(pick.rawValue, forKey: "agentDisplay")
+        renderMenuBar(now: Date().timeIntervalSince1970)
         refreshCounts()
     }
 
@@ -331,21 +333,20 @@ extension StatusController {
             petID = id
             UserDefaults.standard.set(id, forKey: "petID")
         }
+        renderMenuBar(now: Date().timeIntervalSince1970)
         refreshCounts()   // the rows are drawn from the snapshot, which carries the pets
     }
 
     func applyAnimStyle(_ style: MenuBarIcon) {
         animStyle = style
         UserDefaults.standard.set(style.raw, forKey: "animStyle")
-        animTimer?.invalidate(); animTimer = nil   // recreated at the new style's fps by render()
-        frameIdx = 0
-        evaluate()
+        renderMenuBar(now: Date().timeIntervalSince1970)
     }
 
     func applyIconSystem(_ system: Bool) {
         iconSystem = system
         UserDefaults.standard.set(system, forKey: "iconSystem")
-        evaluate()   // re-render the current state in the new colour
+        renderMenuBar(now: Date().timeIntervalSince1970)   // re-render the current state in the new colour
     }
 
     func applySoundThreshold(_ seconds: Double) {
