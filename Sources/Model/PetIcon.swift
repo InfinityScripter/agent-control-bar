@@ -116,10 +116,12 @@ struct PetIconFrames {
 
     /// Cuts every animation a mood can ask for. Nil when there is nothing drawn in any of them:
     /// a pet we cannot measure has no height to scale by, and the caller draws the crab.
-    init?(_ pet: Pet, height: CGFloat = 18) {
-        // Taken from the moods rather than listed here, so an animation cannot be left out by a
-        // mood learning to draw something this file was not told about.
-        let rows = Set(CrabMood.allCases.map(\.petRow)).sorted { $0.rawValue < $1.rawValue }
+    init?(_ pet: Pet, height: CGFloat = 18, provider: String = Provider.claude.id) {
+        // Include Codex's attention gesture alongside the shared moods so switching to Needs you
+        // cannot select a row whose frames were never cut for the menu bar.
+        let rows = Set(CrabMood.allCases.map(\.petRow)
+            + [PetRow.forSessionState("permission", provider: provider)])
+            .sorted { $0.rawValue < $1.rawValue }
         guard let sheet = Self.decodedSheet(of: pet) else { return nil }
 
         let cut = rows.map { row in
