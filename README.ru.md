@@ -14,9 +14,9 @@ https://github.com/user-attachments/assets/f44cc709-94be-40b7-88b3-2d2d4231e837
 
 ## Установка
 
-Нужны macOS 13+, Node.js, системный `/usr/bin/python3` и Claude Code или Codex. Плагину нужны Claude Code и Xcode Command Line Tools. В DMG приложение уже собрано; этот способ подходит и тем, кто пользуется только Codex.
+Нужны macOS 13+, Node.js, системный `/usr/bin/python3` и Claude Code или Codex. Плагину нужны Claude Code 2.1.287+ и Xcode Command Line Tools. В DMG приложение уже собрано; этот способ подходит и тем, кто пользуется только Codex.
 
-В команде установки плагина и имени DMG пока используется `claude-control-bar`. Настройки старых установок сохраняются. Если установленная копия ещё называется `Claude Control Bar.app`, используйте это имя в командах ниже.
+Плагин называется `agent-control-bar`. Каталог плагинов сохраняет зарегистрированное имя `claude-control-bar`, чтобы переносить существующие установки через карту переименований. Имя DMG — `claude-control-bar.dmg`. Если установленная копия ещё называется `Claude Control Bar.app`, используйте это имя приложения в командах ниже.
 
 ### Плагин Claude Code
 
@@ -27,10 +27,21 @@ https://github.com/user-attachments/assets/f44cc709-94be-40b7-88b3-2d2d4231e837
 ```
 
 ```bash
-/plugin install claude-control-bar
+/plugin install agent-control-bar@claude-control-bar
 ```
 
 При следующем старте сессии приложение соберётся на вашем Mac. Если Command Line Tools ещё нет, установите их командой `xcode-select --install`; первая сборка может занять несколько минут. Обновления плагина приходят через Claude Code.
+
+В плагин включён экспериментальный мод для статуса и контекста Claude CLI. Desktop использует обычные хуки; Codex — свою существующую интеграцию. Подробнее — в [описании мода и его ограничений](docs/claude-mod.md).
+
+Если уже установлен прежний плагин `claude-control-bar`, закройте его текущие сессии и выполните:
+
+```bash
+/plugin marketplace update claude-control-bar
+/plugin install agent-control-bar@claude-control-bar
+```
+
+Карта переименований каталога переносит включение и настройки старого плагина. После установки откройте новую сессию. Настройки приложения остаются в прежнем каталоге данных.
 
 ### DMG
 
@@ -197,12 +208,12 @@ Clawd, краб, поставляется с приложением. В выбо
 
 Плагин добавляет две команды внутри Claude Code:
 
-- `/mcp-health` выводит состояние серверов, число инструментов, отключённые инструменты, контекст сессий и лимиты.
-- `/limits-capture install|uninstall|status` по желанию оборачивает команду `statusLine`, чтобы читать лимиты, которые передаёт Claude Code. `uninstall` восстанавливает прежнюю команду.
+- `/agent-control-bar:mcp-health` выводит состояние серверов, число инструментов, отключённые инструменты, контекст сессий и лимиты.
+- `/agent-control-bar:limits-capture install|uninstall|status` по желанию оборачивает команду `statusLine`, чтобы читать лимиты, которые передаёт Claude Code. `uninstall` восстанавливает прежнюю команду.
 
 ## Удаление
 
-Если установили плагином, выполните `/plugin uninstall claude-control-bar`, затем переместите `~/Applications/Agent Control Bar.app` в Корзину.
+Если установили плагином, выполните `/plugin uninstall agent-control-bar@claude-control-bar`, затем переместите `~/Applications/Agent Control Bar.app` в Корзину.
 
 Если установили из DMG, сначала удалите хуки:
 

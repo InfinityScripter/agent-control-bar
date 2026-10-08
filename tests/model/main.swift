@@ -453,6 +453,22 @@ if !FileManager.default.fileExists(atPath: sessionSeamPath) {
     check(false, "session seam fixture unreadable")
 }
 
+// The new mod producer uses the existing native schema, including direct SDK context values.
+let modSeamPath = FileManager.default.currentDirectoryPath + "/build/seam/claude-mod-session.json"
+if let data = FileManager.default.contents(atPath: modSeamPath),
+   let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+    let parsed = Session(json: raw, id: "mod-session")
+    check(parsed.provider == "claude" && parsed.state == "thinking" && parsed.started,
+          "the real mod publication is a visible working Claude session")
+    check(parsed.pid > 0 && parsed.startedAt == 1_800_000_000 && parsed.ts == 1_800_000_000,
+          "mod liveness and Unix-second turn timing survive the native parser")
+    check(parsed.tokens == 40_000 && parsed.window == 200_000 && parsed.pct == 20 && !parsed.assumed,
+          "direct SDK context survives the mod-to-Swift trip")
+    check(parsed.transcript.isEmpty, "the mod needs no transcript parsing to publish context")
+} else {
+    check(false, "mod seam fixture missing or unreadable — run the Node suite first")
+}
+
 // MARK: Codex sessions — a second agent in the same list, told apart by one field
 
 // An old state file has no provider at all and must keep reading as Claude's: the app keys its

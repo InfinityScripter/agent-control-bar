@@ -17,6 +17,19 @@ const lifecycle = (home, argv, payload, opts = {}) => {
   return res;
 };
 
+test('legacy start preserves a live mod-owned reading and end still clears its context', t => {
+  const home = sandbox(t);
+  fs.mkdirSync(stateDir(home), { recursive: true });
+  const file = path.join(stateDir(home), 'mod.json');
+  const reading = { collector: 'claude-mod', collectorUpdatedAt: Math.floor(Date.now() / 1000), pid: process.pid, state: 'thinking', tokens: 40_000, window: 200_000 };
+  fs.writeFileSync(file, JSON.stringify(reading));
+  lifecycle(home, ['start'], { session_id: 'mod', cwd: home, source: 'resume' });
+  assert.deepEqual(readJSON(file), reading);
+  assert.deepEqual(spawnLog(home), ['open -g -b io.github.infinityscripter.claude-control-bar']);
+  lifecycle(home, ['end'], { session_id: 'mod', cwd: home });
+  assert.equal(fs.existsSync(file), false);
+});
+
 test("a session start seeds an idle, not-yet-started file the owner alone can read", (t) => {
   // started:false keeps a merely-opened conversation out of the dropdown until it does
   // something; the file still counts the session for launch and liveness from this moment.

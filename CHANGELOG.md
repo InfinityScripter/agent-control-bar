@@ -7,6 +7,15 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## Unreleased
+
+### Changed
+- **The Claude Code plugin is now `agent-control-bar`.** The marketplace rename map
+  migrates the former plugin name while retaining its registered marketplace identity.
+- **Claude CLI sessions can use the experimental mods SDK collector.** Claude Code
+  2.1.287+ reports activity and context directly; command hooks remain available for
+  Desktop and fallback collection. Codex keeps its existing integration.
+
 ## [0.24.4] - 2026-10-08
 
 ### Fixed

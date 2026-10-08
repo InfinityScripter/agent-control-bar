@@ -5,9 +5,12 @@
     "name": "Talalaev M"
   },
   "description": "Claude Code and Codex in the macOS menu bar: sessions, context usage, account limits and MCP servers and tools.",
+  "renames": {
+    "claude-control-bar": "agent-control-bar"
+  },
   "plugins": [
     {
-      "name": "claude-control-bar",
+      "name": "agent-control-bar",
       "displayName": "Agent Control Bar",
       "source": "./",
       "version": "0.24.4",

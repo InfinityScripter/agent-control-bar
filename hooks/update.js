@@ -317,6 +317,19 @@ function usageInTail(fd, size, span, models) {
   return null;
 }
 
+// Also used when the mod owns the state file: ownership must not disable app recovery.
+function relaunchIfMissing() {
+  const probeMarker = path.join(dir, "self-heal-probed");
+  try {
+    if (fs.existsSync(quitMarker)) return;
+    try { if (Date.now() - fs.statSync(probeMarker).mtimeMs < 30_000) return; } catch {}
+    try { fs.writeFileSync(probeMarker, "", { mode: 0o600 }); } catch {}
+    cp.execSync("pgrep -x ClaudeControlBar", { stdio: "ignore" });
+  } catch {
+    try { cp.spawn("open", ["-g", "-b", "io.github.infinityscripter.claude-control-bar"], { stdio: "ignore", detached: true }).unref(); } catch {}
+  }
+}
+
 let raw = "";
 process.stdin.on("data", (d) => (raw += d));
 process.stdin.on("end", () => {
@@ -350,6 +363,15 @@ process.stdin.on("end", () => {
 
   let prev = {};
   try { prev = JSON.parse(fs.readFileSync(statePath, "utf8")); } catch {}
+
+  if (!codex && prev?.collector === "claude-mod") {
+    const age = Math.floor(Date.now() / 1000) - prev.collectorUpdatedAt;
+    let alive = false;
+    if (Number.isInteger(prev.pid) && prev.pid > 0) {
+      try { process.kill(prev.pid, 0); alive = true; } catch (error) { alive = error.code === "EPERM"; }
+    }
+    if (alive && age >= 0 && age <= 15) { relaunchIfMissing(); return; }
+  }
 
   // A Codex subagent is a thread of its own: own rollout, own hook events. Left alone, one prompt
   // of the user's showed five running sessions — the parent plus four workers — and whichever
@@ -495,13 +517,5 @@ process.stdin.on("end", () => {
   // call for an answer that does not change between them. A probe that just ran answers for
   // the next half minute; a crash still heals within that window. The marker's mtime is the
   // clock, so the throttle costs one stat instead of a process.
-  const probeMarker = path.join(dir, "self-heal-probed");
-  try {
-    if (fs.existsSync(quitMarker)) return;
-    try { if (Date.now() - fs.statSync(probeMarker).mtimeMs < 30_000) return; } catch {}
-    try { fs.writeFileSync(probeMarker, "", { mode: 0o600 }); } catch {}
-    cp.execSync("pgrep -x ClaudeControlBar", { stdio: "ignore" });
-  } catch {
-    try { cp.spawn("open", ["-g", "-b", "io.github.infinityscripter.claude-control-bar"], { stdio: "ignore", detached: true }).unref(); } catch {}
-  }
+  relaunchIfMissing();
 });

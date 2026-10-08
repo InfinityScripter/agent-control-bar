@@ -19,6 +19,21 @@ const event = (home, name, payload, opts = {}) => {
 };
 const state = (home, sid) => readJSON(path.join(stateDir(home), sid + ".json"));
 
+test('fresh mod state wins over legacy updates, while expired leases recover', t => {
+  const home = sandbox(t);
+  fs.mkdirSync(stateDir(home), { recursive: true });
+  const file = path.join(stateDir(home), 'mod.json');
+  const reading = { collector: 'claude-mod', collectorUpdatedAt: Math.floor(Date.now() / 1000), pid: process.pid, state: 'tool', tokens: 40_000, window: 200_000, pct: 20 };
+  fs.writeFileSync(file, JSON.stringify(reading));
+  event(home, 'post', { session_id: 'mod', cwd: home });
+  assert.deepEqual(state(home, 'mod'), reading);
+  assert.deepEqual(spawnLog(home), ['open -g -b io.github.infinityscripter.claude-control-bar']);
+  fs.writeFileSync(file, JSON.stringify({ ...reading, collectorUpdatedAt: 1 }));
+  event(home, 'post', { session_id: 'mod', cwd: home });
+  assert.equal(state(home, 'mod').state, 'thinking');
+  assert.equal(state(home, 'mod').collector, undefined);
+});
+
 test("each Claude tool reads as its activity, and an unknown tool as plain tool use", (t) => {
   const home = sandbox(t);
   for (const [tool, label] of [["Bash", "Running command"], ["Read", "Reading"],

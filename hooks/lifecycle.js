@@ -157,6 +157,13 @@ function run() {
   const statePath = path.join(stateDir, id + ".json");
 
   if (event === "start") {
+    let modOwns = false;
+    if (!codex) {
+      let prev;
+      try { prev = JSON.parse(fs.readFileSync(statePath, "utf8")); } catch {}
+      const age = Math.floor(Date.now() / 1000) - prev?.collectorUpdatedAt;
+      modOwns = prev?.collector === "claude-mod" && age >= 0 && age <= 15 && alive(prev.pid);
+    }
     // SessionStart fires for brand-new sessions AND for resumes (--resume/--continue, wake
     // after sleep, compaction). Only a genuinely new session voids a prior explicit Quit (see
     // update.js's self-relaunch suppress) — a resume honors it, or the app "comes back on its
@@ -179,7 +186,7 @@ function run() {
     if (meta.worker) process.exit(0);
     // Seed an idle file: counts the session immediately, and clears any frozen state from a
     // resume (SessionStart fires on resume with no active turn).
-    try {
+    if (!modOwns) try {
       // started:false — a merely-opened conversation seeds this for launch + liveness but stays out of
       // the dropdown until it has real activity (update.js flips started:true on a prompt/tool).
       const seed = { state: "idle", label: "", tool: "", project: cwd ? path.basename(cwd) : "", cwd, sessionId: id, transcript, entrypoint: process.env.CLAUDE_CODE_ENTRYPOINT || "", term_program: process.env.TERM_PROGRAM || "", term_bundle: process.env.__CFBundleIdentifier || "", tty: ttyDev(), pid: process.ppid, started: false, startedAt: 0, ts: Math.floor(Date.now() / 1000) };

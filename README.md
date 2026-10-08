@@ -14,9 +14,9 @@ The screenshots use demo sessions and example values from the current `main` bui
 
 ## Install
 
-You need macOS 13+, Node.js and the system `/usr/bin/python3`, plus Claude Code or Codex. The plugin needs Claude Code and Xcode Command Line Tools. The DMG is already compiled and works with a Codex-only setup.
+You need macOS 13+, Node.js and the system `/usr/bin/python3`, plus Claude Code or Codex. The plugin needs Claude Code 2.1.287+ and Xcode Command Line Tools. The DMG is already compiled and works with a Codex-only setup.
 
-The plugin command and DMG filename still use `claude-control-bar`. Existing installations keep their settings. If your installed copy is still named `Claude Control Bar.app`, use that name in the commands below.
+The plugin is `agent-control-bar`. The marketplace keeps its registered name `claude-control-bar` so existing installs can migrate through its rename map. The DMG filename remains `claude-control-bar.dmg`. If your installed copy is still named `Claude Control Bar.app`, use that app name in the commands below.
 
 ### Claude Code plugin
 
@@ -27,10 +27,21 @@ Run these commands inside Claude Code:
 ```
 
 ```bash
-/plugin install claude-control-bar
+/plugin install agent-control-bar@claude-control-bar
 ```
 
 The next session start builds the app on your Mac. Install the Command Line Tools with `xcode-select --install` if needed; the first build can take a few minutes. Plugin updates come through Claude Code.
+
+The plugin includes an experimental mod for Claude CLI activity and context. Desktop uses the command hooks; Codex uses its existing hooks. See [mod behavior and limits](docs/claude-mod.md).
+
+If you installed the former `claude-control-bar` plugin, close its existing sessions, then run:
+
+```bash
+/plugin marketplace update claude-control-bar
+/plugin install agent-control-bar@claude-control-bar
+```
+
+The marketplace rename map transfers the old plugin's enabled state and configuration. Start a new session after installation. The app keeps its settings in the same data directory.
 
 ### DMG
 
@@ -197,12 +208,12 @@ Plugin installs update through Claude Code. For a DMG install, click the panel's
 
 The plugin adds these commands inside Claude Code:
 
-- `/mcp-health` prints server health, tool counts, disabled tools, session context and limits.
-- `/limits-capture install|uninstall|status` optionally wraps your `statusLine` command to read the limits Claude Code supplies. `uninstall` restores the previous command.
+- `/agent-control-bar:mcp-health` prints server health, tool counts, disabled tools, session context and limits.
+- `/agent-control-bar:limits-capture install|uninstall|status` optionally wraps your `statusLine` command to read the limits Claude Code supplies. `uninstall` restores the previous command.
 
 ## Uninstall
 
-For a plugin install, run `/plugin uninstall claude-control-bar`, then move `~/Applications/Agent Control Bar.app` to the Trash.
+For a plugin install, run `/plugin uninstall agent-control-bar@claude-control-bar`, then move `~/Applications/Agent Control Bar.app` to the Trash.
 
 For a DMG install, remove the hooks first:
 
