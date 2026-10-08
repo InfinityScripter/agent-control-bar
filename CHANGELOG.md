@@ -7,6 +7,16 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.24.5] - 2026-10-08
+
+### Changed
+- **A shared app icon for Claude and Codex.** Clawd and the Codex companion appear inside two
+  session cards in one control panel. The dark navy palette uses mint and coral state indicators.
+
+### Fixed
+- **The app icon has no extra white background on macOS 26.** Its large image uses an opaque
+  background for system masking; smaller images keep the rounded artwork.
+
 ## [0.24.4] - 2026-10-08
 
 ### Fixed
