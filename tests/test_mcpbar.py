@@ -1504,6 +1504,108 @@ class UsageToken(unittest.TestCase):
         self.assertFalse(os.path.exists(mcpbar.LIMITS))
 
 
+class LimitsStatusFile(unittest.TestCase):
+    """Каждый опрос оставляет limits-status.json: получилось или нет и почему.
+
+    Приложение не читает stdout скрипта, а limits.json при сбое не трогается — поэтому
+    выход из аккаунта Claude Code сутками выглядел как «цифры просто не двигаются». Файл
+    состояния — единственный канал, по которому панель узнаёт причину.
+    """
+
+    def setUp(self):
+        import http.server
+        import threading
+
+        class Target(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b'{"five_hour": {"utilization": 5}}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        class Bouncer(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", "http://127.0.0.1:1/")
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        self.target = http.server.HTTPServer(("127.0.0.1", 0), Target)
+        self.bouncer = http.server.HTTPServer(("127.0.0.1", 0), Bouncer)
+        for server in (self.target, self.bouncer):
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.target_url = "http://127.0.0.1:%d/" % self.target.server_address[1]
+        self.bouncer_url = "http://127.0.0.1:%d/" % self.bouncer.server_address[1]
+
+        self._dir = tempfile.TemporaryDirectory()
+        self.saved = {k: getattr(home(k), k)
+                      for k in ("USAGE_URL", "LIMITS", "LIMITS_STATUS", "oauth_token")}
+        mcpbar.USAGE_URL = self.target_url
+        mcpbar.LIMITS = os.path.join(self._dir.name, "limits.json")
+        mcpbar.LIMITS_STATUS = os.path.join(self._dir.name, "limits-status.json")
+        mcpbar.oauth_token = lambda: "SECRET"
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            setattr(home(k), k, v)
+        for server in (self.target, self.bouncer):
+            server.shutdown()
+            server.server_close()
+        self._dir.cleanup()
+
+    def status(self):
+        with open(mcpbar.LIMITS_STATUS) as fh:
+            return json.load(fh)
+
+    def test_успех_пишет_ok_после_limits_json(self):
+        before = int(time.time())
+        mcpbar.fetch_limits()
+        self.assertTrue(os.path.exists(mcpbar.LIMITS))
+        status = self.status()
+        self.assertEqual(status["state"], "ok")
+        self.assertEqual(status["provider"], "claude")
+        self.assertEqual(status["detail"], "")
+        self.assertIsInstance(status["ts"], int)
+        self.assertGreaterEqual(status["ts"], before)
+        self.assertEqual(stat.S_IMODE(os.stat(mcpbar.LIMITS_STATUS).st_mode), 0o600)
+
+    def test_без_токена_состояние_no_login_и_шов_для_swift(self):
+        mcpbar.oauth_token = lambda: None
+        mcpbar.fetch_limits()
+        status = self.status()
+        self.assertEqual(status["state"], "no-login")
+        self.assertEqual(status["detail"], "no token")
+        self.assertFalse(os.path.exists(mcpbar.LIMITS))
+
+        # Артефакт для swift-стороны шва: model-проверка читает этот файл.
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        seam_dir = os.path.join(repo, "build", "seam")
+        os.makedirs(seam_dir, exist_ok=True)
+        shutil.copyfile(mcpbar.LIMITS_STATUS, os.path.join(seam_dir, "limits-status.json"))
+
+    def test_сбой_пишет_failed_с_именем_исключения_и_не_трогает_limits(self):
+        mcpbar.write_json(mcpbar.LIMITS, {"ts": 1, "source": "oauth",
+                                          "five_hour": {"used_percentage": 42, "resets_at": None}})
+        mcpbar.USAGE_URL = self.bouncer_url
+        mcpbar.fetch_limits()
+        status = self.status()
+        self.assertEqual(status["state"], "failed")
+        self.assertEqual(status["detail"], "HTTPError")
+        self.assertEqual(mcpbar.read_json(mcpbar.LIMITS)["five_hour"]["used_percentage"], 42)
+
+    def test_ответ_без_окон_состояние_empty(self):
+        mcpbar.USAGE_URL = "data:application/json,{}"
+        mcpbar.fetch_limits()
+        self.assertEqual(self.status()["state"], "empty")
+        self.assertFalse(os.path.exists(mcpbar.LIMITS))
+
+
 class ReadJsonShape(unittest.TestCase):
     """read_json сверяет форму с default: чужой файл с массивом наверху там, где ждали
     словарь, — это «данных нет», а не AttributeError на весь refresh.

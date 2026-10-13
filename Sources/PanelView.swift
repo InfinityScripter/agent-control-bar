@@ -71,6 +71,9 @@ struct PanelView: View {
 
     @ViewBuilder
     private var limitsStrip: some View {
+        // Over the strip, not in place of it: the figures under it are still the last true
+        // reading, and the block is what says how far from the truth they have drifted.
+        if let notice = store.snapshot.limitsNotice { limitsNoticeBlock(notice) }
         let groups = store.snapshot.limitGroups
         if groups.isEmpty {
             Text(store.snapshot.limitsNote)
@@ -100,6 +103,21 @@ struct PanelView: View {
                 }
             }
         }
+    }
+
+    /// Why the poll brought no figures, in the same shape as the hooks block on the Sessions tab:
+    /// the cause on the orange line, what it means for the figures under it.
+    private func limitsNoticeBlock(_ notice: PanelLimitsNotice) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            PanelNotice(glyph: "exclamationmark.triangle", text: notice.title)
+            Text(notice.hint)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 4)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.bottom, 7)
     }
 
     /// Which provider the switcher is showing; the snapshot has already resolved the remembered

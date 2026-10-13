@@ -266,6 +266,10 @@ struct PanelSnapshot: Equatable {
     var limitGroups: [PanelLimitGroup] = []
     /// Why the strip is empty, or how old its figures are. One line, always present.
     var limitsNote = ""
+    /// Why the last Claude poll brought no figures, when it did not: drawn over the strip, with the
+    /// old figures left in place under it. Nil while the poll succeeds, the API poll is off, or
+    /// the backend is too old to say.
+    var limitsNotice: PanelLimitsNotice?
     /// How the strip stacks the groups, and which one the switcher is showing — the remembered
     /// pick already resolved against the groups there are, see LimitsBoard.showing.
     var limitsLayout: PanelLimitsLayout = .rows
@@ -329,6 +333,14 @@ struct PanelHooks: Equatable {
     let hint: String?
     /// A look is running right now, so the button says so instead of offering another.
     let checking: Bool
+}
+
+/// The limits warning: what stopped the poll, what that means for the figures on screen, and
+/// whether signing in is the fix.
+struct PanelLimitsNotice: Equatable {
+    let title: String
+    let hint: String
+    let offerSignIn: Bool
 }
 
 /// What the row cannot carry, shown when the row is expanded: the same blocks the hover card drew.
@@ -456,6 +468,7 @@ extension PanelSnapshot {
         codexHooksChecking = c.codexHooksChecking
         hooks = c.panelHooks()
         (limitGroups, limitsNote) = c.panelLimitGroups(now: now)
+        limitsNotice = c.panelLimitsNotice(now: now)
         limitsLayout = c.limitsLayout
         limitsProvider = LimitsBoard.showing(c.limitsProvider, among: limitGroups.map(\.provider))
             ?? c.limitsProvider

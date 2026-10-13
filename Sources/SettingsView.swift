@@ -184,6 +184,11 @@ private struct GeneralSettings: View {
             }
             Section {
                 Toggle("Limits via Anthropic API", isOn: store.oauthLimits)
+                if !store.limitsPollStatus.isEmpty {
+                    Text(store.limitsPollStatus)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             } header: {
                 Text("Limits")
             } footer: {

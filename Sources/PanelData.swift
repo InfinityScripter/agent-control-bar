@@ -103,8 +103,7 @@ extension StatusController {
             // is not signed in through the browser OAuth flow (a `setup-token` login lacks the
             // profile scope the endpoint wants). Saying so beats an empty strip, and beats
             // inventing a number.
-            return ([], oauthLimits ? "No data yet — is Claude Code signed in?"
-                                    : "Limits are switched off in Settings")
+            return ([], LimitsStatus.emptyStripText(limitsStatus, oauthLimits: oauthLimits))
         }
         let groups = sources.map { entry -> PanelLimitGroup in
             let agent = Provider.named(entry.set.provider)
@@ -131,6 +130,15 @@ extension StatusController {
         // The oldest of them in the one shared line: it is the figure furthest from the truth, and
         // a footer that quotes the fresher of two sources would flatter the staler one.
         return (groups, Self.age(of: sources.map { $0.set.ts }.min() ?? 0, now: now))
+    }
+
+    /// The block over the strip when the last poll brought no figures, or nil while there is
+    /// nothing to explain. The age is the same wording the group's own tooltip carries, so the
+    /// block and the "measured 1d ago" under it never disagree.
+    func panelLimitsNotice(now: Double) -> PanelLimitsNotice? {
+        LimitsStatus.notice(limitsStatus, oauthLimits: oauthLimits,
+                            figuresAge: limits.map { Self.age(of: $0.ts, now: now) })
+            .map { PanelLimitsNotice(title: $0.title, hint: $0.hint, offerSignIn: $0.offerSignIn) }
     }
 
     /// How old a figure is, in the words the footer uses. Short: the line shares the footer with

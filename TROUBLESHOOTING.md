@@ -45,6 +45,17 @@ It answers `statusLine wrapper is alive`, `… re-pointed to <path>`, or `captur
 status line is not this app's. Installed as a plugin, the script lives inside the plugin: its
 path is the `script` entry of `~/.claude/control-bar/paths.json`.
 
+**No data — not signed in, or *Limits poll failed*?** The Claude figures come from Anthropic's
+usage endpoint with the OAuth token Claude Code keeps in the Keychain. When that token is gone —
+you signed out of Claude Code, or logged in with `setup-token`, which lacks the scope the
+endpoint wants — the poll gets nothing, and the panel says so in a block above the limits strip
+instead of letting yesterday's numbers look fresh. Sign in again in a terminal (`claude auth
+login`) and the block clears on the next poll: within five minutes, or when you open the panel
+after a minute. *Limits poll failed: HTTPError* (or `URLError`, `timeout`) is the network or the
+endpoint, not the login; it retries on the same schedule. Settings → General → Limits shows the
+same outcome as a **Last poll** line. The raw record is
+`~/.claude/control-bar/limits-status.json`; no line there at all means the backend predates it.
+
 **Icon stuck on "thinking" in the desktop app?** If a session hits your usage limit mid-turn, Claude Code fires no hook to close it out, so the icon keeps thinking until it times out (about 15 minutes). To clear it right away, click the icon in the menu bar and press **Quit**.
 
 **The icon doesn't appear at all?**

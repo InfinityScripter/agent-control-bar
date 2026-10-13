@@ -9,6 +9,15 @@ from, and are kept so the history reads continuously.
 
 ## [Unreleased]
 
+### Added
+- **The panel says why the Claude limits stopped updating.** Every poll now leaves
+  `~/.claude/control-bar/limits-status.json` with its outcome, and when it brought no figures the
+  panel shows a block over the limits strip — "Claude Code is not signed in", "Limits poll
+  failed: HTTPError" — with how old the figures underneath are. The old figures stay visible; the
+  block disappears on the next successful poll, and is never shown while "Limits via Anthropic
+  API" is off. The first signed-out poll after a launch also posts one macOS notification, and
+  Settings → Limits carries a "Last poll: …" line under the switch.
+
 ### Fixed
 - **The status line keeps showing limits after an update or a rename.** The plugin path carries
   the version and the app bundle changed its name, so the `statusLine` command in

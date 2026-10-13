@@ -39,6 +39,7 @@ CLAUDE = os.path.join(HOME, ".claude")
 ROOT = os.path.join(CLAUDE, "control-bar")
 STATE = os.path.join(ROOT, "mcp.json")
 LIMITS = os.path.join(ROOT, "limits.json")
+LIMITS_STATUS = os.path.join(ROOT, "limits-status.json")
 # Сессии ведут Node-хуки: один файл на сессию, тот же каталог читает приложение.
 # Свой реестр сессий скрипт не держит намеренно — два источника правды разошлись бы.
 SESSIONS = os.path.join(ROOT, "state.d")
@@ -1501,11 +1502,19 @@ def scoped_model_window(limits, model):
     return None
 
 
+def write_limits_status(state, detail=""):
+    """Исход опроса для приложения: stdout скрипта оно не читает, а limits.json при сбое
+    не меняется — без этого файла выход из аккаунта выглядел как «цифры не двигаются»."""
+    write_json(LIMITS_STATUS, {"ts": int(time.time()), "provider": "claude",
+                               "state": state, "detail": detail}, mode=SECURE_FILE)
+
+
 def fetch_limits():
     """Один опрос: токен → эндпоинт → limits.json. Молчалив при любом сбое — прошлые
     цифры в файле лучше, чем затёртые ошибкой."""
     token = oauth_token()
     if not token:
+        write_limits_status("no-login", "no token")
         return t("lim.notoken")
     import urllib.request
 
@@ -1531,10 +1540,14 @@ def fetch_limits():
         # или 401. Снаружи он однажды и стоял — и массив вместо объекта ронял весь скрипт.
         record = usage_record(payload)
     except Exception as exc:  # noqa: BLE001 — сеть, 401, редирект, JSON: файл не трогаем
+        write_limits_status("failed", type(exc).__name__)
         return t("lim.failed", e=type(exc).__name__)
     if not record:
+        write_limits_status("empty", "no windows")
         return t("lim.empty")
     write_json(LIMITS, record)
+    # После limits.json, не до: «ok» рядом с прежними цифрами обещало бы свежесть, которой нет.
+    write_limits_status("ok")
     windows = ", ".join(f"{k} {v['used_percentage']}%" for k, v in record.items()
                         if isinstance(v, dict))
     return t("lim.updated", w=windows)

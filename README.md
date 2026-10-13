@@ -106,6 +106,8 @@ In **Settings → Appearance → Limits strip**, **Two rows** shows both provide
 
 Claude figures come from Anthropic's usage API using the OAuth token Claude Code stores locally. Turn **Limits via Anthropic API** off in General to stop the poll. Codex figures are read from local rollout files in `~/.codex/sessions`; **Codex limits** stops that read. No OpenAI token or API request is needed for them.
 
+When a Claude poll brings no figures, the panel says why instead of leaving old numbers to look fresh: a block above the limits strip reads **Claude Code is not signed in** or **Limits poll failed: HTTPError**, with how old the figures below it are. The figures stay; the block goes away on the next successful poll. The first signed-out poll after the app starts also sends one macOS notification, and **Settings → General → Limits** shows a **Last poll** line under the switch.
+
 ## Switch MCP servers and tools
 
 <img src="docs/screenshots/mcp.png" alt="MCP tab with an expanded Claude server and its tool switches, plus a separate Codex server group" width="430">

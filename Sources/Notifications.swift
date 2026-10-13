@@ -17,6 +17,18 @@ extension StatusController {
         for banner in change.notifications { notify(title: banner.title, body: banner.body) }
     }
 
+    /// Once per launch, the first time a poll reports Claude Code signed out. Checked on every tick
+    /// rather than only when the file changes: the file can already say no-login at launch, and
+    /// the API switch can be turned on after it was written — both still deserve the one banner.
+    /// Only once because the file keeps saying the same thing every five minutes until the user
+    /// signs in, and the panel carries the standing reminder.
+    func notifyLimitsSignedOut() {
+        guard oauthLimits, limitsStatus?.state == "no-login", !limitsNoticeSent else { return }
+        limitsNoticeSent = true
+        notify(title: "Claude Code is signed out",
+               body: "Limits stopped updating. Open the panel to sign in.")
+    }
+
     /// Notifications were posted without permission ever being asked for — `requestAuthorization`
     /// appears nowhere in this project's history — so macOS declined every one of them: an app
     /// sitting at `.notDetermined` is not prompted on delivery, the request simply fails, and the

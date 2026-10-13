@@ -718,6 +718,85 @@ if let data = FileManager.default.contents(atPath: limitsSeamPath),
         + "(/usr/bin/python3 -m unittest discover -s tests), it writes build/seam/limits.json")
 }
 
+// MARK: LimitsStatus — why the last poll brought no figures
+// limits-status.json is written by mcpbar.py on every poll, including the ones that leave
+// limits.json alone. The app reads the state as a string, like every other status from the
+// scripts, and only ever decides three things from it: what the block over the strip says, what
+// the empty strip says, and what the Settings line says.
+let failedStatus = LimitsStatus(json: ["state": "failed", "ts": 1_791_921_000, "detail": "HTTPError"])
+check(failedStatus?.state == "failed" && failedStatus?.detail == "HTTPError",
+      "state and detail read as strings")
+check(failedStatus?.ts == 1_791_921_000, "an integer ts reads as the stamp, not as zero")
+check(LimitsStatus(json: ["ts": 1.0, "detail": "x"]) == nil, "no state, no status")
+check(LimitsStatus(json: ["state": "ok"])?.detail == "" && LimitsStatus(json: ["state": "ok"])?.ts == 0,
+      "a bare state has safe defaults for the rest")
+
+let limitsStatusSeamPath = FileManager.default.currentDirectoryPath + "/build/seam/limits-status.json"
+if let data = FileManager.default.contents(atPath: limitsStatusSeamPath),
+   let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+    let seamStatus = LimitsStatus(json: root)
+    check(seamStatus?.state == "no-login", "the signed-out poll crosses over as no-login")
+    check((seamStatus?.ts ?? 0) > 0 && seamStatus?.detail == "no token",
+          "the stamp and the short reason cross over")
+} else {
+    check(false, "limits-status seam fixture missing at \(limitsStatusSeamPath) — run the python "
+        + "suite first (/usr/bin/python3 -m unittest discover -s tests), it writes "
+        + "build/seam/limits-status.json")
+}
+
+let signedOut = LimitsStatus(json: ["state": "no-login", "ts": 1.0, "detail": "no token"])
+let pollFailed = LimitsStatus(json: ["state": "failed", "ts": 1.0, "detail": "HTTPError"])
+let pollEmpty = LimitsStatus(json: ["state": "empty", "ts": 1.0, "detail": "no windows"])
+let pollOK = LimitsStatus(json: ["state": "ok", "ts": 1.0, "detail": ""])
+check(LimitsStatus.notice(pollOK, oauthLimits: true, figuresAge: "4 min ago") == nil,
+      "a successful poll has nothing to say")
+check(LimitsStatus.notice(signedOut, oauthLimits: false, figuresAge: "1d ago") == nil,
+      "with the API poll switched off, no block whatever the file says")
+check(LimitsStatus.notice(nil, oauthLimits: true, figuresAge: "1d ago") == nil,
+      "no status file (an older backend) means the panel behaves as before")
+check(LimitsStatus.notice(signedOut, oauthLimits: true, figuresAge: "1d ago")
+        == LimitsNotice(title: "Claude Code is not signed in",
+                        hint: "Limits stopped updating 1d ago. Sign in to resume.",
+                        offerSignIn: true),
+      "signed out, with old figures: the block names the cause and how old the figures are")
+check(LimitsStatus.notice(signedOut, oauthLimits: true, figuresAge: nil)
+        == LimitsNotice(title: "Claude Code is not signed in",
+                        hint: "Sign in to see limits.", offerSignIn: true),
+      "signed out with no figures at all: no age is invented")
+check(LimitsStatus.notice(pollFailed, oauthLimits: true, figuresAge: "2h ago")
+        == LimitsNotice(title: "Limits poll failed: HTTPError",
+                        hint: "Showing figures from 2h ago. The next poll is a few minutes away.",
+                        offerSignIn: false),
+      "a failed poll names the exception and offers no sign-in")
+check(LimitsStatus.notice(pollEmpty, oauthLimits: true, figuresAge: nil)
+        == LimitsNotice(title: "The usage endpoint returned no limit windows",
+                        hint: "No figures yet. The next poll is a few minutes away.",
+                        offerSignIn: false),
+      "an empty answer is its own cause, not a sign-in problem")
+
+check(LimitsStatus.emptyStripText(signedOut, oauthLimits: false) == "Limits are switched off in Settings",
+      "switched off wins over whatever the file says")
+check(LimitsStatus.emptyStripText(nil, oauthLimits: true) == "No data yet — is Claude Code signed in?",
+      "no status file: the strip's old wording")
+check(LimitsStatus.emptyStripText(pollFailed, oauthLimits: true) == "No data yet — is Claude Code signed in?",
+      "a failed poll keeps the old wording; the block above carries the cause")
+check(LimitsStatus.emptyStripText(signedOut, oauthLimits: true)
+        == "Claude Code is not signed in — sign in to see limits",
+      "signed out: the strip says so instead of guessing")
+
+check(LimitsStatus.pollLine(nil, polledAge: "4 min ago", figuresAge: nil) == "",
+      "no status file: Settings shows no line")
+check(LimitsStatus.pollLine(pollOK, polledAge: "4 min ago", figuresAge: "4 min ago")
+        == "Last poll: ok · 4 min ago", "ok: when the poll ran")
+check(LimitsStatus.pollLine(signedOut, polledAge: "4 min ago", figuresAge: "1d ago")
+        == "Last poll: not signed in · figures from 1d ago", "signed out: how old the figures are")
+check(LimitsStatus.pollLine(signedOut, polledAge: "4 min ago", figuresAge: nil)
+        == "Last poll: not signed in", "signed out with no figures: no age is invented")
+check(LimitsStatus.pollLine(pollFailed, polledAge: "4 min ago", figuresAge: "1d ago")
+        == "Last poll: failed (HTTPError) · figures from 1d ago", "failed: the exception, in brackets")
+check(LimitsStatus.pollLine(pollEmpty, polledAge: "4 min ago", figuresAge: nil)
+        == "Last poll: no limit windows", "empty: worded, not the raw state")
+
 // MARK: Changelog — the "What's new" source
 
 let changelogFixture = """

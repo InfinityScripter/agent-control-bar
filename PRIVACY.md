@@ -143,6 +143,10 @@ Everything of its own lives under `~/.claude/control-bar/`. The complete list:
   `model-windows.json`.
 - **The limits:** `limits.json`, and `codex/limits.json` for the Codex windows — percentages,
   window lengths, reset stamps and the plan name, and nothing else out of the Codex session.
+  Beside them `limits-status.json`, written by the backend script after every Claude poll: how
+  it ended (`ok`, `no-login`, `failed`, `empty`), when, and a short reason — the name of the
+  Python exception, or "no token". It never contains the token, the response, or anything from
+  your account; it is what the panel reads to say why the figures stopped moving.
 - **Install bookkeeping:** `owner.json` (which channel owns the hooks), `paths.json` (where the
   backend script and interpreter are), a copy of the hook scripts and the build script, and
   `releases/` with the source archives a plugin-channel update downloaded.
