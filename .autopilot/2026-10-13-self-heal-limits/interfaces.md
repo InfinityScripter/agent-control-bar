@@ -87,3 +87,32 @@ enum LimitsNote {
 
 ## Что построили законченные таски
 (заполняется по ходу Phase 5)
+
+### Таск 01 — построено
+- `statusline_heal() -> str` в `scripts/mcpbar.py`: ключи `sl.healed{path}` / `sl.healthy` / `sl.off` / `sl.busy` / `sl.nowrapper`, код выхода 0; `statusline-installed.json` пишется после `write_settings` (обрыв между ними оставляет команду «нашей»).
+- `statusline_script_words(command) -> list[str]` — общий помощник `statusline_ours` и починки (слова команды с базовым именем `statusline.sh`).
+- CLI: `mcpbar.py statusline --heal`.
+- `BackendCommand.statuslineHeal.arguments == ["statusline", "--heal"]` (в `backendGolden`).
+- `StatusController.healStatusLine()` в `Sources/HookSetup.swift` (guard `isInstalledCopy`, `runQuietCommand`), вызов в `init` сразу после `checkHooks()`.
+- После ремонта: `statusline_script_words` возвращает слова с раскрытыми `~` и `$HOME` (`expanduser` + `expandvars`); живая чужая строка по такому пути → `sl.off`.
+
+### Таск 02 — построено
+- Python: `LIMITS_STATUS = ROOT/limits-status.json`; `write_limits_status(state, detail="")` → `{"ts", "provider": "claude", "state", "detail"}` (0600, атомарно); `fetch_limits()` пишет его при каждом исходе (`ok` после `limits.json`, `no-login` — "no token", `failed` — имя исключения, `empty` — "no windows"). Шов `build/seam/limits-status.json` (no-login).
+- Swift-модель `Sources/Model/LimitsStatus.swift`: `LimitsStatus { state; ts; detail; init?(json:) }`, `LimitsNotice { title; hint; offerSignIn }`, `LimitsStatus.notice(_:oauthLimits:figuresAge: String?) -> LimitsNotice?` (подпись изменена против первоначального контракта: возраст приходит готовой строкой), `LimitsStatus.emptyStripText(_:oauthLimits:) -> String`, `LimitsStatus.pollLine(_:polledAge:figuresAge:) -> String` (строка Settings).
+- Контроллер: `limitsStatus`, `limitsStatusMTime`, `limitsNoticeSent` (main.swift); `loadLimitsStatus()` (StatePolling.swift, `StateFileLook.at`), `notifyLimitsSignedOut()` (Notifications.swift), оба из `tick()`.
+- Панель: `PanelLimitsNotice { title; hint; offerSignIn }`, `PanelSnapshot.limitsNotice` ← `StatusController.panelLimitsNotice(now:)` (PanelData.swift); `PanelView.limitsNoticeBlock(_:)` над полосой, пока без кнопки — таск 03 добавляет кнопку, когда `offerSignIn`.
+- Settings: `SettingsStore.limitsPollStatus: String`, рисуется под `Toggle("Limits via Anthropic API")`.
+
+### Таск 03 — построено
+- Python: `CLAUDE_LOGIN_COMMAND = ROOT/claude-login.command`; `claude_login() -> str` (файл 0700 атомарно, `/usr/bin/open`), `STRINGS` `login.opened`/`login.missing`; CLI `mcpbar.py claude-login` → код 0.
+- Swift: `BackendCommand.claudeLogin.arguments == ["claude-login"]`; `StatusController.signInClaude()` (Actions.swift: `runQuietCommand(.claudeLogin)`, `lastLimitsPoll = 0`); `PanelStore.signInClaude()`; кнопка «Sign in to Claude Code» в `PanelView.limitsNoticeBlock` при `offerSignIn`.
+
+### Таск 04 — построено
+- `Sources/Model/LimitsNote.swift`: `LimitsNote.age(of:now:) -> String`, `LimitsNote.footer(_ groups: [(title: String, age: String)]) -> String`. `PanelData.age` делегирует в `LimitsNote.age` (его зовёт `SettingsStore`).
+- `merge_codex_limits`: корневой `ts` = max `ts` окон пула `codex`, иначе max по всем; per-window `ts` без изменений.
+- `PanelLimitGroup.tip` у Codex кончается « · from the last Codex session»; `PanelSnapshot.limitsNote` при наличии групп — целиком строка футера; при двух и более провайдерах строка стоит отдельным рядом над кнопками.
+
+### Таск F1 — построено (ремонт по ревью ветки)
+- `LimitsStatus.notice(_:oauthLimits:figuresTs: Double?, now: Double) -> LimitsNotice?` — подпись вернулась к исходному контракту; nil, если `figuresTs > status.ts` (цифры обновил другой писатель позже неудачного опроса). Запись «Таск 02 — построено» про `figuresAge` устарела.
+- `LimitsStatus.signedOutBannerDue(_:oauthLimits:figuresTs:launchedAt:) -> Bool` — true только для `no-login` с `status.ts >= floor(launchedAt)` и без более свежих цифр; `StatusController.launchedAt: Double` (main.swift).
+- `claude_login`: в `.command` только `exec <shlex.quote(path)> auth login` при `os.path.isabs(path)`, иначе ветка «not found»; `STRINGS` `login.openfailed` (TimeoutExpired/OSError от open → текст, код 0).
