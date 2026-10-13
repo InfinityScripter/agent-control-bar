@@ -124,12 +124,10 @@ extension StatusController {
             return PanelLimitGroup(provider: agent.id, title: agent.title, glyph: agent.glyph,
                                    limits: rows,
                                    resets: soonest.map { Self.until($0) },
-                                   age: Self.age(of: entry.set.ts, now: now),
+                                   age: LimitsNote.age(of: entry.set.ts, now: now),
                                    plan: entry.set.plan, worst: worst)
         }
-        // The oldest of them in the one shared line: it is the figure furthest from the truth, and
-        // a footer that quotes the fresher of two sources would flatter the staler one.
-        return (groups, Self.age(of: sources.map { $0.set.ts }.min() ?? 0, now: now))
+        return (groups, LimitsNote.footer(groups.map { (title: $0.title, age: $0.age) }))
     }
 
     /// The block over the strip when the last poll brought no figures, or nil while there is
@@ -137,22 +135,12 @@ extension StatusController {
     /// block and the "measured 1d ago" under it never disagree.
     func panelLimitsNotice(now: Double) -> PanelLimitsNotice? {
         LimitsStatus.notice(limitsStatus, oauthLimits: oauthLimits,
-                            figuresAge: limits.map { Self.age(of: $0.ts, now: now) })
+                            figuresAge: limits.map { LimitsNote.age(of: $0.ts, now: now) })
             .map { PanelLimitsNotice(title: $0.title, hint: $0.hint, offerSignIn: $0.offerSignIn) }
     }
 
-    /// How old a figure is, in the words the footer uses. Short: the line shares the footer with
-    /// two buttons across 300pt, and "measured 4 minutes ago" truncated to "Limits measured 2…",
-    /// which says nothing at all.
     static func age(of ts: Double, now: Double) -> String {
-        let minutes = (now - ts).clampedInt / 60
-        if minutes < 1 { return "just now" }
-        if minutes < 60 { return "\(minutes) min ago" }
-        // Rolled up past an hour for the same reason `until` drops the minutes past a day: a
-        // Codex snapshot is allowed to be days old while its weekly window is still open, and
-        // "8640 min ago" is arithmetic in a line that has to fit beside two buttons.
-        let hours = minutes / 60
-        return hours < 24 ? "\(hours)h ago" : "\(hours / 24)d ago"
+        LimitsNote.age(of: ts, now: now)
     }
 
     /// How long until a window resets. A weekly window is days away, and "76h 12m" is arithmetic

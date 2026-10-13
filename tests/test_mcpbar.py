@@ -2485,7 +2485,7 @@ class CodexLimits(unittest.TestCase):
         self.assertEqual(mcpbar_codex.merge_codex_limits(merged, fresh), merged)
 
     def test_старый_снимок_не_возвращает_удалённое_окно(self):
-        previous = {"ts": 1_789_000_000, "source": "rollout", "windows": [
+        previous = {"ts": 1_789_020_000, "source": "rollout", "windows": [
             self.window("primary", ts=1_789_020_000, used=7, minutes=10080,
                         resets=1_789_621_616),
             self.window("primary", pool="reserve", minutes=10080, resets=1_789_616_476),
@@ -2498,15 +2498,39 @@ class CodexLimits(unittest.TestCase):
         merged = mcpbar_codex.merge_codex_limits(previous, stale)
         self.assertEqual(merged, previous)
 
-    def test_возраст_записи_это_самый_старый_замер(self):
-        """Подпись «measured N min ago» одна на всю группу, и врать она обязана в свою
-        сторону: свежесть резервного окна ничего не говорит про обычное, снятое утром."""
-        previous = {"ts": 1_789_000_000, "source": "rollout", "windows": [self.window()]}
+    def test_возраст_записи_это_свежайший_замер_обычного_пула(self):
+        """Подпись «measured N min ago» одна на группу, а резерв после смены подписки может
+        неделями не обновляться: по самому старому окну панель писала «28d ago» при живых
+        цифрах обычного пула. Окна пула «codex» и решают, свежи ли цифры."""
+        stale_reserve = self.window("primary", pool="reserve", ts=1_789_000_000, minutes=10080,
+                                    resets=1_789_616_476)
+        fresh_ordinary = self.window("primary", ts=1_789_020_000)
+        merged = mcpbar_codex.merge_codex_limits(
+            {"ts": 1_789_000_000, "source": "rollout", "windows": [stale_reserve]},
+            {"ts": 1_789_020_000, "source": "rollout", "windows": [fresh_ordinary]})
+        self.assertEqual(merged["ts"], 1_789_020_000)
+        # Swift решает «окно закончилось» по замеру самого окна, а не по корню.
+        self.assertEqual({(w["pool"], w["ts"]) for w in merged["windows"]},
+                         {("codex", 1_789_020_000), ("reserve", 1_789_000_000)})
+        # Свежий резерв не омолаживает обычные окна, снятые утром.
+        merged = mcpbar_codex.merge_codex_limits(
+            {"ts": 1_789_000_000, "source": "rollout", "windows": [self.window()]},
+            {"ts": 1_789_020_000, "source": "rollout", "windows": [
+                self.window("primary", pool="reserve", ts=1_789_020_000, minutes=10080,
+                            resets=1_789_616_476)]})
+        self.assertEqual(merged["ts"], 1_789_000_000)
+
+    def test_без_обычного_пула_возраст_это_свежайший_замер_резерва(self):
+        """Нечего противопоставлять: единственные окна — резервные, их замер и есть возраст.
+        Окна пула могут нести разные замеры (файл прошлой версии, ручная правка) — берётся
+        свежайший, а не самый старый."""
         fresh = {"ts": 1_789_020_000, "source": "rollout", "windows": [
-            self.window("primary", pool="reserve", ts=1_789_020_000, minutes=10080,
+            self.window("primary", pool="reserve", ts=1_789_010_000, minutes=10080,
+                        resets=1_789_616_476),
+            self.window("secondary", pool="reserve", ts=1_789_020_000, minutes=10080,
                         resets=1_789_616_476),
         ]}
-        self.assertEqual(mcpbar_codex.merge_codex_limits(previous, fresh)["ts"], 1_789_000_000)
+        self.assertEqual(mcpbar_codex.merge_codex_limits(None, fresh)["ts"], 1_789_020_000)
 
     def test_файл_прошлой_версии_переезжает_без_потери(self):
         """До этой версии пул стоял пометкой на всей записи, а момент замера был один на файл.

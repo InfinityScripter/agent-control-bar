@@ -31,6 +31,12 @@ from, and are kept so the history reads continuously.
   the command is this app's own and its file is gone, only the path is re-pointed to the live
   wrapper. Your inner command, `padding` and the other `statusLine` fields stay as they were; a
   foreign status line, or a live wrapper, is never touched.
+- **The limits footer dates each provider by its own figures.** With Claude and Codex both
+  shown, the line under the strip used to quote the oldest stamp for both, so a stalled Claude
+  poll made live Codex figures read "28d ago". It now says "Claude 1d ago · Codex just now" on a
+  row of its own; with one provider it stays "Limits · 4 min ago". Codex's age follows the
+  ordinary limit windows rather than a long-idle reserve one, and the Codex tooltip says the
+  figures come from the last Codex session.
 
 ## [0.24.5] - 2026-10-08
 

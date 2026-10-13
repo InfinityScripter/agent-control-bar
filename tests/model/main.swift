@@ -1635,6 +1635,38 @@ check(!AnalyticsPing.configured || AnalyticsPing.endpoint.hasPrefix("https://"),
       "a configured endpoint is https or it is nothing")
 check(["arm64", "x86_64", "other"].contains(AnalyticsPing.arch), "arch is one of three words")
 
+// MARK: LimitsNote — how old each provider's figures are, said once per provider
+
+// The footer used to quote the oldest stamp for everybody: a Claude poll that stopped a day ago
+// made live Codex figures read "1d ago" too. The wording is pinned literally, because the line
+// shares 300pt with two buttons and "measured 4 minutes ago" once truncated to nothing.
+check(LimitsNote.age(of: 1_000, now: 1_000) == "just now", "the same second is just now")
+check(LimitsNote.age(of: 1_000, now: 1_059) == "just now", "under a minute is still just now")
+check(LimitsNote.age(of: 1_000, now: 1_060) == "1 min ago", "a minute is the first minute count")
+check(LimitsNote.age(of: 1_000, now: 1_000 + 59 * 60 + 59) == "59 min ago",
+      "minutes run up to the hour")
+check(LimitsNote.age(of: 1_000, now: 1_000 + 3_600) == "1h ago", "an hour rolls minutes into hours")
+check(LimitsNote.age(of: 1_000, now: 1_000 + 23 * 3_600 + 3_599) == "23h ago",
+      "hours run up to the day")
+check(LimitsNote.age(of: 1_000, now: 1_000 + 24 * 3_600) == "1d ago", "a day rolls hours into days")
+check(LimitsNote.age(of: 1_000, now: 1_000 + 28 * 24 * 3_600) == "28d ago",
+      "and a month-old stamp reads in days, not as 40320 minutes")
+check(LimitsNote.age(of: 5_000, now: 1_000) == "just now",
+      "a stamp from the future (clock skew) reads as just now rather than a negative age")
+check(LimitsNote.age(of: 0, now: .nan) == "just now", "a NaN clock cannot trap the conversion")
+
+check(LimitsNote.footer([]) == "", "no provider, no footer")
+check(LimitsNote.footer([(title: "Claude", age: "4 min ago")]) == "Limits · 4 min ago",
+      "one provider keeps the line the panel always had")
+check(LimitsNote.footer([(title: "Codex", age: "just now")]) == "Limits · just now",
+      "and a lone Codex strip names no provider either: there is nothing to tell it from")
+check(LimitsNote.footer([(title: "Claude", age: "1d ago"), (title: "Codex", age: "just now")])
+        == "Claude 1d ago · Codex just now",
+      "two providers each carry their own age")
+check(LimitsNote.footer([(title: "A", age: "1h ago"), (title: "B", age: "2h ago"),
+                         (title: "C", age: "3h ago")]) == "A 1h ago · B 2h ago · C 3h ago",
+      "and a third one is joined the same way")
+
 // MARK: LimitsSet — one shape for two providers, and one place that decides "this is stale"
 
 // Claude's three windows, named once in the model rather than in the panel: the strip, the text
@@ -1894,6 +1926,11 @@ if !FileManager.default.fileExists(atPath: poolsSeamPath) {
             + "\(seamSet.windows.map { $0.title })")
     check(seamSet.windows.map { $0.window.used } == [97, 15, 29],
           "with the figures each pool was last measured at")
+    // The reserve turn was measured an hour (3600 s) after the ordinary ones. The record's own age
+    // is the ordinary pool's: a fresh reserve figure must not make the morning's windows look new.
+    check(seamSet.ts == 1_789_120_800, "the record is as old as the ordinary pool: \(seamSet.ts)")
+    check(seamSet.windows.compactMap { $0.ts } == [1_789_120_800, 1_789_120_800, 1_789_124_400],
+          "while each window keeps the stamp it was measured at: \(seamSet.windows.map { $0.ts })")
     // The fixture's five-hour window resets at 2026-09-11T11:00Z; an hour later the ordinary
     // session pool is free again and only the reserve figure is worth reading.
     check(seamSet.drawable(at: 1_789_128_000).map { $0.window.used } == [0, 15, 29],

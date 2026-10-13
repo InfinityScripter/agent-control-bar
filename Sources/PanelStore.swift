@@ -230,9 +230,12 @@ struct PanelLimitGroup: Equatable, Identifiable {
 
     var id: String { provider }
 
-    /// What the group's tooltip says: who, on what plan, measured when.
+    /// What the group's tooltip says: who, on what plan, measured when — and, for Codex, where the
+    /// figures come from: they are the last snapshot a Codex session wrote, so they stand still
+    /// while no session is running and "measured 3d ago" is not a polling fault.
     var tip: String {
-        [title, plan, "measured " + age].compactMap { $0 }.joined(separator: " · ")
+        let source = provider == Provider.codex.id ? "from the last Codex session" : nil
+        return [title, plan, "measured " + age, source].compactMap { $0 }.joined(separator: " · ")
     }
 }
 
@@ -267,7 +270,8 @@ struct PanelSnapshot: Equatable {
     /// drawn empty: an empty bar reads as "you have not used it", which is not what "no data"
     /// means.
     var limitGroups: [PanelLimitGroup] = []
-    /// Why the strip is empty, or how old its figures are. One line, always present.
+    /// The footer line while the strip has figures ("Limits · 4 min ago", "Claude 1d ago · Codex
+    /// just now"); why the strip is empty otherwise. One line, always present.
     var limitsNote = ""
     /// Why the last Claude poll brought no figures, when it did not: drawn over the strip, with the
     /// old figures left in place under it. Nil while the poll succeeds, the API poll is off, or

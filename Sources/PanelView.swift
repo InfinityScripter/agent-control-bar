@@ -289,25 +289,34 @@ struct PanelView: View {
         .help("macOS asks once per app, ever. Alerts stay muted until this is switched back on.")
     }
 
+    @ViewBuilder
     private var footer: some View {
-        HStack(spacing: 8) {
-            Text(store.snapshot.limitGroups.isEmpty ? "" : "Limits · " + store.snapshot.limitsNote)
-                .font(.system(size: 10.5))
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-            Spacer(minLength: 0)
-            Button { store.openSettings() } label: {
-                Label("Settings", systemImage: "gearshape")
-                    .labelStyle(PanelIconLabelStyle())
+        // Two providers' ages ("Claude 1d ago · Codex just now") are wider than the room the
+        // buttons leave in 300pt and would be cut to "Claude 1d ago · Co…", so that line gets a row
+        // of its own. One provider keeps its short line beside the buttons.
+        let stacked = store.snapshot.limitGroups.count > 1
+        let note = Text(store.snapshot.limitGroups.isEmpty ? "" : store.snapshot.limitsNote)
+            .font(.system(size: 10.5))
+            .foregroundStyle(.tertiary)
+            .lineLimit(1)
+        VStack(alignment: .leading, spacing: 5) {
+            if stacked { note }
+            HStack(spacing: 8) {
+                if !stacked { note }
+                Spacer(minLength: 0)
+                Button { store.openSettings() } label: {
+                    Label("Settings", systemImage: "gearshape")
+                        .labelStyle(PanelIconLabelStyle())
+                }
+                .buttonStyle(PanelButtonStyle())
+                .keyboardShortcut(",", modifiers: .command)
+                Button { store.quit() } label: {
+                    Label("Quit", systemImage: "power")
+                        .labelStyle(PanelIconLabelStyle())
+                }
+                .buttonStyle(PanelButtonStyle())
+                .keyboardShortcut("q", modifiers: .command)
             }
-            .buttonStyle(PanelButtonStyle())
-            .keyboardShortcut(",", modifiers: .command)
-            Button { store.quit() } label: {
-                Label("Quit", systemImage: "power")
-                    .labelStyle(PanelIconLabelStyle())
-            }
-            .buttonStyle(PanelButtonStyle())
-            .keyboardShortcut("q", modifiers: .command)
         }
         .padding(.top, 9)
         .padding(.horizontal, 3)
