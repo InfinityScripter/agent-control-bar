@@ -342,8 +342,6 @@ struct PanelHooks: Equatable {
     let checking: Bool
 }
 
-/// The limits warning: what stopped the poll, what that means for the figures on screen, and
-/// whether signing in is the fix.
 struct PanelLimitsNotice: Equatable {
     let title: String
     let hint: String

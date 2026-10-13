@@ -1637,9 +1637,9 @@ class ClaudeLogin(unittest.TestCase):
             setattr(home(k), k, v)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def fake_claude(self):
+    def fake_claude(self, dirname="my bin"):
         """Поддельный бинарь в каталоге с пробелом: кавычки в .command должны его пережить."""
-        path = os.path.join(self.tmp, "my bin", "claude")
+        path = os.path.join(self.tmp, dirname, "claude")
         os.makedirs(os.path.dirname(path))
         log = os.path.join(self.tmp, "claude-args")
         with open(path, "w") as fh:
@@ -1666,11 +1666,35 @@ class ClaudeLogin(unittest.TestCase):
         with open(mcpbar.CLAUDE_LOGIN_COMMAND) as fh:
             text = fh.read()
         self.assertTrue(text.startswith("#!/bin/bash\n"))
-        self.assertIn(f'exec "{claude}" auth login', text)
+        self.assertIn(f"exec '{claude}' auth login", text)
         self.assertNotIn("not found", text)
         self.run_command_file()
         with open(log) as fh:
             self.assertEqual(fh.read().strip(), "auth login")
+
+    def test_путь_с_долларом_и_кавычкой_доходит_до_bash_целым(self):
+        """`$` внутри двойных кавычек bash раскрывает, а одинарную кавычку внутри одинарных
+        не закрыть: путь надо экранировать, а не оборачивать."""
+        claude, log = self.fake_claude("my $bin's")
+        with mock.patch.object(mcpbar, "find_claude", return_value=claude):
+            answer = mcpbar.claude_login()
+        self.assertEqual(answer, "opened Terminal with claude auth login")
+        ran = self.run_command_file()
+        self.assertEqual(ran.returncode, 0, ran.stderr)
+        with open(log) as fh:
+            self.assertEqual(fh.read().strip(), "auth login")
+
+    def test_относительный_путь_к_claude_не_попадает_в_команду(self):
+        """shutil.which отвечает относительным путём, если в PATH есть «.»: что запустит файл,
+        зависело бы от каталога, в котором Terminal его открыл."""
+        with mock.patch.object(mcpbar, "find_claude", return_value="bin/claude"):
+            answer = mcpbar.claude_login()
+        self.assertEqual(answer, "claude not found — Terminal shows what to do")
+        with open(mcpbar.CLAUDE_LOGIN_COMMAND) as fh:
+            text = fh.read()
+        self.assertNotIn("exec", text)
+        self.assertNotIn("bin/claude", text)
+        self.assertIn("not found", text)
 
     def test_без_бинаря_terminal_объясняет_и_ждёт_клавишу(self):
         """Terminal всё равно открывается: пустое окно с ошибкой, закрывшееся само, человек
@@ -1701,6 +1725,24 @@ class ClaudeLogin(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(out.getvalue().strip(), "claude not found — Terminal shows what to do")
         self.assertEqual(len(self.opened), 1)
+
+    def test_зависший_или_упавший_open_отвечает_текстом_а_не_traceback(self):
+        """Ненулевой выход с traceback приложение пишет в лог как сбой бэкенда. Файл к этому
+        моменту уже записан, и ответ называет его, чтобы запустить вручную."""
+        import contextlib
+        import io
+
+        for exc in (subprocess.TimeoutExpired(["/usr/bin/open"], 30), OSError(5, "boom")):
+            with self.subTest(exc=type(exc).__name__):
+                out = io.StringIO()
+                with mock.patch.object(subprocess, "run", side_effect=exc), \
+                     mock.patch.object(mcpbar, "find_claude", return_value=None), \
+                     contextlib.redirect_stdout(out):
+                    code = mcpbar.main(["claude-login"])
+                self.assertEqual(code, 0)
+                self.assertIn(type(exc).__name__, out.getvalue())
+                self.assertIn(mcpbar.CLAUDE_LOGIN_COMMAND, out.getvalue())
+                self.assertTrue(os.path.exists(mcpbar.CLAUDE_LOGIN_COMMAND))
 
 
 class ReadJsonShape(unittest.TestCase):

@@ -17,13 +17,16 @@ extension StatusController {
         for banner in change.notifications { notify(title: banner.title, body: banner.body) }
     }
 
-    /// Once per launch, the first time a poll reports Claude Code signed out. Checked on every tick
-    /// rather than only when the file changes: the file can already say no-login at launch, and
-    /// the API switch can be turned on after it was written — both still deserve the one banner.
-    /// Only once because the file keeps saying the same thing every five minutes until the user
-    /// signs in, and the panel carries the standing reminder.
+    /// Once per launch, the first time a poll of this launch reports Claude Code signed out.
+    /// Checked on every tick rather than only when the file changes: the API switch can be turned
+    /// on after the file was written, and the other writer's figures can go stale after it — both
+    /// still deserve the one banner. Only once because the file keeps saying the same thing every
+    /// five minutes until the user signs in, and the panel carries the standing reminder.
     func notifyLimitsSignedOut() {
-        guard oauthLimits, limitsStatus?.state == "no-login", !limitsNoticeSent else { return }
+        guard !limitsNoticeSent,
+              LimitsStatus.signedOutBannerDue(limitsStatus, oauthLimits: oauthLimits,
+                                              figuresTs: limits?.ts, launchedAt: launchedAt)
+        else { return }
         limitsNoticeSent = true
         notify(title: "Claude Code is signed out",
                body: "Limits stopped updating. Open the panel to sign in.")

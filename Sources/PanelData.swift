@@ -131,11 +131,9 @@ extension StatusController {
     }
 
     /// The block over the strip when the last poll brought no figures, or nil while there is
-    /// nothing to explain. The age is the same wording the group's own tooltip carries, so the
-    /// block and the "measured 1d ago" under it never disagree.
+    /// nothing to explain.
     func panelLimitsNotice(now: Double) -> PanelLimitsNotice? {
-        LimitsStatus.notice(limitsStatus, oauthLimits: oauthLimits,
-                            figuresAge: limits.map { LimitsNote.age(of: $0.ts, now: now) })
+        LimitsStatus.notice(limitsStatus, oauthLimits: oauthLimits, figuresTs: limits?.ts, now: now)
             .map { PanelLimitsNotice(title: $0.title, hint: $0.hint, offerSignIn: $0.offerSignIn) }
     }
 

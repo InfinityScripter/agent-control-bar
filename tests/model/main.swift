@@ -744,35 +744,69 @@ if let data = FileManager.default.contents(atPath: limitsStatusSeamPath),
         + "build/seam/limits-status.json")
 }
 
-let signedOut = LimitsStatus(json: ["state": "no-login", "ts": 1.0, "detail": "no token"])
-let pollFailed = LimitsStatus(json: ["state": "failed", "ts": 1.0, "detail": "HTTPError"])
-let pollEmpty = LimitsStatus(json: ["state": "empty", "ts": 1.0, "detail": "no windows"])
-let pollOK = LimitsStatus(json: ["state": "ok", "ts": 1.0, "detail": ""])
-check(LimitsStatus.notice(pollOK, oauthLimits: true, figuresAge: "4 min ago") == nil,
+let polledAt = 1_000_000.0
+let signedOut = LimitsStatus(json: ["state": "no-login", "ts": 1_000_000, "detail": "no token"])
+let pollFailed = LimitsStatus(json: ["state": "failed", "ts": 1_000_000, "detail": "HTTPError"])
+let pollEmpty = LimitsStatus(json: ["state": "empty", "ts": 1_000_000, "detail": "no windows"])
+let pollOK = LimitsStatus(json: ["state": "ok", "ts": 1_000_000, "detail": ""])
+check(LimitsStatus.notice(pollOK, oauthLimits: true, figuresTs: polledAt - 240, now: polledAt) == nil,
       "a successful poll has nothing to say")
-check(LimitsStatus.notice(signedOut, oauthLimits: false, figuresAge: "1d ago") == nil,
+check(LimitsStatus.notice(signedOut, oauthLimits: false, figuresTs: polledAt - 86_400, now: polledAt) == nil,
       "with the API poll switched off, no block whatever the file says")
-check(LimitsStatus.notice(nil, oauthLimits: true, figuresAge: "1d ago") == nil,
+check(LimitsStatus.notice(nil, oauthLimits: true, figuresTs: polledAt - 86_400, now: polledAt) == nil,
       "no status file (an older backend) means the panel behaves as before")
-check(LimitsStatus.notice(signedOut, oauthLimits: true, figuresAge: "1d ago")
+check(LimitsStatus.notice(signedOut, oauthLimits: true, figuresTs: polledAt - 86_400, now: polledAt)
         == LimitsNotice(title: "Claude Code is not signed in",
                         hint: "Limits stopped updating 1d ago. Sign in to resume.",
                         offerSignIn: true),
       "signed out, with old figures: the block names the cause and how old the figures are")
-check(LimitsStatus.notice(signedOut, oauthLimits: true, figuresAge: nil)
+check(LimitsStatus.notice(signedOut, oauthLimits: true, figuresTs: nil, now: polledAt)
         == LimitsNotice(title: "Claude Code is not signed in",
                         hint: "Sign in to see limits.", offerSignIn: true),
       "signed out with no figures at all: no age is invented")
-check(LimitsStatus.notice(pollFailed, oauthLimits: true, figuresAge: "2h ago")
+check(LimitsStatus.notice(pollFailed, oauthLimits: true, figuresTs: polledAt - 7_200, now: polledAt)
         == LimitsNotice(title: "Limits poll failed: HTTPError",
                         hint: "Showing figures from 2h ago. The next poll is a few minutes away.",
                         offerSignIn: false),
       "a failed poll names the exception and offers no sign-in")
-check(LimitsStatus.notice(pollEmpty, oauthLimits: true, figuresAge: nil)
+check(LimitsStatus.notice(pollEmpty, oauthLimits: true, figuresTs: nil, now: polledAt)
         == LimitsNotice(title: "The usage endpoint returned no limit windows",
                         hint: "No figures yet. The next poll is a few minutes away.",
                         offerSignIn: false),
       "an empty answer is its own cause, not a sign-in problem")
+// limits.json has a second writer, the statusLine capture. While it keeps the figures moving
+// and only the API poll fails, the block would sit over live figures saying they stopped.
+check(LimitsStatus.notice(pollFailed, oauthLimits: true, figuresTs: polledAt + 60, now: polledAt + 120) == nil,
+      "figures written after the failed poll: nothing to explain, the figures are live")
+check(LimitsStatus.notice(signedOut, oauthLimits: true, figuresTs: polledAt + 1, now: polledAt + 120) == nil,
+      "the same for a sign-out: fresher figures mean another source is still feeding the strip")
+check(LimitsStatus.notice(pollFailed, oauthLimits: true, figuresTs: polledAt - 60, now: polledAt + 120)
+        == LimitsNotice(title: "Limits poll failed: HTTPError",
+                        hint: "Showing figures from 3 min ago. The next poll is a few minutes away.",
+                        offerSignIn: false),
+      "figures older than the failed poll: the block stays, dated from the figures")
+check(LimitsStatus.notice(pollFailed, oauthLimits: true, figuresTs: polledAt, now: polledAt + 120) != nil,
+      "figures and poll stamped the same second: the poll's own verdict stands")
+
+// The one signed-out banner. The first tick reads whatever limits-status.json was left from the
+// previous run, before this launch's own poll has answered; a banner off that file announces a
+// sign-out that may be a day old and already over.
+check(LimitsStatus.signedOutBannerDue(signedOut, oauthLimits: true, figuresTs: nil, launchedAt: polledAt + 1) == false,
+      "a no-login file from before this launch is not news")
+check(LimitsStatus.signedOutBannerDue(signedOut, oauthLimits: true, figuresTs: nil, launchedAt: polledAt - 10) == true,
+      "a poll made since launch that found no login: the banner goes out")
+check(LimitsStatus.signedOutBannerDue(signedOut, oauthLimits: true, figuresTs: nil, launchedAt: polledAt + 0.4) == true,
+      "the script stamps whole seconds: a poll answered within the launch second still counts")
+check(LimitsStatus.signedOutBannerDue(signedOut, oauthLimits: true, figuresTs: polledAt + 30, launchedAt: polledAt - 10) == false,
+      "figures refreshed by the other writer since the poll: no banner, as there is no block")
+check(LimitsStatus.signedOutBannerDue(signedOut, oauthLimits: true, figuresTs: polledAt - 86_400, launchedAt: polledAt - 10) == true,
+      "old figures do not hold the banner back")
+check(LimitsStatus.signedOutBannerDue(pollFailed, oauthLimits: true, figuresTs: nil, launchedAt: polledAt - 10) == false,
+      "only a sign-out is announced; a failed poll is the panel's business")
+check(LimitsStatus.signedOutBannerDue(signedOut, oauthLimits: false, figuresTs: nil, launchedAt: polledAt - 10) == false,
+      "with the API poll switched off, no banner whatever the file says")
+check(LimitsStatus.signedOutBannerDue(nil, oauthLimits: true, figuresTs: nil, launchedAt: polledAt - 10) == false,
+      "no status file, no banner")
 
 check(LimitsStatus.emptyStripText(signedOut, oauthLimits: false) == "Limits are switched off in Settings",
       "switched off wins over whatever the file says")

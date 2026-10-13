@@ -26,6 +26,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import sys
 import time
 
@@ -173,6 +174,8 @@ STRINGS = {
                      "открыла Terminal с claude auth login"),
     "login.missing": ("claude not found — Terminal shows what to do",
                       "claude не найден — Terminal скажет, что делать"),
+    "login.openfailed": ("Terminal did not open ({e}); run the file by hand: {path}",
+                         "Terminal не открылся ({e}); запусти файл вручную: {path}"),
     "codex.absent": ("no ~/.codex — Codex CLI is not installed here",
                      "нет ~/.codex — Codex CLI на этой машине не стоит"),
     "codex.nosnapshot": ("no rollout carries a limits snapshot yet",
@@ -1397,8 +1400,11 @@ def claude_login():
     import subprocess
 
     claude = find_claude()
-    if claude:
-        body = f'exec "{claude}" auth login\n'
+    # shutil.which отвечает относительным путём, если в PATH есть «.»; что запустит файл,
+    # зависело бы от каталога, в котором Terminal его открыл.
+    found = bool(claude) and os.path.isabs(claude)
+    if found:
+        body = f"exec {shlex.quote(claude)} auth login\n"
     else:
         # Окно Terminal с ошибкой «команда не найдена» закрылось бы раньше, чем человек его
         # прочтёт: read держит его открытым до нажатия клавиши.
@@ -1410,8 +1416,11 @@ def claude_login():
     with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o700), "w") as fh:
         fh.write("#!/bin/bash\n" + body)
     os.replace(tmp, CLAUDE_LOGIN_COMMAND)
-    subprocess.run(["/usr/bin/open", CLAUDE_LOGIN_COMMAND], check=False, timeout=30)
-    return t("login.opened" if claude else "login.missing")
+    try:
+        subprocess.run(["/usr/bin/open", CLAUDE_LOGIN_COMMAND], check=False, timeout=30)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return t("login.openfailed", e=type(exc).__name__, path=CLAUDE_LOGIN_COMMAND)
+    return t("login.opened" if found else "login.missing")
 
 
 # ──────────────────────────────────────────────────────────── лимиты по OAuth

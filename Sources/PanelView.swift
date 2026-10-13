@@ -105,9 +105,6 @@ struct PanelView: View {
         }
     }
 
-    /// Why the poll brought no figures, in the same shape as the hooks block on the Sessions tab:
-    /// the cause on the orange line, what it means for the figures under it, and — when the cause
-    /// is a sign-out — the button that starts the sign-in.
     private func limitsNoticeBlock(_ notice: PanelLimitsNotice) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             PanelNotice(glyph: "exclamationmark.triangle", text: notice.title)

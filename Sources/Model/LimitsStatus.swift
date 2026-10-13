@@ -31,10 +31,15 @@ struct LimitsNotice: Equatable {
 extension LimitsStatus {
     /// nil when there is nothing to explain: the poll succeeded, the API poll is switched off (the
     /// file may still say no-login from before the switch), or the backend is too old to write the
-    /// file at all. `figuresAge` is the strip's own wording for how old limits.json is, nil when
-    /// there are no figures — the hint never invents an age.
-    static func notice(_ status: LimitsStatus?, oauthLimits: Bool, figuresAge: String?) -> LimitsNotice? {
-        guard oauthLimits, let status, status.state != "ok" else { return nil }
+    /// file at all. `figuresTs` is the stamp of limits.json, nil when there are no figures — the
+    /// hint never invents an age.
+    ///
+    /// Also nil when the figures are newer than the poll: limits.json has a second writer, the
+    /// statusLine capture, and while it keeps the figures moving a block saying they stopped
+    /// would sit over live numbers.
+    static func notice(_ status: LimitsStatus?, oauthLimits: Bool, figuresTs: Double?, now: Double) -> LimitsNotice? {
+        guard let status = explainable(status, oauthLimits: oauthLimits, figuresTs: figuresTs) else { return nil }
+        let figuresAge = figuresTs.map { LimitsNote.age(of: $0, now: now) }
         if status.state == "no-login" {
             let hint = figuresAge.map { "Limits stopped updating \($0). Sign in to resume." }
                 ?? "Sign in to see limits."
@@ -46,6 +51,25 @@ extension LimitsStatus {
         let hint = (figuresAge.map { "Showing figures from \($0)." } ?? "No figures yet.")
             + " The next poll is a few minutes away."
         return LimitsNotice(title: title, hint: hint, offerSignIn: false)
+    }
+
+    /// Whether the one signed-out banner is due for this status. Only a poll made since launch
+    /// counts: the first tick reads the file the previous run left behind, before this launch's
+    /// own poll has answered, and a banner off that file announces a sign-out that may be over.
+    /// Gated like the block, so the banner never says what the panel does not show.
+    static func signedOutBannerDue(_ status: LimitsStatus?, oauthLimits: Bool, figuresTs: Double?,
+                                   launchedAt: Double) -> Bool {
+        guard let status = explainable(status, oauthLimits: oauthLimits, figuresTs: figuresTs),
+              status.state == "no-login" else { return false }
+        // The script stamps whole seconds, so a poll answered within the launch second carries a
+        // stamp just below launchedAt and must still count as this launch's.
+        return status.ts >= launchedAt.rounded(.down)
+    }
+
+    private static func explainable(_ status: LimitsStatus?, oauthLimits: Bool, figuresTs: Double?) -> LimitsStatus? {
+        guard oauthLimits, let status, status.state != "ok" else { return nil }
+        if let figuresTs, figuresTs > status.ts { return nil }
+        return status
     }
 
     /// What the strip says when it has no figures to draw. The old two lines stay for every case
