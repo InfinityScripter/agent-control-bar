@@ -1606,6 +1606,103 @@ class LimitsStatusFile(unittest.TestCase):
         self.assertFalse(os.path.exists(mcpbar.LIMITS))
 
 
+class ClaudeLogin(unittest.TestCase):
+    """Кнопка «Sign in to Claude Code»: скрипт пишет claude-login.command и отдаёт его `open`.
+
+    Terminal открывает такой файл сам, без разрешения Automation. Сам вход здесь не идёт:
+    `open` подменён, а файл исполняется с поддельным `claude`, который только записывает,
+    с какими словами его позвали.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.root = os.path.join(self.tmp, "control-bar")
+        self.saved = {k: getattr(home(k), k) for k in ("ROOT", "CLAUDE_LOGIN_COMMAND", "LANG")}
+        mcpbar.ROOT = self.root
+        mcpbar.CLAUDE_LOGIN_COMMAND = os.path.join(self.root, "claude-login.command")
+        mcpbar.LANG = "en"
+        self.opened = []
+        self.real_run = subprocess.run
+
+        def fake_open(args, **kw):
+            self.opened.append(args)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        self.run_patch = mock.patch.object(subprocess, "run", fake_open)
+        self.run_patch.start()
+
+    def tearDown(self):
+        self.run_patch.stop()
+        for k, v in self.saved.items():
+            setattr(home(k), k, v)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def fake_claude(self):
+        """Поддельный бинарь в каталоге с пробелом: кавычки в .command должны его пережить."""
+        path = os.path.join(self.tmp, "my bin", "claude")
+        os.makedirs(os.path.dirname(path))
+        log = os.path.join(self.tmp, "claude-args")
+        with open(path, "w") as fh:
+            fh.write(f'#!/bin/bash\nprintf "%s\\n" "$*" > "{log}"\n')
+        os.chmod(path, 0o700)
+        return path, log
+
+    def run_command_file(self):
+        """Как Terminal: исполнить файл, stdin пустой — `read` не ждёт клавишу вечно."""
+        return self.real_run(
+            ["/bin/bash", mcpbar.CLAUDE_LOGIN_COMMAND],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
+        )
+
+    def test_найденный_бинарь_запускается_с_auth_login(self):
+        claude, log = self.fake_claude()
+        with mock.patch.object(mcpbar, "find_claude", return_value=claude):
+            answer = mcpbar.claude_login()
+        self.assertEqual(answer, "opened Terminal with claude auth login")
+        self.assertEqual(self.opened, [["/usr/bin/open", mcpbar.CLAUDE_LOGIN_COMMAND]])
+        self.assertEqual(stat.S_IMODE(os.stat(mcpbar.CLAUDE_LOGIN_COMMAND).st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(os.stat(self.root).st_mode), 0o700)
+        self.assertEqual(os.listdir(self.root), ["claude-login.command"])
+        with open(mcpbar.CLAUDE_LOGIN_COMMAND) as fh:
+            text = fh.read()
+        self.assertTrue(text.startswith("#!/bin/bash\n"))
+        self.assertIn(f'exec "{claude}" auth login', text)
+        self.assertNotIn("not found", text)
+        self.run_command_file()
+        with open(log) as fh:
+            self.assertEqual(fh.read().strip(), "auth login")
+
+    def test_без_бинаря_terminal_объясняет_и_ждёт_клавишу(self):
+        """Terminal всё равно открывается: пустое окно с ошибкой, закрывшееся само, человек
+        прочитать не успеет. Поэтому текст и ожидание клавиши, а не exec несуществующего."""
+        with mock.patch.object(mcpbar, "find_claude", return_value=None):
+            answer = mcpbar.claude_login()
+        self.assertEqual(answer, "claude not found — Terminal shows what to do")
+        self.assertEqual(self.opened, [["/usr/bin/open", mcpbar.CLAUDE_LOGIN_COMMAND]])
+        self.assertEqual(stat.S_IMODE(os.stat(mcpbar.CLAUDE_LOGIN_COMMAND).st_mode), 0o700)
+        with open(mcpbar.CLAUDE_LOGIN_COMMAND) as fh:
+            text = fh.read()
+        self.assertTrue(text.startswith("#!/bin/bash\n"))
+        self.assertNotIn("exec", text)
+        self.assertIn("read -r -n 1", text)
+        shown = self.run_command_file()
+        self.assertEqual(shown.stdout.strip(),
+                         "Claude Code CLI not found. Install it, then run: claude auth login")
+
+    def test_команда_claude_login_печатает_ответ_и_выходит_нулём(self):
+        """Приложение stdout не читает, а ненулевой выход попадает в его лог как сбой."""
+        import contextlib
+        import io
+
+        out = io.StringIO()
+        with mock.patch.object(mcpbar, "find_claude", return_value=None), \
+             contextlib.redirect_stdout(out):
+            code = mcpbar.main(["claude-login"])
+        self.assertEqual(code, 0)
+        self.assertEqual(out.getvalue().strip(), "claude not found — Terminal shows what to do")
+        self.assertEqual(len(self.opened), 1)
+
+
 class ReadJsonShape(unittest.TestCase):
     """read_json сверяет форму с default: чужой файл с массивом наверху там, где ждали
     словарь, — это «данных нет», а не AttributeError на весь refresh.

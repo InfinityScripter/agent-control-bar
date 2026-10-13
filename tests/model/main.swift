@@ -2877,6 +2877,7 @@ let backendGolden: [(BackendCommand, [String])] = [
     (.codexHooks, ["codex-hooks"]),
     (.codexHooksApprove, ["codex-hooks", "approve"]),
     (.statuslineHeal, ["statusline", "--heal"]),
+    (.claudeLogin, ["claude-login"]),
     (.toggleServer(provider: "claude", name: "wiki", on: false), ["toggle-server", "wiki", "--off"]),
     (.toggleServer(provider: "codex", name: "wiki", on: true),
      ["codex-mcp", "toggle-server", "wiki", "--on"]),

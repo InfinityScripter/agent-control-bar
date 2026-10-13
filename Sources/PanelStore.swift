@@ -137,6 +137,9 @@ final class PanelStore: ObservableObject {
     /// user who cancels out of the Finder still has the block in front of them.
     func approveCodexHooks() { controller?.approveCodexHooks() }
     func revealCodexHooks() { controller?.revealCodexHooks() }
+    /// Same again: Terminal coming forward closes the panel by itself, and an open that failed
+    /// leaves the block, button and all, in front of the user.
+    func signInClaude() { controller?.signInClaude() }
     func openSettingsJSON() { controller?.closePanel(); controller?.openSettingsJSON() }
     func openSettings() { controller?.closePanel(); controller?.openSettingsWindow() }
     func openNotificationSettings() { controller?.closePanel(); controller?.openNotificationSettings() }

@@ -106,7 +106,8 @@ struct PanelView: View {
     }
 
     /// Why the poll brought no figures, in the same shape as the hooks block on the Sessions tab:
-    /// the cause on the orange line, what it means for the figures under it.
+    /// the cause on the orange line, what it means for the figures under it, and — when the cause
+    /// is a sign-out — the button that starts the sign-in.
     private func limitsNoticeBlock(_ notice: PanelLimitsNotice) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             PanelNotice(glyph: "exclamationmark.triangle", text: notice.title)
@@ -115,10 +116,18 @@ struct PanelView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 4)
+            if notice.offerSignIn {
+                Button("Sign in to Claude Code") { store.signInClaude() }
+                    .buttonStyle(PanelButtonStyle())
+                    .help(Self.signInHelp)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.bottom, 7)
     }
+
+    private static let signInHelp: String = "Opens Terminal on `claude auth login`; finish "
+        + "signing in there and the figures come back on the next poll"
 
     /// Which provider the switcher is showing; the snapshot has already resolved the remembered
     /// pick against the groups there are.

@@ -14,6 +14,7 @@ MCP-картину ведёт этот скрипт (mcp.json), рисует в�
     toggle-tool      выключить/включить отдельный инструмент
     statusline       перехват лимитов: --install / --uninstall / --heal (перенацелить мёртвую обёртку) / без флага — статус
     limits           спросить лимиты аккаунта у эндпоинта и переписать limits.json
+    claude-login     открыть Terminal с `claude auth login` — кнопка «Sign in» в панели
     codex-limits     снять лимиты Codex со свежего rollout и переписать codex/limits.json
     codex-mcp        серверы MCP Codex: refresh | toggle-server | toggle-tool
     codex-hooks      спросить Codex, каким нашим хукам он не доверяет; approve — одобрить их
@@ -40,6 +41,7 @@ ROOT = os.path.join(CLAUDE, "control-bar")
 STATE = os.path.join(ROOT, "mcp.json")
 LIMITS = os.path.join(ROOT, "limits.json")
 LIMITS_STATUS = os.path.join(ROOT, "limits-status.json")
+CLAUDE_LOGIN_COMMAND = os.path.join(ROOT, "claude-login.command")
 # Сессии ведут Node-хуки: один файл на сессию, тот же каталог читает приложение.
 # Свой реестр сессий скрипт не держит намеренно — два источника правды разошлись бы.
 SESSIONS = os.path.join(ROOT, "state.d")
@@ -167,6 +169,10 @@ STRINGS = {
     "lim.failed": ("poll failed: {e}", "опрос не удался: {e}"),
     "lim.empty": ("the response carried no limit windows", "ответ без единого окна лимитов"),
     "lim.updated": ("updated: {w}", "обновлено: {w}"),
+    "login.opened": ("opened Terminal with claude auth login",
+                     "открыла Terminal с claude auth login"),
+    "login.missing": ("claude not found — Terminal shows what to do",
+                      "claude не найден — Terminal скажет, что делать"),
     "codex.absent": ("no ~/.codex — Codex CLI is not installed here",
                      "нет ~/.codex — Codex CLI на этой машине не стоит"),
     "codex.nosnapshot": ("no rollout carries a limits snapshot yet",
@@ -1379,6 +1385,35 @@ def statusline_heal():
         return t("sl.healed", path=wrapper)
 
 
+# ──────────────────────────────────────────────────────────── вход в Claude Code
+
+def claude_login():
+    """Открыть Terminal с `claude auth login` — кнопка в панели вместо команды руками.
+
+    Файл .command, а не AppleScript: Terminal открывает такие файлы сам, без разрешения
+    Automation и без Apple Events, которые приложение обещало слать только для фокуса
+    вкладки. Сам вход идёт в Terminal и браузере, здесь только дверь к нему.
+    """
+    import subprocess
+
+    claude = find_claude()
+    if claude:
+        body = f'exec "{claude}" auth login\n'
+    else:
+        # Окно Terminal с ошибкой «команда не найдена» закрылось бы раньше, чем человек его
+        # прочтёт: read держит его открытым до нажатия клавиши.
+        body = ("printf '%s\\n' "
+                "'Claude Code CLI not found. Install it, then run: claude auth login'\n"
+                "read -r -n 1\n")
+    os.makedirs(ROOT, mode=SECURE_DIR, exist_ok=True)
+    tmp = f"{CLAUDE_LOGIN_COMMAND}.{os.getpid()}.tmp"
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o700), "w") as fh:
+        fh.write("#!/bin/bash\n" + body)
+    os.replace(tmp, CLAUDE_LOGIN_COMMAND)
+    subprocess.run(["/usr/bin/open", CLAUDE_LOGIN_COMMAND], check=False, timeout=30)
+    return t("login.opened" if claude else "login.missing")
+
+
 # ──────────────────────────────────────────────────────────── лимиты по OAuth
 
 # Тот же эндпоинт, которым /usage в самом Claude Code рисует свои проценты. statusLine-перехват
@@ -2068,6 +2103,8 @@ def main(argv):
         print(doctor())
     elif command == "limits":
         print(fetch_limits())
+    elif command == "claude-login":
+        print(claude_login())
     elif command == "codex-limits":
         print(codex.fetch_codex_limits())
     elif command == "codex-hooks":

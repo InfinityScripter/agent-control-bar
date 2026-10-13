@@ -163,6 +163,14 @@ Everything of its own lives under `~/.claude/control-bar/`. The complete list:
   other `statusLine` fields, your inner command and `statusline-saved.json` are left as they
   are; a status line that is not this app's, or a wrapper that still exists, is not written to
   at all. A rewrite takes the same dated backup of `settings.json` as a switch does.
+- **The sign-in helper, only when you press the button:** `claude-login.command`, written when
+  "Sign in to Claude Code" is pressed in the panel and at no other time. It is a shell script of
+  two or three lines — `exec "<the claude binary this app found>" auth login`, or, when no binary was found,
+  a line that prints "Claude Code CLI not found. Install it, then run: claude auth login" and
+  waits for a key — and the backend hands it to `/usr/bin/open`, so Terminal runs it the way it
+  runs any `.command` file, with no Automation grant. The sign-in itself happens in Claude Code
+  and your browser; the file holds no token or account data, and nothing here reads what
+  Terminal shows.
 - **Logs:** `problems.log`, a breadcrumb per failure the app has nowhere else to show (the
   README sends you there when the icon never appears); and `hooks.log`, only with the debug
   switch described below.

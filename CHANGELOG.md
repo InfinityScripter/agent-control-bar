@@ -17,6 +17,11 @@ from, and are kept so the history reads continuously.
   block disappears on the next successful poll, and is never shown while "Limits via Anthropic
   API" is off. The first signed-out poll after a launch also posts one macOS notification, and
   Settings → Limits carries a "Last poll: …" line under the switch.
+- **One button to sign Claude Code back in.** When the block says Claude Code is not signed in,
+  it carries a "Sign in to Claude Code" button. The backend writes a tiny
+  `~/.claude/control-bar/claude-login.command` and has Terminal open it on `claude auth login`;
+  when no `claude` binary can be found, Terminal says so and waits for a key instead of closing.
+  Once signed in, the next panel opening polls at once and the block goes away.
 
 ### Fixed
 - **The status line keeps showing limits after an update or a rename.** The plugin path carries
