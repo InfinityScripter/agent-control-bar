@@ -735,6 +735,167 @@ class StatusLineObject(unittest.TestCase):
         self.assertEqual(self.read()["statusLine"], self.ORIGINAL)
 
 
+
+class StatusLineHeal(unittest.TestCase):
+    """Починка обёртки при запуске: после переименования приложения путь плагина в settings.json
+    умирает, и statusLine молча перестаёт рисовать лимиты. Чинится ТОЛЬКО наша мёртвая команда;
+    чужая строка состояния и живая наша не трогаются — ни записи, ни бэкапа."""
+
+    ORIGINAL = {
+        "type": "command", "command": "printf old",
+        "padding": 2, "refreshInterval": 5, "hideVimModeIndicator": True,
+    }
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp()
+        claude = os.path.join(self.home, ".claude")
+        root = os.path.join(claude, "control-bar")
+        os.makedirs(root, exist_ok=True)
+        self.settings = os.path.join(claude, "settings.json")
+        self.patched = {
+            "SETTINGS": self.settings,
+            "ROOT": root,
+            "STATUSLINE_INNER": os.path.join(root, "statusline-inner-command"),
+            "STATUSLINE_SAVED": os.path.join(root, "statusline-saved.json"),
+            "STATUSLINE_INSTALLED": os.path.join(root, "statusline-installed.json"),
+        }
+        self.saved = {k: getattr(home(k), k) for k in self.patched}
+        for k, v in self.patched.items():
+            setattr(home(k), k, v)
+        self.dead = f'bash "{os.path.join(self.home, "plugin-old", "hooks", "statusline.sh")}"'
+        self.wrapper = mcpbar.find_statusline_wrapper()
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            setattr(home(k), k, v)
+
+    def write(self, data):
+        with open(self.settings, "w") as fh:
+            json.dump(data, fh)
+
+    def raw(self):
+        with open(self.settings, "rb") as fh:
+            return fh.read()
+
+    def read(self):
+        return json.loads(self.raw())
+
+    def backups(self):
+        return glob.glob(f"{self.settings}.bak-control-bar-*")
+
+    def leave_trace(self, installed=True):
+        """След установки прошлой версии: сохранённый объект и внутренняя команда, а запись
+        установки — по желанию (её не вели версии до появления statusline-installed.json)."""
+        mcpbar.write_json(self.patched["STATUSLINE_SAVED"], dict(self.ORIGINAL))
+        with open(self.patched["STATUSLINE_INNER"], "w") as fh:
+            fh.write(self.ORIGINAL["command"] + "\n")
+        if installed:
+            mcpbar.write_json(self.patched["STATUSLINE_INSTALLED"], {"command": self.dead})
+
+    def test_мёртвый_путь_из_записи_установки_перенацеливается(self):
+        """Команда буква в букву та, что писала установка, а файла по ней больше нет: это и есть
+        обновлённый плагин. Подменяется одно поле command; padding и refreshInterval живут,
+        запись установки и бэкап — как у установки."""
+        import contextlib
+        import io
+
+        self.write({"statusLine": {**self.ORIGINAL, "command": self.dead}})
+        self.leave_trace()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = mcpbar.main(["statusline", "--heal"])
+        self.assertEqual(code, 0)
+        self.assertEqual(out.getvalue().strip(), mcpbar.t("sl.healed", path=self.wrapper))
+        after = self.read()["statusLine"]
+        self.assertEqual(after["command"], f'bash "{self.wrapper}"')
+        self.assertEqual(after["padding"], 2)
+        self.assertEqual(after["refreshInterval"], 5)
+        self.assertTrue(after["hideVimModeIndicator"])
+        self.assertEqual(mcpbar.read_json(self.patched["STATUSLINE_INSTALLED"])["command"],
+                         f'bash "{self.wrapper}"')
+        self.assertEqual(len(self.backups()), 1)
+        self.assertEqual(mcpbar.read_json(self.patched["STATUSLINE_SAVED"]), self.ORIGINAL)
+        with open(self.patched["STATUSLINE_INNER"]) as fh:
+            self.assertEqual(fh.read(), self.ORIGINAL["command"] + "\n")
+
+    def test_живая_наша_обёртка_не_переписывается(self):
+        """Запуск — это не установка: пока файл по команде существует, settings.json не трогается
+        ни байтом, бэкап не множится."""
+        self.write({"statusLine": dict(self.ORIGINAL)})
+        mcpbar.statusline_install()
+        before, backups = self.raw(), len(self.backups())
+        self.assertEqual(mcpbar.statusline_heal(), mcpbar.t("sl.healthy"))
+        self.assertEqual(self.raw(), before)
+        self.assertEqual(len(self.backups()), backups)
+
+    def test_чужая_команда_не_трогается_ни_живая_ни_мёртвая(self):
+        """statusline.sh — имя из документации Claude Code; чужой файл с таким именем может и
+        существовать, и быть удалён. Без следа установки ни тот ни другой не наш: байты файла
+        прежние, бэкапа нет."""
+        alive = os.path.join(self.home, "bin", "statusline.sh")
+        os.makedirs(os.path.dirname(alive))
+        with open(alive, "w") as fh:
+            fh.write("#!/bin/bash\nprintf mine\n")
+        gone = os.path.join(self.home, "bin", "removed", "statusline.sh")
+        for foreign in (f'bash "{alive}"', f'bash "{gone}"', 'bash "$HOME/.claude/statusline.sh"'):
+            self.write({"statusLine": {"type": "command", "command": foreign}})
+            before = self.raw()
+            self.assertEqual(mcpbar.statusline_heal(), mcpbar.t("sl.off"), foreign)
+            self.assertEqual(self.raw(), before, foreign)
+            self.assertEqual(self.backups(), [], foreign)
+
+    def test_обёртка_прошлой_версии_без_записи_установки_чинится(self):
+        """Версии до statusline-installed.json оставляли только сохранённый объект и внутреннюю
+        команду. Их мёртвая обёртка — наша по шиму в statusline_ours, и после починки запись
+        установки появляется с новой командой."""
+        self.write({"statusLine": {**self.ORIGINAL, "command": self.dead}})
+        self.leave_trace(installed=False)
+        self.assertEqual(mcpbar.statusline_heal(), mcpbar.t("sl.healed", path=self.wrapper))
+        self.assertEqual(self.read()["statusLine"]["command"], f'bash "{self.wrapper}"')
+        self.assertEqual(mcpbar.read_json(self.patched["STATUSLINE_INSTALLED"])["command"],
+                         f'bash "{self.wrapper}"')
+        self.assertEqual(len(self.backups()), 1)
+
+    def test_нечитаемый_settings_откладывает_починку(self):
+        """Человек правит файл руками, между двумя нажатиями он невалиден. Запуск приложения
+        в этот момент — «занято», файл не тронут; следующий запуск повторит."""
+        broken = '{"statusLine": {"command": ' + self.dead + ','
+        with open(self.settings, "w") as fh:
+            fh.write(broken)
+        self.leave_trace()
+        self.assertEqual(mcpbar.statusline_heal(), mcpbar.t("sl.busy"))
+        with open(self.settings) as fh:
+            self.assertEqual(fh.read(), broken)
+        self.assertEqual(self.backups(), [])
+
+    def test_без_statusline_ничего_не_меняется(self):
+        """Нет statusLine — нечего чинить, даже если след установки на диске остался."""
+        self.write({"permissions": {"deny": ["mcp__wiki__Read"]}})
+        self.leave_trace()
+        before = self.raw()
+        self.assertEqual(mcpbar.statusline_heal(), mcpbar.t("sl.off"))
+        self.assertEqual(self.raw(), before)
+        self.assertNotIn("statusLine", self.read())
+        self.assertEqual(self.backups(), [])
+
+    def test_живая_чужая_команда_через_переменную_при_следе_старой_версии_не_трогается(self):
+        """Сайдкары старой версии без записи установки плюс СВОЯ живая строка пользователя по
+        пути через ~ или $HOME — имя из документации Claude Code. shlex такие слова не
+        раскрывает, и os.path.exists на них отвечал «файла нет»: живая команда читалась как
+        мёртвая обёртка прошлой версии, починка переписывала её на нашу обёртку с устаревшей
+        внутренней командой, а второй запуск отвечал «alive»."""
+        alive = os.path.join(self.home, ".claude", "statusline.sh")
+        with open(alive, "w") as fh:
+            fh.write("#!/bin/bash\nprintf mine\n")
+        self.leave_trace(installed=False)
+        with mock.patch.dict(os.environ, {"HOME": self.home}):
+            for foreign in ('bash "$HOME/.claude/statusline.sh"', "bash ~/.claude/statusline.sh"):
+                self.write({"statusLine": {"type": "command", "command": foreign}})
+                before = self.raw()
+                self.assertEqual(mcpbar.statusline_heal(), mcpbar.t("sl.off"), foreign)
+                self.assertEqual(self.raw(), before, foreign)
+                self.assertEqual(self.backups(), [], foreign)
+
 class ProjectServers(unittest.TestCase):
     """Серверы local- и project-scope видны только из каталога проекта, поэтому общий
     `claude mcp list` (его cwd закреплён на корне) их не показывает — они добираются

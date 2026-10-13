@@ -7,6 +7,17 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [Unreleased]
+
+### Fixed
+- **The status line keeps showing limits after an update or a rename.** The plugin path carries
+  the version and the app bundle changed its name, so the `statusLine` command in
+  `~/.claude/settings.json` could point at a wrapper that no longer exists — and the terminal
+  limits silently froze. Every launch of an installed copy now runs `statusline --heal`: when
+  the command is this app's own and its file is gone, only the path is re-pointed to the live
+  wrapper. Your inner command, `padding` and the other `statusLine` fields stay as they were; a
+  foreign status line, or a live wrapper, is never touched.
+
 ## [0.24.5] - 2026-10-08
 
 ### Changed

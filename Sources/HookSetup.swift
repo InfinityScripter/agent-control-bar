@@ -67,6 +67,15 @@ extension StatusController {
         }
     }
 
+    /// Re-point the statusLine wrapper after a rename or a plugin update moved it. Installed copies
+    /// only, like checkHooks: a build run out of build/ would otherwise write its own throwaway
+    /// path into the user's settings.json, and the next installed launch would have to undo it.
+    /// The script decides whether the command is ours and dead; nothing here reads its answer.
+    func healStatusLine() {
+        guard isInstalledCopy else { return }
+        runQuietCommand(.statuslineHeal)
+    }
+
     /// Looks again after a failure, sooner at first and then every few minutes — so a node
     /// repaired by `brew upgrade` is noticed without a restart, which is the step that never
     /// happened when "next launch" was the only retry.

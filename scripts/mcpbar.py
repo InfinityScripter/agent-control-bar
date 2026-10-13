@@ -12,7 +12,7 @@ MCP-картину ведёт этот скрипт (mcp.json), рисует в�
     report           человекочитаемая карта
     toggle-server    выключить/включить сервер целиком
     toggle-tool      выключить/включить отдельный инструмент
-    statusline       перехват лимитов: --install / --uninstall / без флага — статус
+    statusline       перехват лимитов: --install / --uninstall / --heal (перенацелить мёртвую обёртку) / без флага — статус
     limits           спросить лимиты аккаунта у эндпоинта и переписать limits.json
     codex-limits     снять лимиты Codex со свежего rollout и переписать codex/limits.json
     codex-mcp        серверы MCP Codex: refresh | toggle-server | toggle-tool
@@ -158,6 +158,9 @@ STRINGS = {
     "sl.off": ("capture off", "перехват выключен"),
     "sl.current": ("current command: {cmd}", "текущая команда: {cmd}"),
     "sl.unset": ("(statusLine not configured)", "(statusLine не настроен)"),
+    "sl.healed": ("statusLine wrapper re-pointed to {path}",
+                  "обёртка statusLine перенацелена на {path}"),
+    "sl.healthy": ("statusLine wrapper is alive", "обёртка statusLine жива"),
     "lim.notoken": ("no token: Claude Code is not logged in via browser OAuth",
                     "нет токена: Claude Code не залогинен через браузерный OAuth"),
     "lim.failed": ("poll failed: {e}", "опрос не удался: {e}"),
@@ -1183,6 +1186,24 @@ def find_statusline_wrapper():
     return None
 
 
+def statusline_script_words(command):
+    """Слова команды с базовым именем statusline.sh — как их видит shell, не как подстроки.
+
+    ~ и $HOME раскрыты, как раскрыл бы их shell: shlex этого не делает, и os.path.exists на
+    сыром слове всегда отвечал «файла нет» — живая СВОЯ строка пользователя вида
+    `bash "$HOME/.claude/statusline.sh"` (имя из документации Claude Code) при следе старой
+    версии читалась как наша мёртвая обёртка, и починка переписывала её на нашу.
+    """
+    import shlex
+
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        words = command.split()
+    return [os.path.expandvars(os.path.expanduser(w)) for w in words
+            if os.path.basename(w) == "statusline.sh"]
+
+
 def statusline_ours(command):
     """Наша ли это команда statusLine.
 
@@ -1205,13 +1226,7 @@ def statusline_ours(command):
     installed = read_json(STATUSLINE_INSTALLED, {}).get("command") or ""
     if command == installed.strip():
         return True
-    import shlex
-
-    try:
-        words = shlex.split(command)
-    except ValueError:
-        words = command.split()
-    named = [w for w in words if os.path.basename(w) == "statusline.sh"]
+    named = statusline_script_words(command)
     wrapper = find_statusline_wrapper()
     if wrapper:
         mine = os.path.realpath(wrapper)
@@ -1219,9 +1234,7 @@ def statusline_ours(command):
             return True
     # Ниже — миграционный шим для установок, сделанных ДО появления файла-записи, и только
     # для них: запись есть и не совпала — команда чужая, «похоже на нашу» больше не аргумент.
-    # Без этого гейта чужая ЖИВАЯ команда вида `bash ~/.claude/statusline.sh` читалась как
-    # мёртвая обёртка прошлой версии: shlex не раскрывает ни ~, ни $HOME, и os.path.exists
-    # на таком слове всегда False. Шим самозакрывается первой же установкой этой версии.
+    # Шим самозакрывается первой же установкой этой версии.
     if installed:
         return False
     if any(map(os.path.exists, statusline_sidecars())):
@@ -1329,6 +1342,40 @@ def statusline_uninstall():
             return t("sl.busy")
         drop_statusline_sidecars()
         return t("sl.restored", cmd=saved or t("sl.removed"))
+
+
+def statusline_heal():
+    """Перенацелить нашу мёртвую обёртку на живую, не трогая ничего чужого.
+
+    Путь плагина несёт в себе номер версии, а имя .app сменилось при переименовании: после
+    обновления команда в settings.json указывает на файл, которого больше нет, и Claude Code
+    молча перестаёт звать строку состояния — лимиты в терминале застывают. Зовётся при каждом
+    запуске приложения, поэтому в отличие от установки не трогает ни statusline-saved.json,
+    ни внутреннюю команду человека: это починка пути, а не новая установка.
+    """
+    wrapper = find_statusline_wrapper()
+    if not wrapper:
+        return t("sl.nowrapper")
+    with settings_lock():
+        settings, seen = read_settings_for_edit()
+        if settings is None:
+            return t("sl.busy")
+        current = statusline_command(settings)
+        if not statusline_ours(current):
+            return t("sl.off")
+        if any(map(os.path.exists, statusline_script_words(current))):
+            return t("sl.healthy")
+        backup_settings()
+        healed = dict(settings["statusLine"])
+        healed["command"] = f'bash "{wrapper}"'
+        settings["statusLine"] = healed
+        if not write_settings(settings, expect=seen):
+            return t("sl.busy")
+        # Запись установки — после настроек, не до: оборвись процесс между ними, старая запись
+        # с новой командой всё равно опознаётся как наша (файл лежит рядом со скриптом), а новая
+        # запись со старой командой сделала бы её чужой — и починка больше не повторилась бы.
+        write_json(STATUSLINE_INSTALLED, {"command": healed["command"]})
+        return t("sl.healed", path=wrapper)
 
 
 # ──────────────────────────────────────────────────────────── лимиты по OAuth
@@ -2055,6 +2102,8 @@ def main(argv):
             print(statusline_install())
         elif "--uninstall" in rest:
             print(statusline_uninstall())
+        elif "--heal" in rest:
+            print(statusline_heal())
         else:
             current, ours = statusline_state()
             print(t("sl.on" if ours else "sl.off")

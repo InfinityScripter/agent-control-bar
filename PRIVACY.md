@@ -151,7 +151,14 @@ Everything of its own lives under `~/.claude/control-bar/`. The complete list:
   and `refresh.lock`, `settings.lock`, `build.lock` while the matching operation runs.
 - **The statusLine capture, if installed:** `statusline-saved.json` (your previous `statusLine`
   object, whole, so `/limits-capture uninstall` can restore it), `statusline-inner-command` and
-  `statusline-installed.json`.
+  `statusline-installed.json`. At every launch an installed copy also checks that the capture
+  still works: it reads the `statusLine` command from `~/.claude/settings.json` and these three
+  files, and only when the command is the one this app wrote and the wrapper file it names no
+  longer exists (the plugin path carries the version; the app bundle was renamed) it re-points
+  that one `command` field to the current wrapper and updates `statusline-installed.json`. The
+  other `statusLine` fields, your inner command and `statusline-saved.json` are left as they
+  are; a status line that is not this app's, or a wrapper that still exists, is not written to
+  at all. A rewrite takes the same dated backup of `settings.json` as a switch does.
 - **Logs:** `problems.log`, a breadcrumb per failure the app has nowhere else to show (the
   README sends you there when the icon never appears); and `hooks.log`, only with the debug
   switch described below.

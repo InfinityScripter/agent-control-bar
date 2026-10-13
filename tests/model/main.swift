@@ -2797,6 +2797,7 @@ let backendGolden: [(BackendCommand, [String])] = [
     (.mcpRefresh(provider: "codex"), ["codex-mcp", "refresh"]),
     (.codexHooks, ["codex-hooks"]),
     (.codexHooksApprove, ["codex-hooks", "approve"]),
+    (.statuslineHeal, ["statusline", "--heal"]),
     (.toggleServer(provider: "claude", name: "wiki", on: false), ["toggle-server", "wiki", "--off"]),
     (.toggleServer(provider: "codex", name: "wiki", on: true),
      ["codex-mcp", "toggle-server", "wiki", "--on"]),

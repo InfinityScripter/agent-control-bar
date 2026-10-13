@@ -424,6 +424,7 @@ final class StatusController: NSObject, NSWindowDelegate {
         enforceSingleInstance()
         retirePredecessors()
         checkHooks()
+        healStatusLine()
         checkForUpdate()
         announceVersionChange()
         warmCanBuildFromSource()
