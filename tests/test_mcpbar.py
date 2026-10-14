@@ -6,13 +6,18 @@
 """
 
 import glob
+import base64
+import hashlib
 import json
 import os
 import shutil
+import socket
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -2733,6 +2738,265 @@ class CodexLimits(unittest.TestCase):
         os.makedirs(seam_dir, exist_ok=True)
         shutil.copyfile(mcpbar_codex.CODEX_LIMITS,
                         os.path.join(seam_dir, "codex-limits-pools.json"))
+
+
+class CodexAttention(unittest.TestCase):
+    thread_id = "00000000-0000-7000-8000-000000000001"
+    root_id = "00000000-0000-7000-8000-000000000002"
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(prefix="acb-att-", dir="/tmp")
+        self.root = os.path.join(self.directory.name, "control-bar")
+        self.codex = os.path.join(self.directory.name, "cx")
+        self.socket_path = os.path.join(self.codex, "app-server-control", "app-server-control.sock")
+        self.output = os.path.join(self.root, "codex", "attention.json")
+        self.patches = [mock.patch.object(mcpbar, "ROOT", self.root),
+                        mock.patch.object(mcpbar_codex, "CODEX", self.codex)]
+        for patch in self.patches:
+            patch.start()
+        self.requests = []
+        self.errors = []
+        self.listener = None
+        self.server = None
+        self.state(self.thread_id)
+
+    def tearDown(self):
+        if self.listener:
+            self.listener.close()
+        if self.server:
+            self.server.join(3)
+        for patch in reversed(self.patches):
+            patch.stop()
+        self.directory.cleanup()
+
+    def state(self, thread_id, **extra):
+        record = {"provider": "codex", "sessionId": thread_id, "pid": os.getpid(),
+                  "turn_id": "turn-one", "state": "thinking", "started": True}
+        record.update(extra)
+        mcpbar.write_json(os.path.join(self.root, "codex", "state.d", thread_id + ".json"), record)
+
+    def daemon(self, statuses=None, mode="normal"):
+        os.makedirs(os.path.dirname(self.socket_path), mode=0o700, exist_ok=True)
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(self.socket_path)
+        os.chmod(self.socket_path, 0o600)
+        listener.listen(1)
+        listener.settimeout(3)
+        self.listener = listener
+
+        def serve():
+            try:
+                connection, _ = listener.accept()
+                with connection:
+                    connection.settimeout(3)
+
+                    def exact(count):
+                        value = bytearray()
+                        while len(value) < count:
+                            chunk = connection.recv(count - len(value))
+                            if not chunk:
+                                raise EOFError()
+                            value.extend(chunk)
+                        return bytes(value)
+
+                    def read_frame():
+                        first, second = exact(2)
+                        self.assertEqual(first, 0x81)
+                        self.assertTrue(second & 128)
+                        count = second & 127
+                        if count == 126:
+                            count = struct.unpack("!H", exact(2))[0]
+                        elif count == 127:
+                            count = struct.unpack("!Q", exact(8))[0]
+                        mask, payload = exact(4), exact(count)
+                        return json.loads(bytes(value ^ mask[index % 4]
+                                                for index, value in enumerate(payload)))
+
+                    def frame(payload, opcode=1, final=True):
+                        header = bytes([(128 if final else 0) | opcode])
+                        count = len(payload)
+                        header += bytes([count]) if count < 126 else bytes([126]) + struct.pack("!H", count)
+                        connection.sendall(header + payload)
+
+                    header = bytearray()
+                    while not header.endswith(b"\r\n\r\n"):
+                        header.extend(exact(1))
+                    if mode == "hang":
+                        time.sleep(1.8)
+                        return
+                    key = next(line.split(b":", 1)[1].strip() for line in header.split(b"\r\n")
+                               if line.lower().startswith(b"sec-websocket-key:"))
+                    accepted = base64.b64encode(hashlib.sha1(key + b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest())
+                    if mode == "bad-handshake":
+                        accepted = b"invalid"
+                    connection.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+                                       b"Connection: Upgrade\r\nSec-WebSocket-Accept: " + accepted + b"\r\n\r\n")
+                    if mode == "bad-handshake":
+                        return
+                    while True:
+                        request = read_frame()
+                        self.requests.append(request)
+                        if request["method"] == "initialized":
+                            continue
+                        if request["method"] == "initialize":
+                            result = {"userAgent": "synthetic-daemon"}
+                        else:
+                            self.assertEqual(request["method"], "thread/read")
+                            self.assertEqual(request["params"].get("includeTurns"), False)
+                            thread_id = request["params"]["threadId"]
+                            status = (statuses or {}).get(thread_id, {"type": "active", "activeFlags": ["waitingOnApproval"]})
+                            if mode == "oversized":
+                                connection.sendall(b"\x81\x7f" + struct.pack("!Q", 2 ** 30))
+                                return
+                            if mode == "notifications":
+                                frame(json.dumps({"id": 700, "method": "item/commandExecution/requestApproval",
+                                                  "params": {"command": "synthetic-private-command"}}).encode())
+                            result = {"thread": {"id": thread_id, "status": status,
+                                                 "preview": "synthetic-private-text", "turns": ["private"]}}
+                        if mode == "slow-rpc":
+                            time.sleep(0.8)
+                        if mode == "rpc-error":
+                            frame(json.dumps({"id": request["id"], "error": {"code": -1,
+                                              "message": "synthetic-private-message"}}).encode())
+                            return
+                        payload = json.dumps({"id": request["id"], "result": result}).encode()
+                        if mode == "fragmented":
+                            frame(payload[:10], final=False)
+                            frame(payload[10:], opcode=0)
+                        else:
+                            frame(payload)
+            except (EOFError, BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception as exc:
+                self.errors.append(exc)
+
+        self.server = threading.Thread(target=serve, daemon=True)
+        self.server.start()
+
+    def poll(self):
+        with mock.patch("builtins.print"), mock.patch.object(mcpbar_codex.time, "time", return_value=1_789_200_000):
+            mcpbar.main(["codex-attention"])
+        self.assertTrue(os.path.isfile(self.output), "codex-attention must write its own sidecar")
+        with open(self.output) as stream:
+            return json.load(stream)
+
+    def test_metadata_only_sidecar_and_swift_seam(self):
+        self.state(self.root_id)
+        self.daemon({self.root_id: {"type": "active", "activeFlags": []}}, mode="notifications")
+        record = self.poll()
+        self.assertEqual(record["status"], "ok")
+        self.assertEqual(record["version"], 1)
+        self.assertEqual(record["sessions"], [
+            {"thread_id": self.thread_id, "pid": os.getpid(), "turn_id": "turn-one",
+             "awaiting_approval": True, "observed_at": 1_789_200_000},
+            {"thread_id": self.root_id, "pid": os.getpid(), "turn_id": "turn-one",
+             "awaiting_approval": False, "observed_at": 1_789_200_000}])
+        self.assertNotIn("private", json.dumps(record))
+        self.assertEqual(stat.S_IMODE(os.stat(self.output).st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(os.stat(os.path.dirname(self.output)).st_mode), 0o700)
+        self.assertEqual([r["method"] for r in self.requests],
+                         ["initialize", "initialized", "thread/read", "thread/read"])
+        self.assertFalse(self.errors)
+        seam = os.path.join(os.path.dirname(os.path.dirname(__file__)), "build", "evidence",
+                            "command-approval", "python-attention.json")
+        mcpbar.write_json(seam, record, mode=0o600)
+
+    def test_fragmented_reply(self):
+        self.daemon(mode="fragmented")
+        self.assertTrue(self.poll()["sessions"][0]["awaiting_approval"])
+
+    def test_auto_review_does_not_wait(self):
+        self.daemon({self.thread_id: {"type": "active", "activeFlags": []}})
+        self.assertFalse(self.poll()["sessions"][0]["awaiting_approval"])
+
+    def test_resolved_allow_deny_and_abort_clear_overlay(self):
+        for label, status in (("allow", {"type": "active", "activeFlags": []}),
+                              ("deny", {"type": "active", "activeFlags": []}),
+                              ("abort", {"type": "idle"})):
+            with self.subTest(label=label):
+                self.daemon({self.thread_id: status})
+                self.assertFalse(self.poll()["sessions"][0]["awaiting_approval"])
+                self.server.join(3)
+                self.listener.close()
+                os.unlink(self.socket_path)
+
+    def test_missing_transport_does_not_refresh_old_true(self):
+        mcpbar.write_json(self.output, {"sessions": [{"awaiting_approval": True, "observed_at": 1}]})
+        record = self.poll()
+        self.assertEqual(record["status"], "unavailable")
+        self.assertEqual(record["error"], "socket_unavailable")
+        self.assertEqual(record["sessions"], [])
+
+    def test_only_live_active_parent_state_files_are_read(self):
+        self.state(self.root_id, state="idle", started=False)
+        self.state("dead-thread", pid=2 ** 30)
+        self.state("no-turn", turn_id="")
+        self.state("subagent", thread_source="subagent")
+        self.state("not-started", started=False)
+        self.daemon()
+        record = self.poll()
+        self.assertEqual([s["thread_id"] for s in record["sessions"]], [self.thread_id])
+
+    def test_handshake_and_frames_are_bounded(self):
+        for mode, error in (("bad-handshake", "invalid_handshake"), ("oversized", "invalid_frame")):
+            with self.subTest(mode=mode):
+                self.daemon(mode=mode)
+                record = self.poll()
+                self.assertEqual(record["status"], "unavailable")
+                self.assertEqual(record["error"], error)
+                self.assertEqual(record["sessions"], [])
+                self.server.join(3)
+                self.listener.close()
+                os.unlink(self.socket_path)
+
+    def test_whole_poll_has_one_deadline(self):
+        self.daemon(mode="hang")
+        before = time.monotonic()
+        record = self.poll()
+        self.assertLess(time.monotonic() - before, 1.75)
+        self.assertEqual(record["status"], "unavailable")
+        self.assertEqual(record["error"], "timeout")
+
+    def test_invalid_thread_status_cannot_create_attention(self):
+        self.daemon({self.thread_id: {"type": "active", "activeFlags": "waitingOnApproval"}})
+        record = self.poll()
+        self.assertEqual(record["status"], "unavailable")
+        self.assertEqual(record["error"], "invalid_status")
+        self.assertEqual(record["sessions"], [])
+
+    def test_started_parents_remain_pollable_during_raw_idle_or_done(self):
+        self.state(self.thread_id, state="idle")
+        self.state(self.root_id, state="done")
+        self.daemon()
+        record = self.poll()
+        self.assertEqual(len(record["sessions"]), 2)
+        self.assertTrue(all(s["awaiting_approval"] for s in record["sessions"]))
+
+    def test_socket_symlink_is_supported(self):
+        self.daemon()
+        target = self.socket_path + ".real"
+        os.rename(self.socket_path, target)
+        os.symlink(target, self.socket_path)
+        self.assertTrue(self.poll()["sessions"][0]["awaiting_approval"])
+
+    def test_one_deadline_includes_initialize_and_thread_reads(self):
+        self.daemon(mode="slow-rpc")
+        before = time.monotonic()
+        record = self.poll()
+        self.assertLess(time.monotonic() - before, 1.75)
+        self.assertEqual(record["status"], "unavailable")
+        self.assertEqual(record["error"], "timeout")
+        self.assertEqual(record["sessions"], [])
+
+    def test_rpc_error_does_not_copy_private_messages(self):
+        self.daemon(mode="rpc-error")
+        record = self.poll()
+        self.assertEqual(record["error"], "rpc_error")
+        self.assertNotIn("private", json.dumps(record))
+
+    def test_no_started_parent_does_not_connect(self):
+        self.state(self.thread_id, started=False)
+        self.assertEqual(self.poll(), {"version": 1, "status": "ok", "sessions": []})
 
 
 class CodexHooks(unittest.TestCase):

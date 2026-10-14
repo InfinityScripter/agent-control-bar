@@ -137,11 +137,27 @@ extension StatusController {
     /// that toggles mcpBusy and re-reads mcp.json, and a poll that only rewrites its own file
     /// has nothing to say about either — the tick's mtime gate picks the file up.
     func runQuietCommand(_ command: BackendCommand, then done: (() -> Void)? = nil) {
-        guard !backend.script.isEmpty else { done?(); return }
+        guard !backend(for: command).script.isEmpty else { done?(); return }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
             self.spawnBackend(command)
             if let done { DispatchQueue.main.async(execute: done) }
+        }
+    }
+
+    func backend(for command: BackendCommand) -> (python: String, script: String) {
+        command.backend(normal: backend,
+                        bundledScript: Bundle.main.path(forResource: "mcpbar", ofType: "py", inDirectory: "scripts"))
+    }
+
+    func pollCodexAttention(now: Double) {
+        guard codexAttentionPoll.begin(now: now, sessions: Array(sessions.values), pidAlive: pidAlive) else { return }
+        runQuietCommand(.codexAttention) { [weak self] in
+            guard let self else { return }
+            self.codexAttentionPoll.finish()
+            self.loadCodexAttention()
+            self.evaluate()
+            self.refreshCounts()
         }
     }
 
@@ -153,6 +169,7 @@ extension StatusController {
     /// system log, where it is nobody's) and surfaced only on a non-zero exit, so a healthy run
     /// stays quiet.
     func spawnBackend(_ command: BackendCommand) {
+        let backend = self.backend(for: command)
         let arguments = command.arguments
         let task = Process()
         // Absolute paths: a GUI process gets a stripped PATH with no pyenv and no nvm in it.
@@ -163,6 +180,18 @@ extension StatusController {
         task.standardError = errors
         do {
             try task.run()
+            var deadline: DispatchWorkItem?
+            if case .codexAttention = command {
+                let stop = DispatchWorkItem {
+                    if task.isRunning {
+                        NSLog("ClaudeControlBar: Codex attention poll exceeded its deadline")
+                        kill(task.processIdentifier, SIGKILL)
+                    }
+                }
+                deadline = stop
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 3, execute: stop)
+            }
+            defer { deadline?.cancel() }
             let stderr = errors.fileHandleForReading.readDataToEndOfFile()
             task.waitUntilExit()
             if task.terminationStatus != 0 {

@@ -3492,6 +3492,279 @@ do {
           "a waiting fallback retains the distinct amber permission badge")
 }
 
+// Command approval uses one live sidecar and the existing effective state and cue path.
+do {
+    try! FileManager.default.createDirectory(atPath: sessionsDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(atPath: sessionsDir) }
+    let clock = 1_789_200_000.0
+    let threadID = "00000000-0000-7000-8000-000000000001"
+    var session = Session(json: ["provider": "codex", "state": "thinking", "started": true,
+                                "pid": 42, "turn_id": "approval-turn", "ts": clock - 2], id: threadID)
+    let approvalEngine = SessionEngine()
+    func signal(_ waiting: Bool = true, at stamp: Double = 1_789_200_000) -> [String: Any] {
+        ["version": 1, "status": "ok", "sessions": [["thread_id": threadID, "pid": 42,
+            "turn_id": "approval-turn", "awaiting_approval": waiting, "observed_at": stamp]]]
+    }
+    approvalEngine.codexAttention = CodexAttention(json: signal())
+    for raw in ["thinking", "tool", "permission", "idle", "done"] {
+        session.state = raw
+        check(approvalEngine.effectiveState(session, now: clock) == "permission",
+              "fresh live command approval overrides raw \(raw)")
+    }
+    session.state = "thinking"
+    session.ts = clock + 3
+    check(approvalEngine.effectiveState(session, now: clock + 3) == "permission",
+          "regular post-tool activity does not clear a live approval")
+    session.state = "tool"
+    check(approvalEngine.effectiveState(session, now: clock + 3) == "permission",
+          "another parallel tool does not clear a live approval")
+    session.state = "thinking"
+    check(approvalEngine.effectiveState(session, now: clock + 10) == "permission",
+          "a command signal is fresh through its ten-second lifetime")
+    check(approvalEngine.effectiveState(session, now: clock + 10.001) == "thinking",
+          "an unchanged cached sidecar expires without a new mtime")
+    approvalEngine.codexAttention = CodexAttention(json: signal(false, at: clock + 1))
+    check(approvalEngine.effectiveState(session, now: clock + 1) == "thinking",
+          "a fresh allow or deny removes only the command overlay")
+    approvalEngine.codexAttention = nil
+    check(approvalEngine.effectiveState(session, now: clock) == "thinking",
+          "a missing sidecar keeps local working state")
+    approvalEngine.codexAttention = CodexAttention(json: ["version": 1, "status": "unavailable",
+                                                         "error": "timeout", "sessions": signal()["sessions"]!])
+    check(approvalEngine.effectiveState(session, now: clock) == "thinking",
+          "an unavailable sidecar cannot keep a previous true alive")
+    for invalid: Any in ["bad-time", true, Double.nan, Double.infinity, clock + 1] {
+        var value = signal()
+        var records = value["sessions"] as! [[String: Any]]
+        records[0]["observed_at"] = invalid
+        value["sessions"] = records
+        approvalEngine.codexAttention = CodexAttention(json: value)
+        check(approvalEngine.effectiveState(session, now: clock) == "thinking",
+              "invalid or future approval timestamps fall back to local state: \(invalid)")
+    }
+    for (field, invalid) in [("pid", 0 as Any), ("pid", true as Any), ("awaiting_approval", 1 as Any),
+                              ("awaiting_approval", "true" as Any), ("turn_id", "" as Any)] {
+        var value = signal()
+        var records = value["sessions"] as! [[String: Any]]
+        records[0][field] = invalid
+        value["sessions"] = records
+        approvalEngine.codexAttention = CodexAttention(json: value)
+        check(approvalEngine.effectiveState(session, now: clock) == "thinking",
+              "corrupt approval \(field) cannot create attention: \(invalid)")
+    }
+    approvalEngine.codexAttention = CodexAttention(json: signal())
+    session.pid = 43
+    check(approvalEngine.effectiveState(session, now: clock) == "thinking", "a replaced PID rejects its old approval")
+    session.pid = 42; session.turnID = "another-turn"
+    check(approvalEngine.effectiveState(session, now: clock) == "thinking", "another turn rejects an old approval")
+    session.turnID = "approval-turn"; session.id = "another-thread"
+    check(approvalEngine.effectiveState(session, now: clock) == "thinking", "the full thread ID must match")
+    session.id = threadID; session.provider = "claude"
+    check(approvalEngine.effectiveState(session, now: clock) == "thinking", "a Codex approval cannot alter Claude")
+    session.provider = "codex"; session.ts = clock - 2
+    for endType in ["task_complete", "turn_complete", "turn_aborted"] {
+        session.transcript = writeTranscript("approval-\(endType).jsonl", lines: [
+            codexEvent(ts: clock - 2, "task_started", turn: "approval-turn"),
+            codexEvent(ts: clock + 1, endType, turn: "approval-turn"),
+        ])
+        check(approvalEngine.effectiveState(session, now: clock + 1) == "idle",
+              "\(endType) excludes an old live approval")
+    }
+    for startType in ["task_started", "turn_started"] {
+        for nextTurn in ["approval-turn", "next-turn"] {
+            session.transcript = writeTranscript("approval-\(startType)-\(nextTurn).jsonl", lines: [
+                codexEvent(ts: clock - 2, "task_started", turn: "approval-turn"),
+                codexEvent(ts: clock + 1, startType, turn: nextTurn),
+            ])
+            check(approvalEngine.effectiveState(session, now: clock + 1) == "thinking",
+                  "a newer \(startType) excludes a stale approval before hook state catches up: \(nextTurn)")
+        }
+    }
+    for (startType, endType) in [("task_started", "task_complete"), ("turn_started", "turn_complete"),
+                                ("task_started", "turn_aborted")] {
+        let staleEngine = SessionEngine()
+        staleEngine.codexAttention = CodexAttention(json: signal())
+        var staleHook = session
+        staleHook.transcript = writeTranscript("approval-stale-hook-\(endType).jsonl", lines: [
+            codexEvent(ts: clock - 2, startType, turn: "approval-turn"),
+        ])
+        check(staleEngine.effectiveState(staleHook, now: clock) == "permission",
+              "the old approval waits before the next \(startType)")
+        appendCodexLine(codexEvent(ts: clock + 1, startType, turn: "next-turn"), to: staleHook.transcript)
+        check(staleEngine.effectiveState(staleHook, now: clock + 1) == "thinking",
+              "the new \(startType) rejects approval from an unchanged old hook")
+        appendCodexLine(codexEvent(ts: clock + 2, endType, turn: "next-turn"), to: staleHook.transcript)
+        check(staleEngine.effectiveState(staleHook, now: clock + 2) == "thinking",
+              "the next \(endType) cannot restore approval from an unchanged old hook")
+        check(staleEngine.effectiveState(staleHook, now: clock + 3) == "thinking",
+              "cached completion of the next turn cannot restore an old approval: \(endType)")
+        let freshEngine = SessionEngine()
+        freshEngine.codexAttention = CodexAttention(json: signal())
+        check(freshEngine.effectiveState(staleHook, now: clock + 3) == "thinking",
+              "a fresh parser after the next \(endType) cannot restore an old approval")
+    }
+    session.transcript = writeTranscript("approval-late-old-completion.jsonl", lines: [
+        codexEvent(ts: clock - 2, "task_started", turn: "approval-turn"),
+        codexEvent(ts: clock + 1, "task_complete", turn: "old-turn"),
+    ])
+    check(approvalEngine.effectiveState(session, now: clock + 1) == "permission",
+          "a late completion of another turn does not clear the current live approval")
+    session.transcript = writeTranscript("approval-local-error.jsonl", lines: [
+        codexEvent(ts: clock - 2, "task_started", turn: "approval-turn"),
+        codexEvent(ts: clock + 1, "task_complete", turn: "approval-turn", error: terminalError),
+    ])
+    for source: [String: Any]? in [signal(false, at: clock + 1), nil,
+                                   ["version": 1, "status": "unavailable", "sessions": []]] {
+        approvalEngine.codexAttention = source.map(CodexAttention.init(json:))
+        check(approvalEngine.effectiveState(session, now: clock + 1) == "permission",
+              "a live negative or unavailable answer preserves terminal error attention")
+    }
+    session.transcript = writeTranscript("approval-local-input.jsonl", lines: [
+        codexEvent(ts: clock - 2, "task_started", turn: "approval-turn"),
+        codexLine(["type": "function_call", "name": "request_user_input", "call_id": "blocking",
+            "arguments": #"{"questions":[{"id":"confirm"}]}"#]),
+    ])
+    for source: [String: Any]? in [signal(false), nil, ["version": 1, "status": "unavailable", "sessions": []]] {
+        approvalEngine.codexAttention = source.map(CodexAttention.init(json:))
+        check(approvalEngine.effectiveState(session, now: clock) == "permission",
+              "a live negative or unavailable answer preserves blocking input")
+    }
+    for endType in ["task_complete", "turn_complete", "turn_aborted"] {
+        let blockingPath = writeTranscript("approval-blocking-late-\(endType).jsonl", lines: [
+            codexEvent(ts: clock - 2, "task_started", turn: "approval-turn"),
+            blockingQuestionCall,
+        ])
+        var questions = CodexRollout.Questions()
+        check(questions.pending(in: blockingPath), "blocking input waits before a late \(endType)")
+        appendCodexLine(codexEvent(ts: clock + 1, endType, turn: "old-turn"), to: blockingPath)
+        check(questions.pending(in: blockingPath), "a late old-turn \(endType) preserves current blocking input")
+        check(questions.pending(in: blockingPath), "cached old-turn \(endType) still preserves current blocking input")
+        appendCodexLine(codexEvent(ts: clock + 2, endType, turn: "approval-turn"), to: blockingPath)
+        check(!questions.pending(in: blockingPath), "a matching \(endType) still clears current blocking input")
+        let noTimestamp = writeTranscript("approval-blocking-no-time-\(endType).jsonl", lines: [
+            codexEvent(ts: clock - 2, "task_started", turn: "approval-turn"), blockingQuestionCall,
+        ])
+        var legacyQuestions = CodexRollout.Questions()
+        check(legacyQuestions.pending(in: noTimestamp), "current blocking input waits before an untimed \(endType)")
+        appendCodexLine(#"{"type":"event_msg","payload":{"type":""# + endType
+            + #"","turn_id":"old-turn"}}"#, to: noTimestamp)
+        check(legacyQuestions.pending(in: noTimestamp), "an untimed \(endType) with a different turn ID preserves current input")
+        appendCodexLine(#"{"type":"event_msg","payload":{"type":""# + endType
+            + #"","turn_id":"approval-turn"}}"#, to: noTimestamp)
+        check(!legacyQuestions.pending(in: noTimestamp), "an untimed matching \(endType) still clears current input")
+    }
+    for boundary in ["task_complete", "turn_complete", "turn_aborted", "task_started", "turn_started"] {
+        let legacyPath = writeTranscript("approval-blocking-legacy-\(boundary).jsonl", lines: [
+            codexEvent(ts: clock - 2, "task_started", turn: "approval-turn"), blockingQuestionCall,
+        ])
+        var questions = CodexRollout.Questions()
+        check(questions.pending(in: legacyPath), "a legacy blocking input waits before \(boundary)")
+        appendCodexLine(#"{"type":"event_msg","payload":{"type":""# + boundary + #""}}"#, to: legacyPath)
+        check(!questions.pending(in: legacyPath), "a boundary without timestamp or turn ID retains legacy cleanup: \(boundary)")
+    }
+    let board = SessionBoard(engine: SessionEngine())
+    board.engine.codexAttention = CodexAttention(json: signal())
+    let hook: [String: Any] = ["state": "thinking", "pid": 42, "turn_id": "approval-turn",
+                               "started": true, "startedAt": clock - 3, "ts": clock - 2]
+    let file = SessionBoard.File(key: "codex:" + threadID, path: "/synthetic/approval.json",
+                                 provider: "codex", id: threadID, mtime: Date())
+    board.reload([file], read: { _ in hook }, branch: { _ in "" })
+    let rules = SessionBoard.Rules(soundThreshold: 0, stalePruneAge: 0, thinkingWords: [], needsYou: true)
+    let first = board.tick(now: clock, rules: rules, pidAlive: { _ in true }, frontmost: { "other.app" })
+    check(first.lead?.eff == "permission" && first.needsYou,
+          "one effective command approval drives the board and its Needs you cue")
+    check(!board.tick(now: clock + 1, rules: rules, pidAlive: { _ in true }, frontmost: { "other.app" }).needsYou,
+          "a second unchanged approval tick does not repeat the cue")
+    board.engine.codexAttention = CodexAttention(json: signal(false, at: clock + 2))
+    let cleared = board.tick(now: clock + 2, rules: rules, pidAlive: { _ in true }, frontmost: { "other.app" })
+    check(cleared.lead?.eff == "thinking" && !cleared.needsYou, "resolved approval restores the working board state")
+    board.engine.codexAttention = CodexAttention(json: signal(true, at: clock + 3))
+    check(board.tick(now: clock + 3, rules: rules, pidAlive: { _ in true }, frontmost: { "other.app" }).needsYou,
+          "a later separate approval creates one new cue")
+    let seamPath = FileManager.default.currentDirectoryPath + "/build/evidence/command-approval/python-attention.json"
+    if let data = FileManager.default.contents(atPath: seamPath),
+       let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+       let records = raw["sessions"] as? [[String: Any]], records.count == 2 {
+        approvalEngine.codexAttention = CodexAttention(json: raw)
+        let waiting = Session(json: ["provider": "codex", "state": "thinking", "started": true,
+            "pid": records[0]["pid"]!, "turn_id": "turn-one", "ts": clock], id: threadID)
+        let working = Session(json: ["provider": "codex", "state": "thinking", "started": true,
+            "pid": records[1]["pid"]!, "turn_id": "turn-one", "ts": clock],
+            id: "00000000-0000-7000-8000-000000000002")
+        check(approvalEngine.effectiveState(waiting, now: clock) == "permission"
+                && approvalEngine.effectiveState(working, now: clock) == "thinking",
+              "the real Python sidecar reaches Swift and distinguishes waiting from the root")
+        check(approvalEngine.effectiveState(waiting, now: clock + 11) == "thinking",
+              "the real Python sidecar expires in Swift without another file write")
+    } else { check(false, "Python attention seam fixture missing or unreadable; run the Python suite") }
+#if !COMMAND_APPROVAL_BASELINE
+    let attentionFile = sessionsDir + "attention.json"
+    var attentionGate: Date?
+    try! JSONSerialization.data(withJSONObject: signal()).write(to: URL(fileURLWithPath: attentionFile))
+    var cached = CodexAttention.read(at: attentionFile, gate: &attentionGate, previous: nil)
+    let fileEngine = SessionEngine()
+    fileEngine.codexAttention = cached
+    session.transcript = ""
+    check(fileEngine.effectiveState(session, now: clock) == "permission",
+          "the attention reader loads a valid file into the model")
+    cached = CodexAttention.read(at: attentionFile, gate: &attentionGate, previous: cached)
+    fileEngine.codexAttention = cached
+    check(fileEngine.effectiveState(session, now: clock + 11) == "thinking",
+          "the mtime reader does not prolong an unchanged signal")
+    try! "{incomplete".write(toFile: attentionFile, atomically: true, encoding: .utf8)
+    try! FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: clock + 2)],
+                                           ofItemAtPath: attentionFile)
+    cached = CodexAttention.read(at: attentionFile, gate: &attentionGate, previous: cached)
+    fileEngine.codexAttention = cached
+    check(fileEngine.effectiveState(session, now: clock + 2) == "thinking",
+          "corrupt JSON drops the approval immediately instead of reusing the last parse")
+    try! FileManager.default.removeItem(atPath: attentionFile)
+    fileEngine.codexAttention = CodexAttention.read(at: attentionFile, gate: &attentionGate, previous: cached)
+    check(fileEngine.effectiveState(session, now: clock) == "thinking" && attentionGate == nil,
+          "a missing attention file drops the signal and its mtime gate")
+    session.transcript = ""; session.state = "idle"
+    var poll = CodexAttentionPoll()
+    check(poll.begin(now: clock, sessions: [session], pidAlive: { _ in true }),
+          "a live started parent is polled even if its raw state rests")
+    check(!poll.begin(now: clock + 6, sessions: [session], pidAlive: { _ in true }),
+          "attention polling has only one in-flight batch")
+    poll.finish()
+    var earlyPoll = poll
+    check(!earlyPoll.begin(now: clock + 2, sessions: [session], pidAlive: { _ in true }),
+          "attention polling does not reuse the old two-second cadence")
+    check(!poll.begin(now: clock + 4.9, sessions: [session], pidAlive: { _ in true }),
+          "attention polling waits five seconds between starts")
+    poll.finish()
+    check(poll.begin(now: clock + 5, sessions: [session], pidAlive: { _ in true }),
+          "attention polling can start again at the five-second boundary")
+    poll.finish()
+    check(!poll.begin(now: clock + 10, sessions: [session], pidAlive: { _ in false }),
+          "a dead parent does not cause an attention poll")
+    session.started = false
+    check(!poll.begin(now: clock + 10, sessions: [session], pidAlive: { _ in true }),
+          "an unopened parent does not cause an attention poll")
+    session.started = true; session.provider = "claude"
+    check(!poll.begin(now: clock + 10, sessions: [session], pidAlive: { _ in true }),
+          "a Claude parent does not cause a Codex attention poll")
+    check(BackendCommand.codexAttention.arguments == ["codex-attention"],
+          "the live attention request uses the existing backend command protocol")
+    let oldBackend = (python: "/old/plugin/python3", script: "/old/plugin/mcpbar.py")
+    let bundleScript = "/current/app/scripts/mcpbar.py"
+    let attentionBackend = BackendCommand.codexAttention.backend(normal: oldBackend, bundledScript: bundleScript)
+    check(attentionBackend.python == "/usr/bin/python3" && attentionBackend.script == bundleScript,
+          "command attention uses the corrected bundle even with an old plugin backend")
+    for command: BackendCommand in [.mcpRefresh(provider: "claude"), .limits(provider: "codex"), .codexHooks,
+                                    .codexHooksApprove, .statuslineHeal, .claudeLogin,
+                                    .toggleServer(provider: "codex", name: "wiki", on: true)] {
+        let selected = command.backend(normal: oldBackend, bundledScript: bundleScript)
+        check(selected.python == oldBackend.python && selected.script == oldBackend.script,
+              "other backend commands preserve their normal plugin resolver: \(command.arguments)")
+    }
+    check(BackendCommand.codexAttention.backend(normal: oldBackend, bundledScript: nil).script.isEmpty,
+          "a missing attention bundle does not execute an older plugin backend")
+#endif
+}
+
 // What tells the two agents apart. The reap deletes files by stateDir, so a wrong directory here
 // deletes another agent's sessions — which is why the paths are pinned rather than trusted.
 check(Provider.all.map(\.id) == ["claude", "codex"], "both agents, Claude first")

@@ -79,6 +79,12 @@ extension StatusController {
         }
     }
 
+    func loadCodexAttention() {
+        let path = (root as NSString).appendingPathComponent("codex/attention.json")
+        engine.codexAttention = CodexAttention.read(at: path, gate: &codexAttentionMTime,
+                                                   previous: engine.codexAttention)
+    }
+
     // MARK: state polling
 
     func tick() {
@@ -105,6 +111,8 @@ extension StatusController {
         pollLimitsIfRolledOver(now: now)
         loadCodexLimits()
         loadCodexHooks()
+        loadCodexAttention()
+        pollCodexAttention(now: now)
         evaluate()
         // The panel is a live window, not a menu frozen at open time: the per-session clocks, the
         // limit figures and the server states all move under it. The store publishes only when
