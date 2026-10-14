@@ -9,14 +9,215 @@
 корень на модуле mcpbar, и копия здесь осталась бы старой.
 """
 
+import base64
 import glob
+import hashlib
 import json
 import os
+import socket
+import stat
+import struct
 import time
 
 import mcpbar as core
 from mcpbar import (HOME, SECURE_DIR, STRINGS, Refused, describe_tool, mtime, parse_reset,
                     read_json, read_json_line, t, tail_lines, write_json)
+
+
+CODEX_ATTENTION_TIMEOUT = 1.5
+
+
+def read_codex_attention(thread_ids, deadline):
+    """Читает только статус уже работающей службы; deadline общий для всех thread/read."""
+    observed = {}
+    connection = None
+    try:
+        path = os.path.realpath(os.path.join(CODEX, "app-server-control", "app-server-control.sock"))
+        try:
+            attributes = os.stat(path)
+        except OSError:
+            return {}, "socket_unavailable"
+        if not stat.S_ISSOCK(attributes.st_mode) or attributes.st_uid != os.getuid() \
+                or stat.S_IMODE(attributes.st_mode) & 0o077:
+            return {}, "unsafe_socket"
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+
+        def remaining():
+            seconds = deadline - time.monotonic()
+            if seconds <= 0:
+                raise socket.timeout()
+            connection.settimeout(seconds)
+
+        remaining()
+        connection.connect(path)
+        total_bytes = 0
+
+        def exact(count):
+            nonlocal total_bytes
+            total_bytes += count
+            if total_bytes > 8 * 1024 * 1024:
+                raise ValueError("invalid_frame")
+            value = bytearray()
+            while len(value) < count:
+                remaining()
+                chunk = connection.recv(count - len(value))
+                if not chunk:
+                    raise ValueError("connection_closed")
+                value.extend(chunk)
+            return bytes(value)
+
+        def send(payload, opcode=1):
+            count = len(payload)
+            mask = os.urandom(4)
+            header = bytes([128 | opcode])
+            if count < 126:
+                header += bytes([128 | count])
+            elif count < 65536:
+                header += bytes([128 | 126]) + struct.pack("!H", count)
+            else:
+                header += bytes([128 | 127]) + struct.pack("!Q", count)
+            remaining()
+            connection.sendall(header + mask + bytes(value ^ mask[index % 4]
+                                                     for index, value in enumerate(payload)))
+
+        key = base64.b64encode(os.urandom(16))
+        remaining()
+        connection.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\n"
+                           b"Connection: Upgrade\r\nSec-WebSocket-Key: " + key +
+                           b"\r\nSec-WebSocket-Version: 13\r\n\r\n")
+        header = bytearray()
+        while not header.endswith(b"\r\n\r\n"):
+            header.extend(exact(1))
+            if len(header) > 8192:
+                raise ValueError("invalid_handshake")
+        lines = bytes(header).split(b"\r\n")
+        fields = {line.split(b":", 1)[0].strip().lower(): line.split(b":", 1)[1].strip()
+                  for line in lines[1:] if b":" in line}
+        accepted = base64.b64encode(hashlib.sha1(key + b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest())
+        if not lines[0].startswith(b"HTTP/1.1 101 ") or fields.get(b"sec-websocket-accept") != accepted \
+                or fields.get(b"upgrade", b"").lower() != b"websocket" \
+                or b"upgrade" not in fields.get(b"connection", b"").lower().split(b", "):
+            raise ValueError("invalid_handshake")
+
+        def receive(request_id):
+            assembled = bytearray()
+            fragmented = False
+            while True:
+                first, second = exact(2)
+                opcode, final = first & 15, bool(first & 128)
+                count = second & 127
+                if count == 126:
+                    count = struct.unpack("!H", exact(2))[0]
+                elif count == 127:
+                    count = struct.unpack("!Q", exact(8))[0]
+                if first & 0x70 or second & 128 or count > 1024 * 1024:
+                    raise ValueError("invalid_frame")
+                if opcode >= 8 and (not final or count > 125):
+                    raise ValueError("invalid_frame")
+                payload = exact(count)
+                if opcode == 8:
+                    raise ValueError("connection_closed")
+                if opcode == 9:
+                    send(payload, 10)
+                    continue
+                if opcode == 10:
+                    continue
+                if opcode not in (0, 1) or (opcode == 0) != fragmented:
+                    raise ValueError("invalid_frame")
+                assembled.extend(payload)
+                if len(assembled) > 1024 * 1024:
+                    raise ValueError("invalid_frame")
+                fragmented = not final
+                if not final:
+                    continue
+                try:
+                    reply = json.loads(assembled)
+                except (ValueError, UnicodeDecodeError):
+                    raise ValueError("invalid_reply")
+                assembled.clear()
+                if not isinstance(reply, dict):
+                    raise ValueError("invalid_reply")
+                # Уведомления и чужие server requests не требуют ответа наблюдателя.
+                if reply.get("id") != request_id or "method" in reply:
+                    continue
+                if "error" in reply:
+                    raise ValueError("rpc_error")
+                result = reply.get("result")
+                if not isinstance(result, dict):
+                    raise ValueError("invalid_reply")
+                return result
+
+        send(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "clientInfo": {"name": "agent-control-bar-attention", "version": "1"},
+            "capabilities": {"experimentalApi": False}}}).encode())
+        receive(1)
+        send(b'{"jsonrpc":"2.0","method":"initialized"}')
+        for request_id, thread_id in enumerate(thread_ids, 2):
+            send(json.dumps({"jsonrpc": "2.0", "id": request_id, "method": "thread/read",
+                             "params": {"threadId": thread_id, "includeTurns": False}}).encode())
+            result = receive(request_id)
+            thread = result.get("thread")
+            if not isinstance(thread, dict) or thread.get("id") != thread_id:
+                raise ValueError("invalid_reply")
+            status = thread.get("status")
+            if not isinstance(status, dict) or status.get("type") not in ("active", "idle", "notLoaded", "systemError"):
+                raise ValueError("invalid_status")
+            flags = status.get("activeFlags")
+            if status["type"] == "active" and (not isinstance(flags, list)
+                                               or not all(isinstance(flag, str) for flag in flags)):
+                raise ValueError("invalid_status")
+            observed[thread_id] = {"awaiting_approval": status["type"] == "active" and "waitingOnApproval" in flags,
+                                   "observed_at": time.time()}
+        return observed, None
+    except socket.timeout:
+        return {}, "timeout"
+    except OSError:
+        return {}, "connection_unavailable"
+    except ValueError as exc:
+        return {}, str(exc)
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def fetch_codex_attention():
+    deadline = time.monotonic() + CODEX_ATTENTION_TIMEOUT
+    codex_root = os.path.join(core.ROOT, "codex")
+    sessions = {}
+    for path in sorted(glob.glob(os.path.join(codex_root, "state.d", "*.json"))):
+        if time.monotonic() >= deadline:
+            break
+        try:
+            if os.stat(path).st_size > 65536:
+                continue
+        except OSError:
+            continue
+        state = read_json(path)
+        if not isinstance(state, dict) or state.get("started") is not True \
+                or state.get("thread_source") == "subagent":
+            continue
+        thread_id = state.get("sessionId")
+        turn_id, pid = state.get("turn_id"), state.get("pid")
+        if not isinstance(thread_id, str) or not 0 < len(thread_id) <= 128 \
+                or not isinstance(turn_id, str) or not 0 < len(turn_id) <= 128 \
+                or not isinstance(pid, int) or isinstance(pid, bool) or not 0 < pid <= 2 ** 31 - 1:
+            continue
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            continue
+        sessions[thread_id] = {"thread_id": thread_id, "pid": pid, "turn_id": turn_id}
+    observed, error = read_codex_attention(sessions, deadline) if sessions else ({}, None)
+    record = {"version": 1, "status": "unavailable" if error else "ok", "sessions": []}
+    if error:
+        record["error"] = error
+    else:
+        record["sessions"] = [dict(session, **observed[thread_id]) for thread_id, session in sessions.items()]
+    for directory in (core.ROOT, codex_root):
+        os.makedirs(directory, mode=SECURE_DIR, exist_ok=True)
+        os.chmod(directory, SECURE_DIR)
+    write_json(os.path.join(codex_root, "attention.json"), record, mode=0o600)
+    return record["status"] + (": " + error if error else "")
 
 
 # ──────────────────────────────────────────────────────────── лимиты Codex

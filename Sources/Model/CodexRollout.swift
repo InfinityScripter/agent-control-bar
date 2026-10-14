@@ -106,6 +106,7 @@ enum CodexRollout {
         private var boundaryAt: Double = 0
         private var inTurn = false
         private(set) var turnOver: Boundary?
+        private(set) var turnStart: Boundary?
 
         func hasAsyncQuestion(turn id: String, at ts: Double) -> Bool {
             guard inTurn, !asyncWaiting.isEmpty else { return false }
@@ -164,9 +165,9 @@ enum CodexRollout {
             let reply = !asyncWaiting.isEmpty && data.range(of: Self.replyNeedle) != nil
             guard call || output || boundary || item || reply else { return }
             if boundary, let point = CodexRollout.boundary(data) {
+                if point.ends, !point.turn.isEmpty, !turn.isEmpty, point.turn != turn { return }
                 waiting.removeAll()
                 guard point.at >= boundaryAt else { return }
-                if point.ends, !point.turn.isEmpty, !turn.isEmpty, point.turn != turn { return }
                 asyncWaiting.removeAll()
                 asyncSeen.removeAll()
                 boundaryAt = point.at
@@ -174,6 +175,7 @@ enum CodexRollout {
                 turn = point.turn
                 inTurn = !point.ends
                 turnOver = point.ends ? point : nil
+                if !point.ends { turnStart = point }
                 return
             }
             guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -181,6 +183,8 @@ enum CodexRollout {
                   let type = payload["type"] as? String else { return }
             if root["type"] as? String == "event_msg" {
                 if endTypes.contains(type) || startTypes.contains(type) {
+                    let id = payload["turn_id"] as? String ?? ""
+                    if endTypes.contains(type), !id.isEmpty, !turn.isEmpty, id != turn { return }
                     waiting.removeAll()
                 } else if type == "item_completed", inTurn,
                           let stamp = root["timestamp"] as? String, let at = Transcript.unixTime(stamp),

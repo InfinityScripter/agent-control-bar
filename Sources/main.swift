@@ -130,6 +130,8 @@ final class StatusController: NSObject, NSWindowDelegate {
     var rolledOverHandled: Double = 0   // the reset stamp that already brought one poll forward
     var codexLimitsMTime: Date?         // the same gate for codex/limits.json
     var codexHooksMTime: Date?          // and for codex/hooks.json
+    var codexAttentionMTime: Date?
+    var codexAttentionPoll = CodexAttentionPoll()
     /// The mtimes the last hook-trust question was asked against; see askCodexAboutHooks().
     var codexTrustInputs: String?
     /// Where Codex keeps the session files its limit figures are read out of. Owned by Codex,

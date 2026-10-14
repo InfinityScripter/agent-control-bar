@@ -109,6 +109,7 @@ struct TurnFacts {
     var turnTs: Double?
     /// The current Codex turn's completion, preserved when another turn finishes late.
     var turnOver: CodexRollout.Boundary?
+    var turnStart: CodexRollout.Boundary?
     var inputPending = false
     /// The file's own mtime, from the same stat the fields above are cached against.
     var mtime: Date = .distantPast
@@ -116,6 +117,7 @@ struct TurnFacts {
 
 /// The state machine behind every session row and the menu bar icon.
 final class SessionEngine {
+    var codexAttention: CodexAttention?
     private static let turnTypes = ["\"type\":\"user\"", "\"type\":\"assistant\""].map { Data($0.utf8) }
     // private so the compiler guards the seam: dropCache is the one sanctioned door in.
     private var turnLineCache: [String: (size: UInt64, mtime: Date, facts: TurnFacts)] = [:]
@@ -144,6 +146,13 @@ final class SessionEngine {
         if s.provider == "codex" {
             if facts?.inputPending == true { return "permission" }
             if let over = facts?.turnOver, over.failed, endsThisTurn(over, s) { return "permission" }
+            if let approval = codexAttention?.approval(for: s, now: now),
+               facts?.turnOver.map({ endsThisTurn($0, s) }) != true {
+                let newerStart = facts?.turnStart.map {
+                    $0.at > approval.observedAt || (!$0.turn.isEmpty && $0.turn != approval.turn)
+                } ?? false
+                if !newerStart { return "permission" }
+            }
             // Codex fires PermissionRequest before deciding whether auto-review handles it.
             if s.state == "permission" { return "idle" }
         }
@@ -229,7 +238,8 @@ final class SessionEngine {
             var questions = questionCache[path] ?? CodexRollout.Questions()
             let pending = questions.pending(in: path)
             questionCache[path] = questions
-            return TurnFacts(turnOver: questions.turnOver, inputPending: pending, mtime: questions.mtime)
+            return TurnFacts(turnOver: questions.turnOver, turnStart: questions.turnStart,
+                             inputPending: pending, mtime: questions.mtime)
         }
         let attrs = try? FileManager.default.attributesOfItem(atPath: path)
         let size = (attrs?[.size] as? NSNumber)?.uint64Value ?? 0

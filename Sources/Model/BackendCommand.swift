@@ -6,6 +6,7 @@ enum BackendCommand {
     case mcpRefresh(provider: String)
     case limits(provider: String)
     case codexHooks
+    case codexAttention
     case codexHooksApprove
     /// Re-point this app's own dead statusLine wrapper in settings.json; a foreign or live one is
     /// left alone by the script, so the call is safe to make on every launch.
@@ -17,6 +18,11 @@ enum BackendCommand {
     case toggleServer(provider: String, name: String, on: Bool)
     case toggleTool(provider: String, server: String, tool: String, prefix: String, on: Bool)
 
+    func backend(normal: (python: String, script: String), bundledScript: String?) -> (python: String, script: String) {
+        if case .codexAttention = self { return ("/usr/bin/python3", bundledScript ?? "") }
+        return normal
+    }
+
     var arguments: [String] {
         switch self {
         case .mcpRefresh(let provider):
@@ -25,6 +31,8 @@ enum BackendCommand {
             return [provider == "codex" ? "codex-limits" : "limits"]
         case .codexHooks:
             return ["codex-hooks"]
+        case .codexAttention:
+            return ["codex-attention"]
         case .codexHooksApprove:
             return ["codex-hooks", "approve"]
         case .statuslineHeal:
