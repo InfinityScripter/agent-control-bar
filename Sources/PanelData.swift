@@ -219,8 +219,8 @@ extension StatusController {
     var panelStripExtra: CGFloat {
         // The reset-odds card sits above the scrolling half too, one line folded and a block per
         // provider unfolded.
-        let odds: CGFloat = !resetOddsOn ? 0
-            : panelStore.expanded.contains(PanelStore.resetOddsID) ? 190 : 30
+        let open = panelStore.expanded.contains(PanelStore.resetOddsID)
+        let odds = panelResetOdds(now: Date().timeIntervalSince1970)?.cardHeight(open: open) ?? 0
         guard limitsBoard.shown(at: Date().timeIntervalSince1970).count > 1 else { return odds }
         return odds + (limitsLayout == .rows ? 80 : 40)
     }

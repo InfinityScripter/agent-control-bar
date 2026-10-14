@@ -119,6 +119,14 @@ final class PanelStore: ObservableObject {
 
     func openResetOddsSite() { controller?.closePanel(); controller?.openResetOddsSite() }
 
+    /// Republished at once rather than at the next tick: the scroll cap depends on whether the
+    /// card is open, and for that tick the unfolded card would stand on the old cap and push the
+    /// panel's top edge up off its icon.
+    func toggleResetOdds() {
+        toggleExpanded(Self.resetOddsID)
+        refresh()
+    }
+
     func openSession(_ session: PanelSession) {
         controller?.closePanel()
         controller?.openSession(session.sessionID, threadURL: session.threadURL,
