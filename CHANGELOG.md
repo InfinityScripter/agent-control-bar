@@ -7,7 +7,7 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
-## [Unreleased]
+## [0.25.1] - 2026-10-14
 
 ### Added
 - **Odds of an early limit reset.** A card under the limits strip shows whenreset.app's estimate
@@ -19,6 +19,16 @@ from, and are kept so the history reads continuously.
   turns it off, which also stops the request.
 
 ### Fixed
+- **Codex shows Needs you when it needs attention.** Command approvals and blocking questions
+  show Needs you, as do terminal errors, including HTTP 429 and exhausted retries.
+- **Async Codex questions show a quiet "Вопрос" label.** The session keeps its working status
+  and timer. The label clears after an accepted answer or when the turn ends.
+- **Late events from another Codex turn keep the current turn's state intact.** They no
+  longer hide a pending question, terminal error or completion.
+- **Command approval checks use the bundled reader after an app update.** An older plugin
+  path no longer prevents the app from checking the local Codex status.
+- **Codex approval checks run every five seconds.** Only one check runs at a time, with a
+  time limit. Transcript byte scans and their cache remain in use.
 - Reduce CPU use while sessions are active by scanning transcript tails as bytes. Read CRLF
   transcript records as separate lines too.
 
