@@ -60,6 +60,7 @@ extension StatusController {
         // keeps a burst of opens down to one request.
         pollLimits()
         checkForUpdate()          // refreshes the update cache for next open (gated to once a day)
+        fetchResetOddsIfDue()
         refreshNotificationAuthStatus()
         // The verdict from launch is not good enough for the one person looking at an empty tab,
         // or at a hooks warning they may have just fixed from a terminal.
@@ -228,6 +229,7 @@ extension StatusController {
                     + (limit.resets.map { "  resets in \($0)" } ?? ""))
             }
         }
+        if let odds = snapshot.resetOdds { lines += describeResetOdds(odds) }
         lines.append("Sessions (\(snapshot.sessions.count))")
         if let hooks = snapshot.hooks {
             lines.append("  [hooks] \(hooks.title) — \(hooks.reason)"
@@ -270,5 +272,20 @@ extension StatusController {
         lines.append("Settings…   ⌘,")
         lines.append("Quit   ⌘Q")
         return lines.joined(separator: "\n")
+    }
+
+    private func describeResetOdds(_ odds: PanelResetOdds) -> [String] {
+        guard odds.state == "ok" else {
+            return ["Reset odds — \(odds.state)" + (odds.note.isEmpty ? "" : ": \(odds.note)")]
+        }
+        let pct = { (value: Int?) in value.map { "\($0)%" } ?? "—" }
+        var lines = ["Reset odds — \(odds.note)" + (odds.stale ? "  [stale]" : "")]
+        for row in odds.rows {
+            lines.append("  \(row.title)  24h \(pct(row.p24))  48h \(pct(row.p48))  7d \(pct(row.p7d))"
+                + (row.lastReset.map { "  · last reset \($0)" } ?? ""))
+            if let counts = row.counts { lines.append("    \(counts)") }
+            if let banked = row.banked { lines.append("    \(banked)") }
+        }
+        return lines
     }
 }

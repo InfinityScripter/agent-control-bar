@@ -100,7 +100,10 @@ private struct GeneralSettings: View {
     // whatever Swift that Mac's Command Line Tools carry, and there `build.sh` simply failed.
     private static let limitsFooter: String = "Polls Anthropic's usage endpoint with your own Claude "
         + "OAuth token, which is sent to api.anthropic.com and nowhere else. With this off, the 5h "
-        + "and 7d bars only move when a status line happens to write them."
+        + "and 7d bars only move when a status line happens to write them.\n\n"
+        + "Limit reset odds asks whenreset.app at most every 15 minutes for its estimate of an early "
+        + "Claude or Codex limit reset, built from past vendor announcements. A plain public request "
+        + "with no key and nothing about you in it. Off removes the card and stops the request."
 
     // The one switch here that costs a macOS permission, so the footer says so before the switch is
     // touched rather than after — the modal on enabling is the second telling, not the first.
@@ -189,6 +192,7 @@ private struct GeneralSettings: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
+                Toggle("Limit reset odds", isOn: store.resetOdds)
             } header: {
                 Text("Limits")
             } footer: {

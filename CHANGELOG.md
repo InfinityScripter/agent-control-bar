@@ -9,6 +9,15 @@ from, and are kept so the history reads continuously.
 
 ## [Unreleased]
 
+### Added
+- **Odds of an early limit reset.** A card under the limits strip shows whenreset.app's estimate
+  that Claude or Codex limits get reset early within 24 hours, one figure per provider. Unfolded,
+  it adds the 48-hour and 7-day odds, when each was last reset and how many resets the site has
+  counted ("53 resets tracked · 5 in last 30 days"). The limits tooltip carries the 24-hour figure
+  too. The app asks the site at most every 15 minutes and keeps the last answer, so the card shows
+  at launch and says when the figures are old. **Limit reset odds** in Settings → General → Limits
+  turns it off, which also stops the request.
+
 ### Fixed
 - Reduce CPU use while sessions are active by scanning transcript tails as bytes. Read CRLF
   transcript records as separate lines too.

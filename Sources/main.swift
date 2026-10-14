@@ -237,6 +237,11 @@ final class StatusController: NSObject, NSWindowDelegate {
         AgentDisplay.resolve(saved: agentChoice, codexInstalled: codexInstalled)
     }
     var analytics = true            // the anonymous daily ping (Sources/Analytics.swift); env var and endpoint also gate it
+    var resetOddsOn = true          // whenreset.app's odds of an early limit reset
+    var resetOdds: ResetOdds?
+    var resetOddsFetchedAt: Double = 0
+    var resetOddsProblem: String?
+    var resetOddsRunning = false
     var soundThreshold: Double = 0  // 0 = off; else the min turn length (seconds) that chimes on completion
     var needsYouSound = NeedsYouSound.defaultChoice  // system sound name; "" = off
     var needsYouPlayer: NSSound?  // the loaded pick, replaced when the pick changes
@@ -302,6 +307,8 @@ final class StatusController: NSObject, NSWindowDelegate {
         if let s = d.string(forKey: "limitsProvider") { limitsProvider = s }
         agentChoice = d.string(forKey: "agentDisplay")
         if d.object(forKey: "analytics") != nil { analytics = d.bool(forKey: "analytics") }
+        if d.object(forKey: "resetOdds") != nil { resetOddsOn = d.bool(forKey: "resetOdds") }
+        loadResetOddsCache()
         if d.object(forKey: "soundThreshold") != nil { soundThreshold = d.double(forKey: "soundThreshold") }
         if let s = d.string(forKey: "needsYouSound") { needsYouSound = s }
         if let s = d.string(forKey: "animStyle") { animStyle = MenuBarIcon(raw: s) }
@@ -433,6 +440,12 @@ final class StatusController: NSObject, NSWindowDelegate {
         checkHooks()
         healStatusLine()
         checkForUpdate()
+        fetchResetOddsIfDue()
+        // Every five minutes against a fifteen-minute throttle, for the same reason the ping
+        // below is hourly: a long timer that comes due while the Mac sleeps is simply late.
+        Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+            self?.fetchResetOddsIfDue()
+        }
         announceVersionChange()
         warmCanBuildFromSource()
         // Hourly, not daily: the app runs for weeks, and a 24h timer that fires while the Mac is

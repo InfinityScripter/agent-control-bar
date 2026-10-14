@@ -106,6 +106,7 @@ extension StatusController {
             // inventing a number.
             return ([], LimitsStatus.emptyStripText(limitsStatus, oauthLimits: oauthLimits))
         }
+        let odds = resetOddsOn ? resetOdds : nil
         let groups = sources.map { entry -> PanelLimitGroup in
             let agent = Provider.named(entry.set.provider)
             // Account windows first, the model's own window last: 5h and 7d are what every plan
@@ -126,7 +127,9 @@ extension StatusController {
                                    limits: rows,
                                    resets: soonest.map { Self.until($0) },
                                    age: LimitsNote.age(of: entry.set.ts, now: now),
-                                   plan: entry.set.plan, worst: worst)
+                                   plan: entry.set.plan, worst: worst,
+                                   earlyReset: odds?.product(agent.id)?.p24
+                                       .map { "Early reset in 24h: \($0)% (whenreset.app)" })
         }
         return (groups, LimitsNote.footer(groups.map { (title: $0.title, age: $0.age) }))
     }
@@ -140,6 +143,48 @@ extension StatusController {
 
     static func age(of ts: Double, now: Double) -> String {
         LimitsNote.age(of: ts, now: now)
+    }
+
+    // MARK: reset odds
+
+    /// nil while the switch is off, so the card is absent rather than empty. Only the providers
+    /// this app knows get a row: a product the site adds later has no glyph here and no limits to
+    /// sit beside.
+    func panelResetOdds(now: Double) -> PanelResetOdds? {
+        guard resetOddsOn else { return nil }
+        guard let odds = resetOdds else {
+            return resetOddsProblem.map { PanelResetOdds(state: "unavailable", rows: [], stale: false, note: $0) }
+                ?? PanelResetOdds(state: "loading", rows: [], stale: false, note: "")
+        }
+        let rows = Provider.all.compactMap { agent in
+            odds.product(agent.id).map { Self.resetOddsRow($0, agent: agent, now: now) }
+        }
+        guard !rows.isEmpty else {
+            return PanelResetOdds(state: "unavailable", rows: [], stale: false,
+                                  note: "whenreset.app has no Claude or Codex figures")
+        }
+        let age = LimitsNote.age(of: resetOddsFetchedAt, now: now)
+        let note = resetOddsProblem == nil
+            ? "estimate from past resets, not official · updated " + age
+            : "couldn't refresh — showing data from " + age
+        return PanelResetOdds(state: "ok", rows: rows,
+                              stale: now - resetOddsFetchedAt > ResetOddsFeed.staleAfter, note: note)
+    }
+
+    static func resetOddsRow(_ p: ResetOddsProduct, agent: Provider, now: Double) -> PanelResetOddsRow {
+        let days = ResetOddsFeed.daysSince(p.lastRegular, now: now)
+        let counts = [p.total.map { $0 == 1 ? "1 reset tracked" : "\($0) resets tracked" },
+                      p.last30d.map { "\($0) in last 30 days" }].compactMap { $0 }
+        // A banked reset is a credit each user redeems, not a reset of everyone's limits, so it is
+        // only worth a line while it is the newer of the two. Dates are "YYYY-MM-DD", which order
+        // as strings.
+        let bankedIsNewer = p.lastBanked.map { banked in p.lastRegular.map { banked > $0 } ?? true } ?? false
+        return PanelResetOddsRow(
+            provider: agent.id, title: agent.title, glyph: agent.glyph,
+            p24: p.p24, p48: p.p48, p7d: p.p7d,
+            lastReset: days.map { $0 == 0 ? "today" : "\($0)d ago" },
+            counts: counts.isEmpty ? nil : counts.joined(separator: " · "),
+            banked: bankedIsNewer ? ResetOddsFeed.monthDay(p.lastBanked).map { "Banked reset handed out " + $0 } : nil)
     }
 
     /// How long until a window resets. A weekly window is days away, and "76h 12m" is arithmetic
@@ -172,8 +217,12 @@ extension StatusController {
     /// out: in rows, a second header, a second row of cells and the gap between them; in the
     /// switcher, the tabs above the one row of cells that is already counted.
     var panelStripExtra: CGFloat {
-        guard limitsBoard.shown(at: Date().timeIntervalSince1970).count > 1 else { return 0 }
-        return limitsLayout == .rows ? 80 : 40
+        // The reset-odds card sits above the scrolling half too, one line folded and a block per
+        // provider unfolded.
+        let odds: CGFloat = !resetOddsOn ? 0
+            : panelStore.expanded.contains(PanelStore.resetOddsID) ? 190 : 30
+        guard limitsBoard.shown(at: Date().timeIntervalSince1970).count > 1 else { return odds }
+        return odds + (limitsLayout == .rows ? 80 : 40)
     }
 
     /// The banner, the limits strip, the tabs and the footer, plus the gap under the menu bar.

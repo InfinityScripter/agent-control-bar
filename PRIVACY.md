@@ -21,9 +21,15 @@ the switch that stops it.
   "What's new" window downloads that release's DMG from GitHub (or its source archive, built
   locally, for a release that shipped without a DMG). This request only ever happens on that
   click — the daily check above never downloads anything.
+- **Limit reset odds from `whenreset.app`, at most once every 15 minutes**: a plain `GET` of
+  `https://whenreset.app/api/v1/resets.json`, the site's public estimate of an early Claude or
+  Codex limit reset and its count of past resets. No key, no cookie, no parameters and nothing
+  about you or your usage; the request refuses redirects. The last answer is kept in the app's
+  own preferences so the panel can show it at launch. Switch **Limit reset odds** off in
+  Settings → General and this request never happens, and the kept answer is deleted.
 
-GitHub, Homebrew and Anthropic see that a request arrived; the developer never does. Those, and
-the ping in the next section, are the only requests the app makes for itself. There is no crash
+GitHub, Homebrew, Anthropic and whenreset.app see that a request arrived; the developer never
+does. Those, and the ping in the next section, are the only requests the app makes for itself. There is no crash
 reporting and no analytics kit of any kind in the binary.
 
 ## The anonymous ping

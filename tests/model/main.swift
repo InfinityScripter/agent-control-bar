@@ -3930,5 +3930,113 @@ check(GitBranches.branch(fromHead: String(repeating: "AB12", count: 10)) == "",
       "uppercase hex is not a commit id git writes")
 
 
+// MARK: ResetOdds — whenreset.app's odds and counts, and nothing invented where it says nothing
+
+// A cut-down copy of a real answer from /api/v1/resets.json (14 Oct 2026): every field the panel
+// reads, one event per product to show the long list is ignored, and the fields nobody reads kept
+// so the parser is seen tolerating them.
+let whenresetAnswer = #"""
+{"schema":"whenreset/v1","generated_at":"2026-10-14T05:32:40Z","source":"https://whenreset.app/api/",
+ "products":{
+  "codex":{"name":"Codex","vendor":"OpenAI","sources":["thsottiaux","OpenAIDevs"],
+   "stats":{"total":53,"last_date":"2026-10-13","last30d":5,"median_gap":3,"max_gap":68,
+            "last_regular_date":"2026-10-13","last_banked_date":"2026-10-07","banked_count":8},
+   "next_estimate":"2026-10-16","scheduled":null,
+   "odds":{"result":{"1":0.1346,"2":0.3077,"7":0.7115,"n":52},"reason":null,"model":"climatology"},
+   "events":[{"id":"2109812216212099456","date":"2026-10-13","type":"reset","kind":"regular",
+              "scope":"all","page":"https://whenreset.app/codex/2026-10-13/"}]},
+  "claude":{"name":"Claude","vendor":"Anthropic","sources":["ClaudeDevs","lydiahallie"],
+   "stats":{"total":13,"last_date":"2026-09-04","last30d":0,"median_gap":8,"max_gap":47,
+            "last_regular_date":"2026-09-04","last_banked_date":"2026-09-22","banked_count":1},
+   "next_estimate":"2026-09-12","scheduled":null,
+   "odds":{"result":{"1":0.0833,"2":0.0833,"7":0.5,"n":12},"reason":null,"model":"climatology"},
+   "events":[{"id":"2102438800836489554","date":"2026-09-22","type":"reset","kind":"banked",
+              "scope":"Pro+Max+Team","page":"https://whenreset.app/claude/2026-09-22/"}]}}}
+"""#
+let realOdds = ResetOdds(data: Data(whenresetAnswer.utf8))
+check(realOdds?.products.map(\.id) == ["claude", "codex"],
+      "both products are read, Claude first whatever order the answer has them in")
+let realCodex = realOdds?.product("codex")
+check(realCodex == ResetOddsProduct(id: "codex", name: "Codex", p24: 13, p48: 31, p7d: 71, total: 53,
+                                    last30d: 5, lastRegular: "2026-10-13", lastBanked: "2026-10-07"),
+      "Codex: 0.1346 / 0.3077 / 0.7115 read as 13% / 31% / 71%, 53 resets, 5 in 30 days")
+let realClaude = realOdds?.product("claude")
+check(realClaude?.p24 == 8 && realClaude?.p48 == 8 && realClaude?.p7d == 50 && realClaude?.total == 13
+      && realClaude?.last30d == 0 && realClaude?.lastBanked == "2026-09-22",
+      "Claude: 8% / 8% / 50%, 13 resets — and a real zero in last30d stays a zero")
+check(realOdds?.product("gemini") == nil, "a product the answer does not carry is nil, not an empty row")
+
+func oddsProduct(_ product: [String: Any]) -> ResetOddsProduct? {
+    ResetOdds(json: ["products": ["codex": product]])?.product("codex")
+}
+let noResult = oddsProduct(["name": "Codex", "stats": ["total": 2], "odds": ["result": NSNull(),
+                                                                             "reason": "too few resets"]])
+check(noResult != nil && noResult?.p24 == nil && noResult?.p48 == nil && noResult?.p7d == nil
+      && noResult?.total == 2,
+      "odds.result null (too little history): no percentages at all, the counts still read")
+let wrongTypes = oddsProduct(["name": 7, "stats": ["total": "53", "last30d": true, "last_regular_date": 20261013],
+                              "odds": ["result": ["1": "0.13", "2": Double.nan, "7": 1e30]]])
+check(wrongTypes?.name == "codex", "a name that is not a string falls back to the id")
+check(wrongTypes?.p24 == nil && wrongTypes?.p48 == nil && wrongTypes?.p7d == nil,
+      "a string, NaN and 1e30 are not percentages: nil, never 0 and never a crash")
+check(wrongTypes?.total == nil && wrongTypes?.last30d == nil && wrongTypes?.lastRegular == nil,
+      "a string count, a boolean count and a numeric date are unknown, not zero")
+check(oddsProduct(["stats": ["total": 1e30, "last30d": -3]])?.total == nil
+      && oddsProduct(["stats": ["total": 1e30, "last30d": -3]])?.last30d == nil,
+      "an absurd or negative count is unknown rather than clamped into a believable number")
+check(oddsProduct(["stats": ["last_date": "2026-09-01"]])?.lastRegular == "2026-09-01",
+      "without last_regular_date the last reset of any kind stands in")
+check(oddsProduct(["stats": "broken", "odds": 3]) != nil, "stats and odds of the wrong shape are skipped, not fatal")
+check(ResetOdds(json: ["products": [:] as [String: Any]]) == nil, "no products at all is no answer")
+check(ResetOdds(json: ["products": ["codex": "nope"]]) == nil, "a product that is not an object is not a product")
+check(ResetOdds(json: [:]) == nil, "an answer without products is no answer")
+check(ResetOdds(data: Data("<html>Cloudflare</html>".utf8)) == nil, "an HTML error page is no answer")
+check(ResetOdds(data: Data("[1,2]".utf8)) == nil, "JSON that is not an object is no answer")
+check(ResetOdds(json: ["products": ["zeta": [:] as [String: Any], "codex": [:] as [String: Any],
+                                    "alpha": [:] as [String: Any], "claude": [:] as [String: Any]]])?
+          .products.map(\.id) == ["claude", "codex", "alpha", "zeta"],
+      "Claude, then Codex, then anything new alphabetically")
+
+check(ResetOddsFeed.percent(NSNumber(value: 0.1346)) == 13, "0.1346 is 13%")
+check(ResetOddsFeed.percent(NSNumber(value: 0.3077)) == 31, "0.3077 rounds to 31%, not down to 30%")
+check(ResetOddsFeed.percent(NSNumber(value: 0)) == 0, "a real 0 stays 0")
+check(ResetOddsFeed.percent(NSNumber(value: 1)) == 100, "certainty is 100%")
+check(ResetOddsFeed.percent(NSNumber(value: 1.0004)) == 100, "rounding noise just over 1 clamps to 100")
+check(ResetOddsFeed.percent(NSNumber(value: -0.2)) == nil, "a negative share is not a probability")
+check(ResetOddsFeed.percent(NSNumber(value: 1e30)) == nil, "1e30 is not a probability")
+check(ResetOddsFeed.percent(NSNumber(value: Double.infinity)) == nil, "infinity is not a probability")
+check(ResetOddsFeed.percent(Double.nan) == nil, "NaN is not a probability")
+check(ResetOddsFeed.percent("0.5") == nil, "a string is not a number")
+check(ResetOddsFeed.percent(true) == nil, "a boolean is not a share")
+check(ResetOddsFeed.percent(nil) == nil, "missing is missing")
+
+let oddsNow = 1_791_000_000.0   // 2026-10-03 04:00 UTC
+check(ResetOddsFeed.due(now: oddsNow, lastAttempt: 0), "never tried: due")
+check(!ResetOddsFeed.due(now: oddsNow, lastAttempt: oddsNow - 899), "tried 14m59s ago: not yet")
+check(ResetOddsFeed.due(now: oddsNow, lastAttempt: oddsNow - 900), "tried 15 minutes ago: due")
+check(ResetOddsFeed.due(now: oddsNow, lastAttempt: oddsNow + 3600),
+      "an attempt stamped in the future (the clock went back) does not stall the feed")
+
+check(ResetOddsFeed.daysSince("2026-10-03", now: oddsNow) == 0, "a reset today is 0 days ago")
+check(ResetOddsFeed.daysSince("2026-10-02", now: oddsNow) == 1, "yesterday is 1 day ago")
+check(ResetOddsFeed.daysSince("2026-09-04", now: oddsNow) == 29, "4 Sep to 3 Oct is 29 days")
+check(ResetOddsFeed.daysSince("2026-10-05", now: oddsNow) == 0, "a date ahead of this clock is today, not negative")
+check(ResetOddsFeed.daysSince("2026-02-31", now: oddsNow) == nil, "31 February is not a date")
+check(ResetOddsFeed.daysSince("13/10/2026", now: oddsNow) == nil, "another date format is not guessed at")
+check(ResetOddsFeed.daysSince("", now: oddsNow) == nil && ResetOddsFeed.daysSince(nil, now: oddsNow) == nil,
+      "no date, no age")
+check(ResetOddsFeed.monthDay("2026-09-22") == "Sep 22", "a date is said as month and day")
+check(ResetOddsFeed.monthDay("2026-9-2x") == nil, "a broken date is not said at all")
+
+struct OddsTestError: LocalizedError { var errorDescription: String? { "The request timed out." } }
+check(ResetOddsFeed.problem(status: nil, error: OddsTestError()) == "whenreset.app didn't answer",
+      "no answer at all says so")
+check(ResetOddsFeed.problem(status: 403, error: nil) == "whenreset.app refused the request (403)",
+      "a refusal says so, with its code")
+check(ResetOddsFeed.problem(status: 503, error: nil) == "whenreset.app answered 503",
+      "any other status is named")
+check(ResetOddsFeed.problem(status: 200, error: nil) == "whenreset.app sent an answer this app can't read",
+      "a 200 that did not parse is a format problem, not a network one")
+
 print(failures == 0 ? "\nall model checks passed" : "\n\(failures) failed")
 exit(failures == 0 ? 0 : 1)
