@@ -7,6 +7,17 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [Unreleased]
+
+### Added
+- **Odds of an early limit reset.** A card under the limits strip shows whenreset.app's estimate
+  that Claude or Codex limits get reset early within 24 hours, one figure per provider. Unfolded,
+  it adds the 48-hour and 7-day odds, when each was last reset and how many resets the site has
+  counted ("53 resets tracked · 5 in last 30 days"). The limits tooltip carries the 24-hour figure
+  too. The app asks the site at most every 15 minutes and keeps the last answer, so the card shows
+  at launch and says when the figures are old. **Limit reset odds** in Settings → General → Limits
+  turns it off, which also stops the request.
+
 ## [0.25.1] - 2026-10-14
 
 ### Fixed

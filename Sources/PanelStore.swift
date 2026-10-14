@@ -115,6 +115,17 @@ final class PanelStore: ObservableObject {
     /// rather than a second piece of state with its own animation gate. No server can collide
     /// with it: a server id is its name, and a name never contains a space.
     static let waitingAuthID = "waiting for authorisation"
+    static let resetOddsID = "reset-odds"
+
+    func openResetOddsSite() { controller?.closePanel(); controller?.openResetOddsSite() }
+
+    /// Republished at once rather than at the next tick: the scroll cap depends on whether the
+    /// card is open, and for that tick the unfolded card would stand on the old cap and push the
+    /// panel's top edge up off its icon.
+    func toggleResetOdds() {
+        toggleExpanded(Self.resetOddsID)
+        refresh()
+    }
 
     func openSession(_ session: PanelSession) {
         controller?.closePanel()
@@ -227,6 +238,8 @@ struct PanelLimitGroup: Equatable, Identifiable {
     /// PanelData, where the reset times are still numbers — at equal fullness the window that
     /// comes back sooner is the one that bites, and by here the resets are worded strings.
     let worst: PanelLimit?
+    /// "Early reset in 24h: 13% (whenreset.app)", while the odds are on and the site has a figure.
+    var earlyReset: String? = nil
 
     var id: String { provider }
 
@@ -235,7 +248,7 @@ struct PanelLimitGroup: Equatable, Identifiable {
     /// while no session is running and "measured 3d ago" is not a polling fault.
     var tip: String {
         let source = provider == Provider.codex.id ? "from the last Codex session" : nil
-        return [title, plan, "measured " + age, source].compactMap { $0 }.joined(separator: " · ")
+        return [title, plan, "measured " + age, source, earlyReset].compactMap { $0 }.joined(separator: " · ")
     }
 }
 
@@ -281,6 +294,8 @@ struct PanelSnapshot: Equatable {
     /// pick already resolved against the groups there are, see LimitsBoard.showing.
     var limitsLayout: PanelLimitsLayout = .rows
     var limitsProvider = "claude"
+    /// The reset-odds card under the strip; nil while its switch in Settings is off.
+    var resetOdds: PanelResetOdds? = nil
     /// Which pet the session rows draw, or "" for none — one per agent. In the snapshot rather
     /// than read from the setting at the row, so the whole panel changes pets in one redraw
     /// instead of row by row.
@@ -289,6 +304,30 @@ struct PanelSnapshot: Equatable {
     var mcp = PanelMCP()
     var update: PanelUpdate?
     var notificationsDenied = false
+}
+
+struct PanelResetOdds: Equatable {
+    let state: String
+    let rows: [PanelResetOddsRow]
+    let stale: Bool
+    let note: String
+}
+
+struct PanelResetOddsRow: Equatable, Identifiable {
+    let provider: String
+    let title: String
+    let glyph: String
+    let p24: Int?
+    let p48: Int?
+    let p7d: Int?
+    /// "today", "1d ago", "22d ago".
+    let lastReset: String?
+    /// "53 resets tracked · 5 in last 30 days".
+    let counts: String?
+    /// "Banked reset handed out Sep 22", only while that is newer than the last regular reset.
+    let banked: String?
+
+    var id: String { provider }
 }
 
 struct PanelSession: Equatable, Identifiable {
@@ -481,6 +520,7 @@ extension PanelSnapshot {
         limitsLayout = c.limitsLayout
         limitsProvider = LimitsBoard.showing(c.limitsProvider, among: limitGroups.map(\.provider))
             ?? c.limitsProvider
+        resetOdds = c.panelResetOdds(now: now)
         petID = c.petID
         codexPetID = c.codexPetID
         self.mcp = mcp

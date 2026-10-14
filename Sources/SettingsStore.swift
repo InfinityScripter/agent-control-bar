@@ -76,6 +76,9 @@ final class SettingsStore: ObservableObject {
     var codexLimits: Binding<Bool> {
         bind({ $0.codexLimits }, { $0.applyCodexLimits($1) }, or: true)
     }
+    var resetOdds: Binding<Bool> {
+        bind({ $0.resetOddsOn }, { $0.applyResetOdds($1) }, or: true)
+    }
     /// How the last Claude poll ended, under the switch that starts it: "Last poll: ok · 4 min
     /// ago", or the cause and how old the figures on screen are. Empty until the backend has
     /// written a status at all, so an older backend shows no line rather than a wrong one.

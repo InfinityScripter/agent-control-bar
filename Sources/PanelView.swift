@@ -21,6 +21,9 @@ struct PanelView: View {
                     .padding(.bottom, 7)
             }
             limitsStrip
+            if let odds = store.snapshot.resetOdds {
+                PanelResetOddsCard(store: store, odds: odds)
+            }
             tabBar
             // The panel grows with its content up to a cap and scrolls past it, so a machine with
             // two servers does not get the window a machine with twenty needs. Both halves of that
