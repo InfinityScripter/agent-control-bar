@@ -10,12 +10,17 @@ struct MenuBarAgent {
     var reserve = false
     /// Claude Code is signed out and the icon says so: dimmed bars and a mark. Never set for Codex.
     var signedOut = false
+    var asyncQuestion = false
 
     /// Everything that changes what the block looks like, for the icon cache key.
-    var signature: String { gauge.signature + (signedOut ? "|signed-out" : "") }
+    var signature: String {
+        gauge.signature + (signedOut ? "|signed-out" : "")
+            + (asyncQuestion ? "|question" : "") + (badge ? "|permission" : "")
+    }
 
     var startedAt: Double { lead.map { isWorkingState($0.eff) ? $0.startedAt : 0 } ?? 0 }
     var badge: Bool { lead?.eff == "permission" }
+    var questionMarker: Bool { provider == .codex && asyncQuestion && !badge }
 
     func animates(_ icon: MenuBarIcon?) -> Bool {
         icon?.restsInMotion == true || (icon != nil && mood != .sleeping)
@@ -27,6 +32,25 @@ struct MenuBarAgent {
     }
 
     func markedIcon(_ icon: NSImage, fallback: Bool, permissionColor: NSColor) -> NSImage {
+        if questionMarker {
+            let size = NSSize(width: icon.size.width + 2, height: icon.size.height)
+            let image = NSImage(size: size, flipped: false) { _ in
+                icon.draw(in: NSRect(origin: .zero, size: icon.size), from: .zero, operation: .sourceOver, fraction: 1)
+                let box = NSRect(x: size.width - 9, y: size.height - 9, width: 9, height: 9)
+                NSGraphicsContext.current?.saveGraphicsState()
+                NSGraphicsContext.current?.compositingOperation = .destinationOut
+                NSBezierPath(ovalIn: box.insetBy(dx: -0.5, dy: -0.5)).fill()
+                NSGraphicsContext.current?.restoreGraphicsState()
+                if let mark = NSImage(systemSymbolName: "questionmark.circle.fill", accessibilityDescription: nil) {
+                    NSColor.labelColor.setFill(); box.fill()
+                    mark.draw(in: box, from: .zero, operation: .destinationIn, fraction: 1)
+                }
+                return true
+            }
+            image.isTemplate = icon.isTemplate
+            image.accessibilityDescription = "Codex, Вопрос"
+            return image
+        }
         guard let color = markerColor(fallback: fallback, permissionColor: permissionColor) else { return icon }
         return attentionBadgeIcon(icon, color: color)
     }
@@ -45,7 +69,8 @@ struct MenuBarAgent {
                 gauge: limits.gauge(at: now),
                 reserve: provider == .codex && limits.codexBarWindows(at: now).first?.title == "Reserve",
                 signedOut: provider == .claude
-                    && LimitsStatus.signedOutShown(claudeStatus, oauthLimits: oauthLimits, figuresTs: claude?.ts))
+                    && LimitsStatus.signedOutShown(claudeStatus, oauthLimits: oauthLimits, figuresTs: claude?.ts),
+                asyncQuestion: provider == .codex && own.contains(where: { $0.asyncQuestion }))
         }
     }
 

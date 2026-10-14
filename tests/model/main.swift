@@ -545,12 +545,16 @@ check(Session(json: [:], id: "x").tty.isEmpty, "a pre-upgrade file simply has no
 // A rollout envelope, in the shape Codex actually writes: the record's own ISO stamp on the
 // outside, the event on the payload. Nothing here is a turn record by Claude's rules, which is
 // the whole reason this net had to be written — see the premise check below.
-func codexEvent(ts: Double, _ type: String, turn: String = "") -> String {
+func codexEvent(ts: Double, _ type: String, turn: String = "", error: Any? = nil) -> String {
     let iso = ISO8601DateFormatter()
     iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     let stamp = iso.string(from: Date(timeIntervalSince1970: ts))
     let id = turn.isEmpty ? "" : ",\"turn_id\":\"\(turn)\""
-    return "{\"timestamp\":\"\(stamp)\",\"type\":\"event_msg\",\"payload\":{\"type\":\"\(type)\"\(id)}}"
+    let failure = error.map {
+        ",\"error\":" + String(decoding: try! JSONSerialization.data(withJSONObject: $0,
+                                                                     options: [.fragmentsAllowed]), as: UTF8.self)
+    } ?? ""
+    return "{\"timestamp\":\"\(stamp)\",\"type\":\"event_msg\",\"payload\":{\"type\":\"\(type)\"\(id)\(failure)}}"
 }
 func makeCodex(state: String, ts: Double, transcript: String, turn: String = "") -> Session {
     Session(json: ["state": state, "ts": ts, "transcript": transcript, "pid": 1,
@@ -565,6 +569,206 @@ check(!Transcript.isTurnRecord(rolloutLine) && Transcript.turnTimestamp(rolloutL
       "a Codex rollout line is not a Claude turn record and never was")
 check(CodexRollout.boundary(Data(rolloutLine.utf8))?.ends == true,
       "and the Codex parser reads the same line as the end of a turn")
+
+let terminalError: [String: Any] = [
+    "message": "exceeded retry limit, last status: 429 Too Many Requests",
+    "codex_error_info": ["response_too_many_failed_attempts": ["http_status_code": 429]],
+]
+let failedTurn = writeTranscript("codex-failed-turn.jsonl", lines: [
+    codexEvent(ts: nowTs - 90, "task_started", turn: "t1"),
+    codexEvent(ts: nowTs - 30, "task_complete", turn: "t1", error: terminalError),
+])
+for state in ["thinking", "tool", "done", "idle", "permission"] {
+    check(engine.effectiveState(makeCodex(state: state, ts: nowTs - 60,
+                                          transcript: failedTurn, turn: "t1"), now: nowTs) == "permission",
+          "a terminal Codex error needs attention while the hook says \(state)")
+}
+check(engine.effectiveState(makeCodex(state: "tool", ts: nowTs - 7_200,
+                                      transcript: failedTurn, turn: "t1"), now: nowTs) == "permission",
+      "a terminal Codex error survives the age cap and repeated polling")
+
+let alternateFailure = writeTranscript("codex-turn-failed.jsonl", lines: [
+    codexEvent(ts: nowTs - 30, "turn_complete", turn: "t1", error: "authentication failed"),
+])
+check(engine.effectiveState(makeCodex(state: "idle", ts: nowTs - 60,
+                                      transcript: alternateFailure, turn: "t1"), now: nowTs) == "permission",
+      "turn_complete with a non-429 error also needs attention")
+check(engine.effectiveState(makeCodex(state: "thinking", ts: nowTs - 60,
+                                      transcript: failedTurn, turn: "t2"), now: nowTs) == "thinking",
+      "a terminal error from a different turn does not request attention")
+check(SessionEngine().effectiveState(makeSession(state: "thinking", ts: nowTs - 60,
+                                                  transcript: failedTurn), now: nowTs) == "thinking",
+      "a Codex terminal error does not change a Claude session")
+let clockFailure = writeTranscript("codex-clock-failed.jsonl", lines: [
+    codexEvent(ts: nowTs - 30, "task_complete", error: terminalError),
+])
+check(engine.effectiveState(makeCodex(state: "done", ts: nowTs - 60,
+                                      transcript: clockFailure), now: nowTs) == "permission",
+      "a terminal error matches by time when turn ids are unavailable")
+check(engine.effectiveState(makeCodex(state: "thinking", ts: nowTs - 20,
+                                      transcript: clockFailure), now: nowTs) == "thinking",
+      "a terminal error older than the current hook does not match without turn ids")
+
+for emptyError: Any in [NSNull(), "", " \n\t", [String: Any](), [Any](), false, 0] {
+    let emptyFailure = writeTranscript("codex-empty-error.jsonl", lines: [
+        codexEvent(ts: nowTs - 30, "task_complete", turn: "t1", error: emptyError),
+    ])
+    check(engine.effectiveState(makeCodex(state: "thinking", ts: nowTs - 60,
+                                          transcript: emptyFailure, turn: "t1"), now: nowTs) == "idle",
+          "an empty or non-error terminal value does not request attention: \(emptyError)")
+}
+let abortedFailure = writeTranscript("codex-aborted-error.jsonl", lines: [
+    codexEvent(ts: nowTs - 30, "turn_aborted", turn: "t1", error: terminalError),
+])
+check(engine.effectiveState(makeCodex(state: "thinking", ts: nowTs - 60,
+                                      transcript: abortedFailure, turn: "t1"), now: nowTs) == "idle",
+      "an abort stays idle even if it carries an error")
+let retriableFailure = writeTranscript("codex-retrying.jsonl", lines: [
+    codexEvent(ts: nowTs - 60, "task_started", turn: "t1", error: terminalError),
+    codexEvent(ts: nowTs - 30, "error", turn: "t1", error: terminalError),
+    codexLine(["type": "function_call_output", "call_id": "quoted-failure",
+               "output": codexEvent(ts: nowTs - 10, "task_complete", turn: "t1", error: terminalError)]),
+])
+check(engine.effectiveState(makeCodex(state: "tool", ts: nowTs - 60,
+                                      transcript: retriableFailure, turn: "t1"), now: nowTs) == "tool",
+      "a retriable error and quoted terminal output do not request attention")
+
+do {
+    let failurePath = writeTranscript("codex-failure-board.jsonl", lines: [
+        codexEvent(ts: nowTs - 60, "task_started", turn: "t1"),
+    ])
+    let failureBoard = SessionBoard(engine: SessionEngine())
+    var hook: [String: Any] = ["state": "idle", "ts": nowTs - 7_200, "turn_id": "t1",
+                               "transcript": failurePath, "pid": 0]
+    var failureFile = SessionBoard.File(key: "codex:failure", path: "/codex/failure.json",
+                                       provider: "codex", id: "failure", mtime: Date())
+    let failureRules = SessionBoard.Rules(soundThreshold: 0, stalePruneAge: 900,
+                                        thinkingWords: [], needsYou: true)
+    appendCodexLine(codexEvent(ts: nowTs - 30, "task_complete", turn: "t1",
+                               error: terminalError), to: failurePath)
+    failureBoard.reload([failureFile], read: { _ in hook }, branch: { _ in "" })
+    let firstFailure = failureBoard.tick(now: nowTs, rules: failureRules,
+                                        pidAlive: { _ in true }, frontmost: { "com.other" })
+    check(firstFailure.needsYou && firstFailure.lead?.eff == "permission"
+            && firstFailure.reaped.isEmpty,
+          "a terminal error cues Needs you and keeps an old session visible")
+    check(!failureBoard.tick(now: nowTs + 1, rules: failureRules,
+                             pidAlive: { _ in true }, frontmost: { "com.other" }).needsYou,
+          "a terminal error cues only once while attention remains")
+    appendCodexLine(codexEvent(ts: nowTs + 2, "task_started", turn: "t2"), to: failurePath)
+    hook["state"] = "thinking"; hook["turn_id"] = "t2"; hook["ts"] = nowTs + 2
+    failureFile = SessionBoard.File(key: "codex:failure", path: "/codex/failure.json",
+                                    provider: "codex", id: "failure",
+                                    mtime: Date(timeIntervalSince1970: nowTs + 2))
+    failureBoard.reload([failureFile], read: { _ in hook }, branch: { _ in "" })
+    let retry = failureBoard.tick(now: nowTs + 2, rules: failureRules,
+                                 pidAlive: { _ in true }, frontmost: { "com.other" })
+    check(retry.lead?.eff == "thinking" && !retry.needsYou,
+          "a new turn clears terminal attention and resumes work")
+    appendCodexLine(codexEvent(ts: nowTs + 3, "task_complete", turn: "t1",
+                               error: terminalError), to: failurePath)
+    let late = failureBoard.tick(now: nowTs + 3, rules: failureRules,
+                                pidAlive: { _ in true }, frontmost: { "com.other" })
+    check(late.lead?.eff == "thinking" && !late.needsYou,
+          "a late old-turn failure cannot raise attention during a retry")
+    appendCodexLine(codexEvent(ts: nowTs + 4, "turn_complete", turn: "t2",
+                               error: terminalError), to: failurePath)
+    let nextFailure = failureBoard.tick(now: nowTs + 4, rules: failureRules,
+                                       pidAlive: { _ in true }, frontmost: { "com.other" })
+    check(nextFailure.lead?.eff == "permission" && nextFailure.needsYou,
+          "a retry that fails cues one new Needs you transition")
+    check(!failureBoard.tick(now: nowTs + 5, rules: failureRules,
+                             pidAlive: { _ in true }, frontmost: { "com.other" }).needsYou,
+          "the retry failure also cues only once")
+    appendCodexLine(codexEvent(ts: nowTs + 6, "turn_started", turn: "t3"), to: failurePath)
+    hook["turn_id"] = "t3"; hook["ts"] = nowTs + 6
+    failureFile = SessionBoard.File(key: "codex:failure", path: "/codex/failure.json",
+                                    provider: "codex", id: "failure",
+                                    mtime: Date(timeIntervalSince1970: nowTs + 6))
+    failureBoard.reload([failureFile], read: { _ in hook }, branch: { _ in "" })
+    let resumed = failureBoard.tick(now: nowTs + 6, rules: failureRules,
+                                   pidAlive: { _ in true }, frontmost: { "com.other" })
+    check(resumed.lead?.eff == "thinking" && !resumed.needsYou,
+          "turn_started also clears the previous failure")
+    appendCodexLine(codexEvent(ts: nowTs + 7, "task_complete", turn: "t3"), to: failurePath)
+    let succeeded = failureBoard.tick(now: nowTs + 7, rules: failureRules,
+                                     pidAlive: { _ in true }, frontmost: { "com.other" })
+    check(succeeded.lead?.eff == "idle" && !succeeded.needsYou,
+          "a successful retry ends idle without an attention cue")
+}
+
+do {
+    let start = 1_800_000_000.0
+    let error = ["message": "synthetic failure"]
+    for (startType, endType) in [("task_started", "task_complete"), ("turn_started", "turn_complete")] {
+        for raw in ["done", "thinking"] {
+            let path = writeTranscript("codex-late-boundary-\(endType)-\(raw).jsonl", lines: [
+                codexEvent(ts: start - 120, startType, turn: "t1"),
+                codexEvent(ts: start, startType, turn: "t2"),
+                codexEvent(ts: start + 120, endType, turn: "t2", error: error),
+            ])
+            let currentEngine = SessionEngine()
+            var session = makeCodex(state: raw, ts: start + 120, transcript: path, turn: "t2")
+            check(currentEngine.effectiveState(session, now: start + 120) == "permission",
+                  "\(endType) needs attention before an old completion while raw \(raw)")
+            appendCodexLine(codexEvent(ts: start + 121, endType, turn: "t1"), to: path)
+            check(currentEngine.effectiveState(session, now: start + 122) == "permission",
+                  "a late old \(endType) preserves the current failure while raw \(raw)")
+            check(currentEngine.effectiveState(session, now: start + 123) == "permission",
+                  "an unchanged transcript retains the current failure while raw \(raw)")
+            check(SessionEngine().effectiveState(session, now: start + 123) == "permission",
+                  "a fresh engine also ignores the late old \(endType) while raw \(raw)")
+            appendCodexLine(codexEvent(ts: start + 124, endType, turn: "t2"), to: path)
+            check(currentEngine.effectiveState(session, now: start + 124) == "idle",
+                  "the current successful \(endType) clears its failure while raw \(raw)")
+            appendCodexLine(codexEvent(ts: start + 125, endType, turn: "t1"), to: path)
+            check(currentEngine.effectiveState(session, now: start + 125) == "idle",
+                  "a late old \(endType) preserves the current success while raw \(raw)")
+            appendCodexLine(codexEvent(ts: start + 126, endType, turn: "t1", error: error), to: path)
+            check(currentEngine.effectiveState(session, now: start + 126) == "idle",
+                  "a late old failure cannot replace current success while raw \(raw)")
+            appendCodexLine(codexEvent(ts: start + 127, startType, turn: "t3"), to: path)
+            session = makeCodex(state: "thinking", ts: start + 127, transcript: path, turn: "t3")
+            check(currentEngine.effectiveState(session, now: start + 127) == "thinking",
+                  "a new \(startType) replaces the completed current turn")
+        }
+    }
+
+    for raw in ["done", "thinking"] {
+        let path = writeTranscript("codex-late-boundary-board-\(raw).jsonl", lines: [
+            codexEvent(ts: start - 120, "task_started", turn: "t1"),
+            codexEvent(ts: start, "task_started", turn: "t2"),
+        ])
+        let board = SessionBoard(engine: SessionEngine())
+        var hook: [String: Any] = ["state": "thinking", "ts": start, "startedAt": start,
+                                   "turn_id": "t2", "transcript": path, "pid": 1,
+                                   "term_bundle": "com.apple.Terminal"]
+        var file = SessionBoard.File(key: "codex:late", path: "/codex/late.json",
+                                     provider: "codex", id: "late", mtime: Date(timeIntervalSince1970: start))
+        let rules = SessionBoard.Rules(soundThreshold: 60, stalePruneAge: 900,
+                                      thinkingWords: [], needsYou: true)
+        board.reload([file], read: { _ in hook }, branch: { _ in "" })
+        _ = board.tick(now: start, rules: rules, pidAlive: { _ in true }, frontmost: { "com.other" })
+        appendCodexLine(codexEvent(ts: start + 120, "task_complete", turn: "t2", error: error), to: path)
+        hook["state"] = raw; hook["ts"] = start + 120
+        file = SessionBoard.File(key: "codex:late", path: "/codex/late.json", provider: "codex",
+                                 id: "late", mtime: Date(timeIntervalSince1970: start + 120))
+        board.reload([file], read: { _ in hook }, branch: { _ in "" })
+        let failed = board.tick(now: start + 120, rules: rules,
+                                pidAlive: { _ in true }, frontmost: { "com.other" })
+        check(failed.lead?.eff == "permission" && failed.needsYou && !failed.chime,
+              "the current failure cues only Needs you before the late old completion while raw \(raw)")
+        appendCodexLine(codexEvent(ts: start + 121, "task_complete", turn: "t1"), to: path)
+        let late = board.tick(now: start + 122, rules: rules,
+                              pidAlive: { _ in true }, frontmost: { "com.other" })
+        check(late.lead?.eff == "permission" && !late.needsYou && !late.chime,
+              "the board retains current attention without a cue after the late old completion while raw \(raw)")
+        let repeated = board.tick(now: start + 123, rules: rules,
+                                  pidAlive: { _ in true }, frontmost: { "com.other" })
+        check(repeated.lead?.eff == "permission" && !repeated.needsYou && !repeated.chime,
+              "the board keeps attention quietly on the next tick while raw \(raw)")
+    }
+}
 
 let ended = writeTranscript("codex-ended.jsonl", lines: [
     codexEvent(ts: nowTs - 90, "task_started", turn: "t1"),
@@ -712,6 +916,203 @@ check(engine.effectiveState(makeCodex(state: "tool", ts: nowTs - 30, transcript:
 check(engine.effectiveState(makeSession(state: "thinking", ts: nowTs - 60,
                                         transcript: codexShapedForClaude), now: nowTs) == "thinking",
       "a Claude session is unmoved by a Codex boundary record")
+
+// The optional desktop Question is a current-turn notice, independent of the working state.
+do {
+    let now = 1_800_000_000.0
+    func item(_ value: [String: Any], turn: String = "notice-turn", at: Double = now + 1,
+              pretty: Bool = false) -> String {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let root: [String: Any] = ["timestamp": iso.string(from: Date(timeIntervalSince1970: at)),
+            "type": "event_msg", "payload": ["type": "item_completed", "turn_id": turn, "item": value]]
+        return String(decoding: try! JSONSerialization.data(withJSONObject: root,
+            options: pretty ? [.prettyPrinted] : []), as: UTF8.self)
+    }
+    let question: [String: Any] = ["type": "AgentMessage", "id": "notice-item", "delivery": "async",
+        "questions": [["title": "First", "options": []], ["title": "Second", "options": []]]]
+    let askedLine = item(question)
+    func reply(_ index: Any, id: String = "notice-item", prefix: String = "request_user_input_async") -> String {
+        let questionID = String(decoding: try! JSONSerialization.data(withJSONObject: [prefix, id, index]), as: UTF8.self)
+        let answer = String(decoding: try! JSONSerialization.data(withJSONObject:
+            ["questionItemId": questionID, "question": "First", "answer": "Yes"]), as: UTF8.self)
+        return "<send_user_message_question_reply>\n\(answer)\n</send_user_message_question_reply>"
+    }
+    func user(_ text: String, steering: String? = nil, turn: String = "notice-turn") -> String {
+        let content: [[String: Any]] = [["type": "text", "text": text]]
+        if let steering {
+            return item(["type": "SteeringUserMessage", "id": "reply", "status": steering,
+                         "input": content], turn: turn, at: now + 2)
+        }
+        return item(["type": "UserMessage", "id": "reply", "content": content], turn: turn, at: now + 2)
+    }
+    let start = codexEvent(ts: now, "task_started", turn: "notice-turn")
+    let noticePath = writeTranscript("codex-async-notice.jsonl", lines: [start])
+    let noticeEngine = SessionEngine()
+    let noticeBoard = SessionBoard(engine: noticeEngine)
+    let file = SessionBoard.File(key: "codex:notice", path: "/notice.json", provider: "codex",
+                                 id: "notice", mtime: Date(timeIntervalSince1970: 1))
+    var json: [String: Any] = ["state": "thinking", "provider": "codex", "transcript": noticePath,
+        "turn_id": "notice-turn", "ts": now, "startedAt": now - 120, "pid": 1]
+    let rules = SessionBoard.Rules(soundThreshold: 60, stalePruneAge: 900, thinkingWords: [], needsYou: true)
+    func tick() -> SessionBoard.Tick {
+        noticeBoard.tick(now: now + 3, rules: rules, pidAlive: { _ in true }, frontmost: { "com.other" })
+    }
+    func bar() -> MenuBarAgent {
+        MenuBarAgent.shown(.codex, board: noticeBoard, claude: nil, claudeStatus: nil,
+                          oauthLimits: true, codex: nil, now: now + 3)[0]
+    }
+    noticeBoard.reload([file], read: { _ in json }) { _ in "" }
+    _ = tick()
+    let before = bar()
+    check(!Session(json: ["asyncQuestion": true], id: "empty").asyncQuestion,
+          "the async notice defaults to false and is not trusted from a hook file")
+    appendCodexLine(askedLine, to: noticePath)
+    let asked = tick()
+    check(asked.lead?.asyncQuestion == true,
+          "a real async AgentMessage creates a separate current-turn Question notice")
+    check(asked.lead?.eff == "thinking" && asked.lead?.startedAt == now - 120 && !asked.needsYou && !asked.chime,
+          "the Question leaves Thinking and its live clock running without either sound")
+    let marked = bar()
+    check(marked.asyncQuestion && !marked.badge && marked.signature != before.signature,
+          "the Codex question fact changes the icon cache signature without a permission badge")
+    check(marked.timer(show: true, now: now + 3) == before.timer(show: true, now: now + 3)
+          && marked.animates(.pet("codex")) == before.animates(.pet("codex")),
+          "the Question preserves the working timer and companion animation")
+    let symbol = NSImage(systemSymbolName: Provider.codex.glyph, accessibilityDescription: "Codex")!
+    symbol.isTemplate = true
+    let questionIcon = marked.markedIcon(symbol, fallback: false, permissionColor: .systemOrange)
+    check(questionIcon !== symbol && questionIcon.accessibilityDescription?.contains("Вопрос") == true,
+          "the async marker draws and names a quiet question mark beside the Codex icon")
+    let blank = NSImage(size: NSSize(width: 18, height: 18))
+    blank.isTemplate = true
+    let drawnMark = marked.markedIcon(blank, fallback: false, permissionColor: .systemOrange)
+    check(drawnMark.isTemplate && crabHasPixel(drawnMark) { $0.alphaComponent > 0.5 },
+          "the Question marker has visible adaptive pixels without a permission colour")
+    json["state"] = "tool"
+    noticeBoard.reload([SessionBoard.File(key: file.key, path: file.path, provider: file.provider,
+        id: file.id, mtime: Date(timeIntervalSince1970: 2))], read: { _ in json }) { _ in "" }
+    let working = tick()
+    check(working.lead?.asyncQuestion == true && working.lead?.eff == "tool" && !working.needsYou && !working.chime,
+          "the same quiet Question survives a real hook transition from Thinking to Working")
+
+    appendCodexLine(codexLine(["type": "function_call_output", "call_id": "notice-item",
+                              "output": #"{"accepted":true}"#]), to: noticePath)
+    check(tick().lead?.asyncQuestion == true, "accepted:true acknowledges the tool and does not answer its Question")
+    for status in ["pending", "rejected"] {
+        appendCodexLine(user(reply(0), steering: status), to: noticePath)
+        check(tick().lead?.asyncQuestion == true, "a \(status) steering reply does not clear the notice")
+    }
+    for index in [true, 0.5, -1, 9] as [Any] {
+        appendCodexLine(user(reply(index)), to: noticePath)
+        check(tick().lead?.asyncQuestion == true, "an invalid question index \(index) cannot clear the notice")
+    }
+    appendCodexLine(user(reply(0, id: "another-item")), to: noticePath)
+    appendCodexLine(user(reply(0, prefix: "request_user_input")), to: noticePath)
+    appendCodexLine(user("<send_user_message_question_reply>broken</send_user_message_question_reply>"), to: noticePath)
+    check(tick().lead?.asyncQuestion == true, "unknown IDs, another request type and malformed replies keep the notice")
+    appendCodexLine(user(reply(0), steering: "accepted"), to: noticePath)
+    check(tick().lead?.asyncQuestion == true, "an accepted partial reply leaves the other Question index visible")
+    appendCodexLine(askedLine, to: noticePath)
+    appendCodexLine(user(reply(1)), to: noticePath)
+    check(tick().lead?.asyncQuestion == false, "a duplicate item does not revive an answered index; the last reply clears it")
+    check(bar().signature == before.signature, "clearing the Question also clears its render cache signature")
+    try! (start + "\n" + askedLine).write(toFile: noticePath, atomically: true, encoding: .utf8)
+    _ = tick()
+    let responseReply = String(decoding: try! JSONSerialization.data(withJSONObject: [
+        "timestamp": "2027-01-15T08:00:02.000Z", "type": "response_item", "payload": [
+            "type": "message", "role": "user", "content": [["type": "input_text", "text": reply(0)]]]]), as: UTF8.self)
+    appendCodexLine(responseReply, to: noticePath)
+    check(tick().lead?.asyncQuestion == true, "the accepted response_item reply clears only its matching index")
+    appendCodexLine(user(reply(1)), to: noticePath)
+    check(tick().lead?.asyncQuestion == false, "a following accepted UserMessage clears the last index across both wire forms")
+
+    for boundary in ["task_started", "turn_started", "task_complete", "turn_complete", "turn_aborted"] {
+        try! (start + "\n" + askedLine).write(toFile: noticePath, atomically: true, encoding: .utf8)
+        check(tick().lead?.asyncQuestion == true, "the notice exists before \(boundary)")
+        appendCodexLine(codexEvent(ts: now + 2, boundary,
+            turn: CodexRollout.startTypes.contains(boundary) ? "next-turn" : "notice-turn"), to: noticePath)
+        check(tick().lead?.asyncQuestion == false, "\(boundary) clears the current-turn notice")
+    }
+    try! (start + "\n" + askedLine).write(toFile: noticePath, atomically: true, encoding: .utf8)
+    _ = tick()
+    appendCodexLine(item(question, turn: "old-turn"), to: noticePath)
+    appendCodexLine(codexEvent(ts: now + 2, "turn_complete", turn: "old-turn"), to: noticePath)
+    appendCodexLine(user(reply(0), turn: "old-turn"), to: noticePath)
+    appendCodexLine(user(reply(1), turn: "old-turn"), to: noticePath)
+    check(tick().lead?.asyncQuestion == true, "late records from another turn neither create nor clear this turn's notice")
+    appendCodexLine(user("Continue with the current task"), to: noticePath)
+    check(tick().lead?.asyncQuestion == false, "a new actual user message clears the informational notice")
+
+    let invalidItems: [[String: Any]] = [
+        ["type": "AgentMessage", "id": "notice-item", "delivery": "async", "questions": []],
+        ["type": "AgentMessage", "id": "notice-item", "delivery": "sync", "questions": question["questions"]!],
+        ["type": "AgentMessage", "delivery": "async", "questions": question["questions"]!],
+        ["type": "AgentMessage", "id": "notice-item", "delivery": "async", "questions": [[:]]],
+        ["type": "ToolResult", "id": "notice-item", "delivery": "async", "questions": question["questions"]!],
+    ]
+    for invalid in invalidItems {
+        try! (start + "\n" + item(invalid)).write(toFile: noticePath, atomically: true, encoding: .utf8)
+        check(tick().lead?.asyncQuestion == false, "an incomplete or non-async item creates no Question notice")
+    }
+    let quote = codexLine(["type": "function_call_output", "call_id": "quote", "output": askedLine])
+    try! (start + "\n" + quote + "\n" + questionCall + "\n" + questionAccepted)
+        .write(toFile: noticePath, atomically: true, encoding: .utf8)
+    check(tick().lead?.asyncQuestion == false, "quoted Question events and accepted async calls alone create no notice")
+    try! (start + "\n" + item(question, turn: "old-turn") + "\n" + item(question, at: now - 1))
+        .write(toFile: noticePath, atomically: true, encoding: .utf8)
+    check(tick().lead?.asyncQuestion == false, "another turn or a pre-start timestamp cannot create this turn's Question")
+    try! (start + "\n" + codexEvent(ts: now + 2, "task_complete", turn: "notice-turn") + "\n" + askedLine)
+        .write(toFile: noticePath, atomically: true, encoding: .utf8)
+    check(tick().lead?.asyncQuestion == false, "a late Question after turn completion stays cleared")
+
+    let prettyLine = item(question, pretty: true).replacingOccurrences(of: "\n", with: " ")
+    try! (start + "\n" + String(prettyLine.dropLast())).write(toFile: noticePath, atomically: true, encoding: .utf8)
+    check(tick().lead?.asyncQuestion == false, "an incomplete final JSON record is deferred")
+    let tail = FileHandle(forWritingAtPath: noticePath)!
+    tail.seekToEndOfFile(); tail.write(Data("}".utf8)); tail.closeFile()
+    check(tick().lead?.asyncQuestion == true, "the completed whitespace-formatted record creates the notice once")
+    check(tick().lead?.asyncQuestion == true && !tick().needsYou, "an unchanged transcript keeps the notice quietly on later ticks")
+    try! start.write(toFile: noticePath, atomically: false, encoding: .utf8)
+    check(tick().lead?.asyncQuestion == false, "shrinking the transcript clears cached Questions")
+    try! (start + "\n" + askedLine).write(toFile: noticePath, atomically: true, encoding: .utf8)
+    check(tick().lead?.asyncQuestion == true, "a replacement transcript is parsed from its beginning")
+    try! (start + "\n" + quote).write(toFile: noticePath, atomically: true, encoding: .utf8)
+    check(tick().lead?.asyncQuestion == false, "replacing the transcript cannot retain the old Question")
+    try! (start + "\n" + askedLine).write(toFile: noticePath, atomically: true, encoding: .utf8)
+    _ = tick()
+    try! FileManager.default.removeItem(atPath: noticePath)
+    noticeEngine.dropCache(forTranscript: noticePath)
+    check(tick().lead?.asyncQuestion == false, "deletion and cache reset remove the current-turn notice")
+
+    try! (start + "\n" + askedLine + "\n" + blockingQuestionCall)
+        .write(toFile: noticePath, atomically: true, encoding: .utf8)
+    let blocked = tick()
+    let permissionBar = bar()
+    check(blocked.lead?.asyncQuestion == true && blocked.lead?.eff == "permission" && blocked.needsYou,
+          "a real blocking request keeps permission priority over the separate async notice")
+    check(permissionBar.badge && permissionBar.signature != marked.signature
+          && permissionBar.markedIcon(symbol, fallback: false, permissionColor: .systemOrange)
+                .accessibilityDescription?.contains("Вопрос") != true,
+          "permission changes the cache and replaces the quiet question marker")
+    try! (start + "\n" + askedLine + "\n" + codexEvent(ts: now + 2, "task_complete",
+            turn: "notice-turn", error: ["message": "synthetic failure"]))
+        .write(toFile: noticePath, atomically: true, encoding: .utf8)
+    let failed = tick()
+    check(failed.lead?.asyncQuestion == false && failed.lead?.eff == "permission" && !failed.chime,
+          "a terminal error clears Question and preserves the established Needs you path")
+    json["turn_id"] = "another-turn"
+    noticeBoard.reload([SessionBoard.File(key: file.key, path: file.path, provider: file.provider,
+        id: file.id, mtime: Date(timeIntervalSince1970: 3))], read: { _ in json }) { _ in "" }
+    try! (start + "\n" + askedLine).write(toFile: noticePath, atomically: true, encoding: .utf8)
+    check(tick().lead?.asyncQuestion == false, "a session state for another turn never inherits the notice")
+    let claudeBoard = SessionBoard(engine: SessionEngine())
+    claudeBoard.reload([SessionBoard.File(key: "claude:notice", path: file.path, provider: "claude",
+        id: "notice", mtime: file.mtime)], read: { _ in json }) { _ in "" }
+    let claude = claudeBoard.tick(now: now + 3, rules: rules, pidAlive: { _ in true }, frontmost: { nil })
+    check(claude.lead?.asyncQuestion == false && claude.lead?.eff == "tool" && !claude.needsYou,
+          "Codex Question records do not change a Claude session")
+}
 
 // The js→swift seam for Codex, written by the real update.js during the node suite.
 let codexSessionSeamPath = FileManager.default.currentDirectoryPath + "/build/seam/codex-session.json"
@@ -2725,6 +3126,66 @@ do {
     _ = board.tick(now: now, rules: rules, pidAlive: { alive.contains($0) }, frontmost: { nil })
     check(board.sessions["claude:n1"]?.displayName == "solo",
           "a session with no cwd is not a second location")
+
+    for provider in ["codex", "claude"] {
+        let soundPath = NSTemporaryDirectory() + "ccb-\(provider)-completion-cue.jsonl"
+        try! (codexEvent(ts: now, "task_started", turn: "t1") + "\n")
+            .write(toFile: soundPath, atomically: true, encoding: .utf8)
+        let soundBoard = SessionBoard(engine: SessionEngine())
+        let hookPath = "/\(provider)/sound.json"
+        disk[hookPath] = ["state": "thinking", "pid": 13, "ts": now, "startedAt": now,
+                          "turn_id": "t1", "transcript": soundPath,
+                          "term_bundle": "com.apple.Terminal"]
+        soundBoard.reload([file(provider, "sound")], read: read) { _ in "" }
+        let started = soundBoard.tick(now: now, rules: rules,
+                                      pidAlive: { alive.contains($0) }, frontmost: { "com.other" })
+        check(started.lead?.eff == "thinking" && !started.chime && !started.needsYou,
+              "\(provider) starts a long turn without a sound")
+
+        appendCodexLine(codexEvent(ts: now + 120, "task_complete", turn: "t1",
+                                   error: terminalError), to: soundPath)
+        disk[hookPath]?["state"] = "done"; disk[hookPath]?["ts"] = now + 120
+        soundBoard.reload([file(provider, "sound", at: Date(timeIntervalSince1970: 2))],
+                          read: read) { _ in "" }
+        let stopped = soundBoard.tick(now: now + 120, rules: rules,
+                                      pidAlive: { alive.contains($0) }, frontmost: { "com.other" })
+        if provider == "codex" {
+            check(stopped.lead?.eff == "permission" && stopped.needsYou,
+                  "a failed Codex turn stopped as raw done cues Needs you")
+            check(!stopped.chime,
+                  "a failed Codex turn stopped as raw done does not play the completion chime")
+        } else {
+            check(stopped.lead?.eff == "idle" && stopped.chime && !stopped.needsYou,
+                  "a Codex terminal error does not change the Claude completion cue")
+        }
+        let repeated = soundBoard.tick(now: now + 121, rules: rules,
+                                       pidAlive: { alive.contains($0) }, frontmost: { "com.other" })
+        check(!repeated.chime && !repeated.needsYou,
+              "\(provider) does not repeat a sound after the failed turn stops")
+
+        appendCodexLine(codexEvent(ts: now + 122, "task_started", turn: "t2"), to: soundPath)
+        disk[hookPath]?["state"] = "thinking"; disk[hookPath]?["ts"] = now + 122
+        disk[hookPath]?["startedAt"] = now + 122; disk[hookPath]?["turn_id"] = "t2"
+        soundBoard.reload([file(provider, "sound", at: Date(timeIntervalSince1970: 3))],
+                          read: read) { _ in "" }
+        let retryStarted = soundBoard.tick(now: now + 122, rules: rules,
+                                           pidAlive: { alive.contains($0) }, frontmost: { "com.other" })
+        check(retryStarted.lead?.eff == "thinking" && !retryStarted.chime && !retryStarted.needsYou,
+              "\(provider) starts a retry without a sound")
+        appendCodexLine(codexEvent(ts: now + 242, "task_complete", turn: "t2"), to: soundPath)
+        disk[hookPath]?["state"] = "done"; disk[hookPath]?["ts"] = now + 242
+        soundBoard.reload([file(provider, "sound", at: Date(timeIntervalSince1970: 4))],
+                          read: read) { _ in "" }
+        let succeeded = soundBoard.tick(now: now + 242, rules: rules,
+                                        pidAlive: { alive.contains($0) }, frontmost: { "com.other" })
+        check(succeeded.lead?.eff == "idle" && succeeded.chime && !succeeded.needsYou,
+              "\(provider) plays the completion chime for a successful long retry")
+        let successRepeated = soundBoard.tick(now: now + 243, rules: rules,
+                                              pidAlive: { alive.contains($0) }, frontmost: { "com.other" })
+        check(!successRepeated.chime && !successRepeated.needsYou,
+              "\(provider) does not repeat the successful completion chime")
+        try? FileManager.default.removeItem(atPath: soundPath)
+    }
 
     let questionPath = NSTemporaryDirectory() + "ccb-board-question.jsonl"
     try! blockingQuestionCall

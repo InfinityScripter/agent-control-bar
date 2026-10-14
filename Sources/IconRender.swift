@@ -96,6 +96,7 @@ extension StatusController {
             let session = render.agent.lead
             var description = "\(render.agent.provider.title): \(session?.eff ?? "idle")"
             if let session { description += ", " + sessionMenuLine(session) }
+            if render.agent.questionMarker { description += ", Вопрос. " + Session.asyncQuestionHint }
             let gauge = render.agent.gauge
             if render.agent.signedOut {
                 description = LimitsStatus.menuBarTip

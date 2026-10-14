@@ -76,6 +76,7 @@ final class SessionBoard {
             guard let json = read(f.path) else { continue }
             var s = Session(json: json, id: f.id)
             s.eff = sessions[f.key]?.eff ?? ""
+            s.asyncQuestion = sessions[f.key]?.asyncQuestion ?? false
             // The directory a file was found in settles the provider, whatever the file says: a
             // hand-edited or truncated `provider` must not send the reap at another agent's
             // directory, and a file in codex/state.d is a Codex session by construction.
@@ -98,6 +99,7 @@ final class SessionBoard {
             guard var s = sessions[key] else { continue }
             let previousEffective = s.eff
             s.eff = engine.effectiveState(s, now: now)   // once per tick; the menu and tooltip reuse it
+            s.asyncQuestion = engine.asyncQuestion(s)
             // Reap on PROCESS death, not idle time: a session leaves only when its process is gone
             // (closed or crashed terminal, quit app), so an idle-but-open session stays and the
             // icon holds. Pre-upgrade files have no pid (0) — fall back to the idle+age prune so
@@ -167,6 +169,7 @@ final class SessionBoard {
         let prev = prevState[s.key] ?? ""
         var edge = false
         if threshold > 0, s.state == "done", prev != "done", let start = turnStart[s.key], start > 0,
+           s.provider != "codex" || s.eff != "permission",
            now - start >= threshold { edge = true }
         if s.state == "done" { turnStart[s.key] = 0 }
         return edge

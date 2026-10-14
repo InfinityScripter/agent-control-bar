@@ -44,6 +44,7 @@ extension StatusController {
             branch: s.branch,
             status: panelStatus(s, eff: eff),
             eff: eff,
+            asyncQuestion: s.asyncQuestion,
             elapsed: working ? elapsed(max(0, (now - s.startedAt).clampedInt)) : nil,
             pct: s.pct,
             assumed: s.assumed,

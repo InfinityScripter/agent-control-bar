@@ -305,6 +305,7 @@ struct PanelSession: Equatable, Identifiable {
     /// "Thinking…", "Working…", "Needs you", or "Idle" — the row's own words for its state.
     let status: String
     let eff: String
+    let asyncQuestion: Bool
     /// The live clock, present only while the session is working.
     let elapsed: String?
     let pct: Int?
@@ -323,11 +324,14 @@ struct PanelSession: Equatable, Identifiable {
     let detail: PanelSessionDetail
 
     var working: Bool { isWorkingState(eff) }
+    var questionLabel: String? { asyncQuestion && eff != "permission" ? "Вопрос" : nil }
 
-    /// The branch, what it is doing, and how long it has been doing it — the three things the old
-    /// row carried across its width, now on one line under the name. Here rather than in the row
-    /// because the text dump has to say the same sentence, and two spellings of it drift.
+    /// The row draws activity and Question separately; diagnostics combine those same values.
     var subtitle: String {
+        [activityText, questionLabel].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    var activityText: String {
         [branch, status, elapsed].compactMap { $0 }.filter { !$0.isEmpty }
             .joined(separator: " · ")
     }
