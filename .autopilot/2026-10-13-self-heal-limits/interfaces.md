@@ -122,3 +122,7 @@ enum LimitsNote {
 - Строки: `LimitsStatus.menuBarTip` = "Claude Code is not signed in — open the panel to sign in" (константа в модели).
 - `Sources/IconRender.swift`: при `agent.signedOut` шкалы Claude с пониженной непрозрачностью + пометка в углу области шкал, ширина иконки прежняя; `signature` включает флаг; tooltip статус-айтема и accessibility-описание берут `menuBarTip`.
 - Проверки в `tests/model/main.swift`: `MenuBarAgent.shown` с `no-login` → `signedOut == true`; с `ok`, с выключенным опросом, с более свежими цифрами, с `failed` → false; `signature` различается.
+
+### Таск 05 — построено
+- `LimitsStatus.signedOutShown(_:oauthLimits:figuresTs:) -> Bool` (общее правило для блока, баннера и иконки), `LimitsStatus.menuBarTip`.
+- `MenuBarAgent.signedOut: Bool`, `MenuBarAgent.signature`, `MenuBarAgent.shown(_:board:claude:claudeStatus:oauthLimits:codex:now:)`; `StatusController.signedOutIcon(_:bars:)` в `IconRender.swift` (шкалы Claude на 0.45, бейдж `exclamationmark.circle.fill`, ширина прежняя; tooltip/accessibility = `menuBarTip`).

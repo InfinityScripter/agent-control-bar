@@ -57,3 +57,7 @@
 К строке `codex/limits.json` добавить: корневой `ts` — самый свежий замер окон обычного пула (нет их — всех окон); `ts` отдельных окон не меняется.
 
 Устаревшие указатели (неверны ещё до этой сборки): `mcpbar.py:393-395` (два места) заменить на «докстринг `run_health_check` в `scripts/mcpbar.py`», `ci.yml:62-95` — на «шаг `Identity is consistent` в `.github/workflows/ci.yml`».
+
+## Дополнение 2026-10-14 (знак в строке меню)
+- В `.claude/rules/architecture.md`, список моделей: `MenuBarAgent.signedOut` и правило `LimitsStatus.signedOutShown` — единственное место, решающее, показывать ли знак о выходе из аккаунта (иконка, блок панели, уведомление зовут его).
+- «Где больно»: пометка в иконке рисуется в `StatusController.signedOutIcon` (`Sources/IconRender.swift`), ширина иконки проверена только скриптом; при правке бейджа сверяй `signedOutIcon(...).size` с исходным.
