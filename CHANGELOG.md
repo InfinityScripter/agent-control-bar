@@ -7,7 +7,7 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
-## [Unreleased]
+## [0.25.0] - 2026-10-14
 
 ### Added
 - **The panel says why the Claude limits stopped updating.** Every poll now leaves
