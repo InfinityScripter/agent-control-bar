@@ -60,11 +60,52 @@ struct ResetOdds: Equatable {
     }
 
     init?(data: Data) {
-        guard let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        guard ResetOddsFeed.readable(byteCount: data.count),
+              let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
         self.init(json: json)
     }
 
     func product(_ id: String) -> ResetOddsProduct? { products.first { $0.id == id } }
+}
+
+/// Decided here rather than in the controller so the model check covers it.
+struct ResetOddsLook: Equatable {
+    /// "ok" | "loading" | "unavailable". "ok" also covers a failed refresh while older figures
+    /// are on hand; `note` says so.
+    let state: String
+    /// Only the products the app has a Provider for, in Provider.all order: one the site adds
+    /// later has no glyph and no limits to sit beside.
+    let products: [ResetOddsProduct]
+    let stale: Bool
+    /// The card's last line, or the reason when there is nothing to show.
+    let note: String
+
+    init(odds: ResetOdds?, fetchedAt: Double, problem: String?, now: Double) {
+        guard let odds else {
+            self.init(state: problem == nil ? "loading" : "unavailable", products: [], stale: false,
+                      note: problem ?? "")
+            return
+        }
+        let known = Provider.all.compactMap { odds.product($0.id) }
+        guard !known.isEmpty else {
+            self.init(state: "unavailable", products: [], stale: false,
+                      note: "whenreset.app has no Claude or Codex figures")
+            return
+        }
+        let age = LimitsNote.age(of: fetchedAt, now: now)
+        self.init(state: "ok", products: known,
+                  stale: now - fetchedAt > ResetOddsFeed.staleAfter,
+                  note: problem == nil
+                      ? "estimate from past resets, not official · updated " + age
+                      : "couldn't refresh — showing data from " + age)
+    }
+
+    private init(state: String, products: [ResetOddsProduct], stale: Bool, note: String) {
+        self.state = state
+        self.products = products
+        self.stale = stale
+        self.note = note
+    }
 }
 
 enum ResetOddsFeed {
@@ -105,6 +146,30 @@ enum ResetOddsFeed {
         f.timeZone = TimeZone(identifier: "UTC")
         f.dateFormat = "MMM d"
         return f.string(from: day)
+    }
+
+    /// The real answer is about 53 KB. Its raw bytes are kept in UserDefaults, so a server that
+    /// sent megabytes would bloat the app's settings file on every refresh.
+    static let maxAnswerBytes = 1_048_576
+
+    static func readable(byteCount: Int) -> Bool { byteCount <= maxAnswerBytes }
+
+    static func lastReset(_ date: String?, now: Double) -> String? {
+        daysSince(date, now: now).map { $0 == 0 ? "today" : "\($0)d ago" }
+    }
+
+    static func countsLine(total: Int?, last30d: Int?) -> String? {
+        let parts = [total.map { $0 == 1 ? "1 reset tracked" : "\($0) resets tracked" },
+                     last30d.map { "\($0) in last 30 days" }].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// A banked reset is a credit each user redeems, not a reset of everyone's limits, so it is
+    /// only worth a line while it is the newer of the two. Dates are "YYYY-MM-DD", which order
+    /// as strings.
+    static func bankedLine(banked: String?, regular: String?) -> String? {
+        guard let banked, regular.map({ banked > $0 }) ?? true else { return nil }
+        return monthDay(banked).map { "Banked reset handed out " + $0 }
     }
 
     static func problem(status: Int?, error: Error?) -> String {

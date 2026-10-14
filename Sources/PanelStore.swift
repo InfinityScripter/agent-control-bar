@@ -306,15 +306,10 @@ struct PanelSnapshot: Equatable {
     var notificationsDenied = false
 }
 
-/// whenreset.app's estimate, worded for the card under the limits strip.
 struct PanelResetOdds: Equatable {
-    /// "ok" | "loading" | "unavailable". "ok" also covers a failed refresh while older figures
-    /// are on hand; `note` says so.
     let state: String
     let rows: [PanelResetOddsRow]
-    /// The figures are older than ResetOddsFeed.staleAfter.
     let stale: Bool
-    /// The card's last line, or the reason when there is nothing to show.
     let note: String
 }
 

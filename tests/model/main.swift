@@ -4038,5 +4038,58 @@ check(ResetOddsFeed.problem(status: 503, error: nil) == "whenreset.app answered 
 check(ResetOddsFeed.problem(status: 200, error: nil) == "whenreset.app sent an answer this app can't read",
       "a 200 that did not parse is a format problem, not a network one")
 
+// MARK: ResetOdds size — an answer far past the real one's ~53 KB is not read at all
+
+check(ResetOddsFeed.readable(byteCount: 53_000), "an answer the size of the real one is read")
+check(ResetOddsFeed.readable(byteCount: 1_048_576), "exactly 1 MB is still read")
+check(!ResetOddsFeed.readable(byteCount: 1_048_577), "one byte over 1 MB is not")
+let hugeAnswer = "{\"pad\":\"" + String(repeating: "x", count: 1_100_000) + "\"," + whenresetAnswer.dropFirst()
+check(ResetOdds(data: Data(whenresetAnswer.utf8)) != nil && ResetOdds(data: Data(hugeAnswer.utf8)) == nil,
+      "a well-formed answer over 1 MB is not parsed, so it never reaches the cache")
+
+// MARK: ResetOddsLook — what the card shows, from the figures on hand and the last attempt
+
+let lookNow = oddsNow
+let loadingLook = ResetOddsLook(odds: nil, fetchedAt: 0, problem: nil, now: lookNow)
+check(loadingLook.state == "loading" && loadingLook.products.isEmpty && loadingLook.note == "",
+      "no figures and no failure yet: loading")
+let failedLook = ResetOddsLook(odds: nil, fetchedAt: 0, problem: "whenreset.app didn't answer", now: lookNow)
+check(failedLook.state == "unavailable" && failedLook.products.isEmpty && failedLook.note == "whenreset.app didn't answer",
+      "a failure with nothing cached is unavailable, and says why")
+let strangerOnly = ResetOdds(json: ["products": ["gemini": ["name": "Gemini"]]])
+let strangerLook = ResetOddsLook(odds: strangerOnly, fetchedAt: lookNow - 60, problem: nil, now: lookNow)
+check(strangerLook.state == "unavailable" && strangerLook.products.isEmpty
+      && strangerLook.note == "whenreset.app has no Claude or Codex figures",
+      "an answer with no product this app knows is unavailable, not an empty card")
+let freshLook = ResetOddsLook(odds: realOdds, fetchedAt: lookNow - 240, problem: nil, now: lookNow)
+check(freshLook.state == "ok" && freshLook.products.map(\.id) == ["claude", "codex"] && !freshLook.stale
+      && freshLook.note == "estimate from past resets, not official · updated 4 min ago",
+      "fresh figures: ok, both providers, the estimate caveat with their age")
+let cachedLook = ResetOddsLook(odds: realOdds, fetchedAt: lookNow - 3 * 3600, problem: "whenreset.app answered 503",
+                               now: lookNow)
+check(cachedLook.state == "ok" && cachedLook.products.count == 2
+      && cachedLook.note == "couldn't refresh — showing data from 3h ago",
+      "a failed refresh over cached figures keeps them and says how old they are")
+check(!ResetOddsLook(odds: realOdds, fetchedAt: lookNow - 21600, problem: nil, now: lookNow).stale,
+      "figures exactly 6 hours old are not stale yet")
+check(ResetOddsLook(odds: realOdds, fetchedAt: lookNow - 21601, problem: nil, now: lookNow).stale,
+      "6 hours and a second is stale")
+
+check(ResetOddsFeed.bankedLine(banked: "2026-09-22", regular: "2026-09-04") == "Banked reset handed out Sep 22",
+      "a banked reset newer than the last regular one gets its line")
+check(ResetOddsFeed.bankedLine(banked: "2026-10-07", regular: "2026-10-13") == nil,
+      "a banked reset older than the last regular one is not worth a line")
+check(ResetOddsFeed.bankedLine(banked: "2026-09-22", regular: nil) == "Banked reset handed out Sep 22",
+      "with no regular reset known, the banked one is the newest")
+check(ResetOddsFeed.bankedLine(banked: nil, regular: "2026-09-04") == nil, "no banked reset, no line")
+check(ResetOddsFeed.countsLine(total: 1, last30d: nil) == "1 reset tracked", "one reset is singular")
+check(ResetOddsFeed.countsLine(total: 53, last30d: 5) == "53 resets tracked · 5 in last 30 days",
+      "both counts, joined")
+check(ResetOddsFeed.countsLine(total: nil, last30d: 0) == "0 in last 30 days", "a real zero is said")
+check(ResetOddsFeed.countsLine(total: nil, last30d: nil) == nil, "no counts, no line")
+check(ResetOddsFeed.lastReset("2026-10-03", now: oddsNow) == "today", "a reset today is said as today")
+check(ResetOddsFeed.lastReset("2026-10-02", now: oddsNow) == "1d ago", "yesterday is 1d ago")
+check(ResetOddsFeed.lastReset(nil, now: oddsNow) == nil, "no date, no age")
+
 print(failures == 0 ? "\nall model checks passed" : "\n\(failures) failed")
 exit(failures == 0 ? 0 : 1)

@@ -147,44 +147,20 @@ extension StatusController {
 
     // MARK: reset odds
 
-    /// nil while the switch is off, so the card is absent rather than empty. Only the providers
-    /// this app knows get a row: a product the site adds later has no glyph here and no limits to
-    /// sit beside.
+    /// nil while the switch is off, so the card is absent rather than empty.
     func panelResetOdds(now: Double) -> PanelResetOdds? {
         guard resetOddsOn else { return nil }
-        guard let odds = resetOdds else {
-            return resetOddsProblem.map { PanelResetOdds(state: "unavailable", rows: [], stale: false, note: $0) }
-                ?? PanelResetOdds(state: "loading", rows: [], stale: false, note: "")
-        }
-        let rows = Provider.all.compactMap { agent in
-            odds.product(agent.id).map { Self.resetOddsRow($0, agent: agent, now: now) }
-        }
-        guard !rows.isEmpty else {
-            return PanelResetOdds(state: "unavailable", rows: [], stale: false,
-                                  note: "whenreset.app has no Claude or Codex figures")
-        }
-        let age = LimitsNote.age(of: resetOddsFetchedAt, now: now)
-        let note = resetOddsProblem == nil
-            ? "estimate from past resets, not official · updated " + age
-            : "couldn't refresh — showing data from " + age
-        return PanelResetOdds(state: "ok", rows: rows,
-                              stale: now - resetOddsFetchedAt > ResetOddsFeed.staleAfter, note: note)
+        let look = ResetOddsLook(odds: resetOdds, fetchedAt: resetOddsFetchedAt, problem: resetOddsProblem, now: now)
+        let rows = look.products.map { Self.resetOddsRow($0, agent: Provider.named($0.id), now: now) }
+        return PanelResetOdds(state: look.state, rows: rows, stale: look.stale, note: look.note)
     }
 
     static func resetOddsRow(_ p: ResetOddsProduct, agent: Provider, now: Double) -> PanelResetOddsRow {
-        let days = ResetOddsFeed.daysSince(p.lastRegular, now: now)
-        let counts = [p.total.map { $0 == 1 ? "1 reset tracked" : "\($0) resets tracked" },
-                      p.last30d.map { "\($0) in last 30 days" }].compactMap { $0 }
-        // A banked reset is a credit each user redeems, not a reset of everyone's limits, so it is
-        // only worth a line while it is the newer of the two. Dates are "YYYY-MM-DD", which order
-        // as strings.
-        let bankedIsNewer = p.lastBanked.map { banked in p.lastRegular.map { banked > $0 } ?? true } ?? false
-        return PanelResetOddsRow(
-            provider: agent.id, title: agent.title, glyph: agent.glyph,
-            p24: p.p24, p48: p.p48, p7d: p.p7d,
-            lastReset: days.map { $0 == 0 ? "today" : "\($0)d ago" },
-            counts: counts.isEmpty ? nil : counts.joined(separator: " · "),
-            banked: bankedIsNewer ? ResetOddsFeed.monthDay(p.lastBanked).map { "Banked reset handed out " + $0 } : nil)
+        PanelResetOddsRow(provider: agent.id, title: agent.title, glyph: agent.glyph,
+                          p24: p.p24, p48: p.p48, p7d: p.p7d,
+                          lastReset: ResetOddsFeed.lastReset(p.lastRegular, now: now),
+                          counts: ResetOddsFeed.countsLine(total: p.total, last30d: p.last30d),
+                          banked: ResetOddsFeed.bankedLine(banked: p.lastBanked, regular: p.lastRegular))
     }
 
     /// How long until a window resets. A weekly window is days away, and "76h 12m" is arithmetic

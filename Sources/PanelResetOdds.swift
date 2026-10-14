@@ -91,7 +91,6 @@ struct PanelResetOddsCard: View {
     }
 }
 
-/// The folded line: what the figure is, then one pill per provider.
 private struct PanelResetOddsSummary: View {
     let odds: PanelResetOdds
 
@@ -164,7 +163,6 @@ private struct PanelResetOddsPending: View {
     }
 }
 
-/// The unfolded part: a block per provider, then where the figures come from.
 private struct PanelResetOddsDetail: View {
     let store: PanelStore
     let odds: PanelResetOdds
@@ -246,7 +244,15 @@ private struct PanelResetOddsCell: View {
                 .foregroundStyle(value == nil ? Color.secondary : Color.primary)
                 .lineLimit(1)
             Spacer(minLength: 0)
-            PanelBar(value: Double(value ?? 0) / 100, fill: Color(nsColor: .systemGreen), height: 3)
+            // An unknown chance drawn as an empty bar would read as 0%, which is a figure.
+            if let value {
+                PanelBar(value: Double(value) / 100, fill: Color(nsColor: .systemGreen), height: 3)
+            } else {
+                Capsule()
+                    .fill(PanelTheme.track(scheme))
+                    .opacity(0.4)
+                    .frame(height: 3)
+            }
         }
         .padding(.horizontal, 7)
         .padding(.top, 5)
@@ -279,7 +285,6 @@ private struct PanelResetOddsLine: View {
     }
 }
 
-/// The source, clickable, beside what the figures are and how old they are.
 private struct PanelResetOddsFooter: View {
     let store: PanelStore
     let note: String
