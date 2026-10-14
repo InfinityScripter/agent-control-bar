@@ -545,12 +545,16 @@ check(Session(json: [:], id: "x").tty.isEmpty, "a pre-upgrade file simply has no
 // A rollout envelope, in the shape Codex actually writes: the record's own ISO stamp on the
 // outside, the event on the payload. Nothing here is a turn record by Claude's rules, which is
 // the whole reason this net had to be written — see the premise check below.
-func codexEvent(ts: Double, _ type: String, turn: String = "") -> String {
+func codexEvent(ts: Double, _ type: String, turn: String = "", error: Any? = nil) -> String {
     let iso = ISO8601DateFormatter()
     iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     let stamp = iso.string(from: Date(timeIntervalSince1970: ts))
     let id = turn.isEmpty ? "" : ",\"turn_id\":\"\(turn)\""
-    return "{\"timestamp\":\"\(stamp)\",\"type\":\"event_msg\",\"payload\":{\"type\":\"\(type)\"\(id)}}"
+    let failure = error.map {
+        ",\"error\":" + String(decoding: try! JSONSerialization.data(withJSONObject: $0,
+                                                                     options: [.fragmentsAllowed]), as: UTF8.self)
+    } ?? ""
+    return "{\"timestamp\":\"\(stamp)\",\"type\":\"event_msg\",\"payload\":{\"type\":\"\(type)\"\(id)\(failure)}}"
 }
 func makeCodex(state: String, ts: Double, transcript: String, turn: String = "") -> Session {
     Session(json: ["state": state, "ts": ts, "transcript": transcript, "pid": 1,
@@ -565,6 +569,133 @@ check(!Transcript.isTurnRecord(rolloutLine) && Transcript.turnTimestamp(rolloutL
       "a Codex rollout line is not a Claude turn record and never was")
 check(CodexRollout.boundary(Data(rolloutLine.utf8))?.ends == true,
       "and the Codex parser reads the same line as the end of a turn")
+
+let terminalError: [String: Any] = [
+    "message": "exceeded retry limit, last status: 429 Too Many Requests",
+    "codex_error_info": ["response_too_many_failed_attempts": ["http_status_code": 429]],
+]
+let failedTurn = writeTranscript("codex-failed-turn.jsonl", lines: [
+    codexEvent(ts: nowTs - 90, "task_started", turn: "t1"),
+    codexEvent(ts: nowTs - 30, "task_complete", turn: "t1", error: terminalError),
+])
+for state in ["thinking", "tool", "done", "idle", "permission"] {
+    check(engine.effectiveState(makeCodex(state: state, ts: nowTs - 60,
+                                          transcript: failedTurn, turn: "t1"), now: nowTs) == "permission",
+          "a terminal Codex error needs attention while the hook says \(state)")
+}
+check(engine.effectiveState(makeCodex(state: "tool", ts: nowTs - 7_200,
+                                      transcript: failedTurn, turn: "t1"), now: nowTs) == "permission",
+      "a terminal Codex error survives the age cap and repeated polling")
+
+let alternateFailure = writeTranscript("codex-turn-failed.jsonl", lines: [
+    codexEvent(ts: nowTs - 30, "turn_complete", turn: "t1", error: "authentication failed"),
+])
+check(engine.effectiveState(makeCodex(state: "idle", ts: nowTs - 60,
+                                      transcript: alternateFailure, turn: "t1"), now: nowTs) == "permission",
+      "turn_complete with a non-429 error also needs attention")
+check(engine.effectiveState(makeCodex(state: "thinking", ts: nowTs - 60,
+                                      transcript: failedTurn, turn: "t2"), now: nowTs) == "thinking",
+      "a terminal error from a different turn does not request attention")
+check(SessionEngine().effectiveState(makeSession(state: "thinking", ts: nowTs - 60,
+                                                  transcript: failedTurn), now: nowTs) == "thinking",
+      "a Codex terminal error does not change a Claude session")
+let clockFailure = writeTranscript("codex-clock-failed.jsonl", lines: [
+    codexEvent(ts: nowTs - 30, "task_complete", error: terminalError),
+])
+check(engine.effectiveState(makeCodex(state: "done", ts: nowTs - 60,
+                                      transcript: clockFailure), now: nowTs) == "permission",
+      "a terminal error matches by time when turn ids are unavailable")
+check(engine.effectiveState(makeCodex(state: "thinking", ts: nowTs - 20,
+                                      transcript: clockFailure), now: nowTs) == "thinking",
+      "a terminal error older than the current hook does not match without turn ids")
+
+for emptyError: Any in [NSNull(), "", " \n\t", [String: Any](), [Any](), false, 0] {
+    let emptyFailure = writeTranscript("codex-empty-error.jsonl", lines: [
+        codexEvent(ts: nowTs - 30, "task_complete", turn: "t1", error: emptyError),
+    ])
+    check(engine.effectiveState(makeCodex(state: "thinking", ts: nowTs - 60,
+                                          transcript: emptyFailure, turn: "t1"), now: nowTs) == "idle",
+          "an empty or non-error terminal value does not request attention: \(emptyError)")
+}
+let abortedFailure = writeTranscript("codex-aborted-error.jsonl", lines: [
+    codexEvent(ts: nowTs - 30, "turn_aborted", turn: "t1", error: terminalError),
+])
+check(engine.effectiveState(makeCodex(state: "thinking", ts: nowTs - 60,
+                                      transcript: abortedFailure, turn: "t1"), now: nowTs) == "idle",
+      "an abort stays idle even if it carries an error")
+let retriableFailure = writeTranscript("codex-retrying.jsonl", lines: [
+    codexEvent(ts: nowTs - 60, "task_started", turn: "t1", error: terminalError),
+    codexEvent(ts: nowTs - 30, "error", turn: "t1", error: terminalError),
+    codexLine(["type": "function_call_output", "call_id": "quoted-failure",
+               "output": codexEvent(ts: nowTs - 10, "task_complete", turn: "t1", error: terminalError)]),
+])
+check(engine.effectiveState(makeCodex(state: "tool", ts: nowTs - 60,
+                                      transcript: retriableFailure, turn: "t1"), now: nowTs) == "tool",
+      "a retriable error and quoted terminal output do not request attention")
+
+do {
+    let failurePath = writeTranscript("codex-failure-board.jsonl", lines: [
+        codexEvent(ts: nowTs - 60, "task_started", turn: "t1"),
+    ])
+    let failureBoard = SessionBoard(engine: SessionEngine())
+    var hook: [String: Any] = ["state": "idle", "ts": nowTs - 7_200, "turn_id": "t1",
+                               "transcript": failurePath, "pid": 0]
+    var failureFile = SessionBoard.File(key: "codex:failure", path: "/codex/failure.json",
+                                       provider: "codex", id: "failure", mtime: Date())
+    let failureRules = SessionBoard.Rules(soundThreshold: 0, stalePruneAge: 900,
+                                        thinkingWords: [], needsYou: true)
+    appendCodexLine(codexEvent(ts: nowTs - 30, "task_complete", turn: "t1",
+                               error: terminalError), to: failurePath)
+    failureBoard.reload([failureFile], read: { _ in hook }, branch: { _ in "" })
+    let firstFailure = failureBoard.tick(now: nowTs, rules: failureRules,
+                                        pidAlive: { _ in true }, frontmost: { "com.other" })
+    check(firstFailure.needsYou && firstFailure.lead?.eff == "permission"
+            && firstFailure.reaped.isEmpty,
+          "a terminal error cues Needs you and keeps an old session visible")
+    check(!failureBoard.tick(now: nowTs + 1, rules: failureRules,
+                             pidAlive: { _ in true }, frontmost: { "com.other" }).needsYou,
+          "a terminal error cues only once while attention remains")
+    appendCodexLine(codexEvent(ts: nowTs + 2, "task_started", turn: "t2"), to: failurePath)
+    hook["state"] = "thinking"; hook["turn_id"] = "t2"; hook["ts"] = nowTs + 2
+    failureFile = SessionBoard.File(key: "codex:failure", path: "/codex/failure.json",
+                                    provider: "codex", id: "failure",
+                                    mtime: Date(timeIntervalSince1970: nowTs + 2))
+    failureBoard.reload([failureFile], read: { _ in hook }, branch: { _ in "" })
+    let retry = failureBoard.tick(now: nowTs + 2, rules: failureRules,
+                                 pidAlive: { _ in true }, frontmost: { "com.other" })
+    check(retry.lead?.eff == "thinking" && !retry.needsYou,
+          "a new turn clears terminal attention and resumes work")
+    appendCodexLine(codexEvent(ts: nowTs + 3, "task_complete", turn: "t1",
+                               error: terminalError), to: failurePath)
+    let late = failureBoard.tick(now: nowTs + 3, rules: failureRules,
+                                pidAlive: { _ in true }, frontmost: { "com.other" })
+    check(late.lead?.eff == "thinking" && !late.needsYou,
+          "a late old-turn failure cannot raise attention during a retry")
+    appendCodexLine(codexEvent(ts: nowTs + 4, "turn_complete", turn: "t2",
+                               error: terminalError), to: failurePath)
+    let nextFailure = failureBoard.tick(now: nowTs + 4, rules: failureRules,
+                                       pidAlive: { _ in true }, frontmost: { "com.other" })
+    check(nextFailure.lead?.eff == "permission" && nextFailure.needsYou,
+          "a retry that fails cues one new Needs you transition")
+    check(!failureBoard.tick(now: nowTs + 5, rules: failureRules,
+                             pidAlive: { _ in true }, frontmost: { "com.other" }).needsYou,
+          "the retry failure also cues only once")
+    appendCodexLine(codexEvent(ts: nowTs + 6, "turn_started", turn: "t3"), to: failurePath)
+    hook["turn_id"] = "t3"; hook["ts"] = nowTs + 6
+    failureFile = SessionBoard.File(key: "codex:failure", path: "/codex/failure.json",
+                                    provider: "codex", id: "failure",
+                                    mtime: Date(timeIntervalSince1970: nowTs + 6))
+    failureBoard.reload([failureFile], read: { _ in hook }, branch: { _ in "" })
+    let resumed = failureBoard.tick(now: nowTs + 6, rules: failureRules,
+                                   pidAlive: { _ in true }, frontmost: { "com.other" })
+    check(resumed.lead?.eff == "thinking" && !resumed.needsYou,
+          "turn_started also clears the previous failure")
+    appendCodexLine(codexEvent(ts: nowTs + 7, "task_complete", turn: "t3"), to: failurePath)
+    let succeeded = failureBoard.tick(now: nowTs + 7, rules: failureRules,
+                                     pidAlive: { _ in true }, frontmost: { "com.other" })
+    check(succeeded.lead?.eff == "idle" && !succeeded.needsYou,
+          "a successful retry ends idle without an attention cue")
+}
 
 let ended = writeTranscript("codex-ended.jsonl", lines: [
     codexEvent(ts: nowTs - 90, "task_started", turn: "t1"),
@@ -2725,6 +2856,66 @@ do {
     _ = board.tick(now: now, rules: rules, pidAlive: { alive.contains($0) }, frontmost: { nil })
     check(board.sessions["claude:n1"]?.displayName == "solo",
           "a session with no cwd is not a second location")
+
+    for provider in ["codex", "claude"] {
+        let soundPath = NSTemporaryDirectory() + "ccb-\(provider)-completion-cue.jsonl"
+        try! (codexEvent(ts: now, "task_started", turn: "t1") + "\n")
+            .write(toFile: soundPath, atomically: true, encoding: .utf8)
+        let soundBoard = SessionBoard(engine: SessionEngine())
+        let hookPath = "/\(provider)/sound.json"
+        disk[hookPath] = ["state": "thinking", "pid": 13, "ts": now, "startedAt": now,
+                          "turn_id": "t1", "transcript": soundPath,
+                          "term_bundle": "com.apple.Terminal"]
+        soundBoard.reload([file(provider, "sound")], read: read) { _ in "" }
+        let started = soundBoard.tick(now: now, rules: rules,
+                                      pidAlive: { alive.contains($0) }, frontmost: { "com.other" })
+        check(started.lead?.eff == "thinking" && !started.chime && !started.needsYou,
+              "\(provider) starts a long turn without a sound")
+
+        appendCodexLine(codexEvent(ts: now + 120, "task_complete", turn: "t1",
+                                   error: terminalError), to: soundPath)
+        disk[hookPath]?["state"] = "done"; disk[hookPath]?["ts"] = now + 120
+        soundBoard.reload([file(provider, "sound", at: Date(timeIntervalSince1970: 2))],
+                          read: read) { _ in "" }
+        let stopped = soundBoard.tick(now: now + 120, rules: rules,
+                                      pidAlive: { alive.contains($0) }, frontmost: { "com.other" })
+        if provider == "codex" {
+            check(stopped.lead?.eff == "permission" && stopped.needsYou,
+                  "a failed Codex turn stopped as raw done cues Needs you")
+            check(!stopped.chime,
+                  "a failed Codex turn stopped as raw done does not play the completion chime")
+        } else {
+            check(stopped.lead?.eff == "idle" && stopped.chime && !stopped.needsYou,
+                  "a Codex terminal error does not change the Claude completion cue")
+        }
+        let repeated = soundBoard.tick(now: now + 121, rules: rules,
+                                       pidAlive: { alive.contains($0) }, frontmost: { "com.other" })
+        check(!repeated.chime && !repeated.needsYou,
+              "\(provider) does not repeat a sound after the failed turn stops")
+
+        appendCodexLine(codexEvent(ts: now + 122, "task_started", turn: "t2"), to: soundPath)
+        disk[hookPath]?["state"] = "thinking"; disk[hookPath]?["ts"] = now + 122
+        disk[hookPath]?["startedAt"] = now + 122; disk[hookPath]?["turn_id"] = "t2"
+        soundBoard.reload([file(provider, "sound", at: Date(timeIntervalSince1970: 3))],
+                          read: read) { _ in "" }
+        let retryStarted = soundBoard.tick(now: now + 122, rules: rules,
+                                           pidAlive: { alive.contains($0) }, frontmost: { "com.other" })
+        check(retryStarted.lead?.eff == "thinking" && !retryStarted.chime && !retryStarted.needsYou,
+              "\(provider) starts a retry without a sound")
+        appendCodexLine(codexEvent(ts: now + 242, "task_complete", turn: "t2"), to: soundPath)
+        disk[hookPath]?["state"] = "done"; disk[hookPath]?["ts"] = now + 242
+        soundBoard.reload([file(provider, "sound", at: Date(timeIntervalSince1970: 4))],
+                          read: read) { _ in "" }
+        let succeeded = soundBoard.tick(now: now + 242, rules: rules,
+                                        pidAlive: { alive.contains($0) }, frontmost: { "com.other" })
+        check(succeeded.lead?.eff == "idle" && succeeded.chime && !succeeded.needsYou,
+              "\(provider) plays the completion chime for a successful long retry")
+        let successRepeated = soundBoard.tick(now: now + 243, rules: rules,
+                                              pidAlive: { alive.contains($0) }, frontmost: { "com.other" })
+        check(!successRepeated.chime && !successRepeated.needsYou,
+              "\(provider) does not repeat the successful completion chime")
+        try? FileManager.default.removeItem(atPath: soundPath)
+    }
 
     let questionPath = NSTemporaryDirectory() + "ccb-board-question.jsonl"
     try! blockingQuestionCall

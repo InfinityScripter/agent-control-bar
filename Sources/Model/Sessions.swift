@@ -133,6 +133,8 @@ final class SessionEngine {
                 let pending = questions.pending(in: s.transcript)
                 questionCache[s.transcript] = questions
                 if pending { return "permission" }
+                if let over = turnFacts(ofFileAt: s.transcript, provider: s.provider).turnOver,
+                   over.failed, endsThisTurn(over, s) { return "permission" }
             }
             // Codex fires PermissionRequest before deciding whether auto-review handles it.
             if s.state == "permission" { return "idle" }

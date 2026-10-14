@@ -167,6 +167,7 @@ final class SessionBoard {
         let prev = prevState[s.key] ?? ""
         var edge = false
         if threshold > 0, s.state == "done", prev != "done", let start = turnStart[s.key], start > 0,
+           s.provider != "codex" || s.eff != "permission",
            now - start >= threshold { edge = true }
         if s.state == "done" { turnStart[s.key] = 0 }
         return edge

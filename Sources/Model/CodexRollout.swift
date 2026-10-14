@@ -28,6 +28,7 @@ enum CodexRollout {
         /// id (it is in Codex's own schema for every turn-scoped event), which is what lets a
         /// boundary be matched to a session's state file exactly rather than by clock.
         var turn: String
+        var failed = false
     }
 
     /// Payload types that END a turn: the model finished, or the turn was cut short — Esc, an
@@ -66,8 +67,15 @@ enum CodexRollout {
               let stamp = root["timestamp"] as? String,
               let at = Transcript.unixTime(stamp)
         else { return nil }
+        var failed = false
+        if kind == "task_complete" || kind == "turn_complete" {
+            if let error = payload["error"] as? [String: Any] { failed = !error.isEmpty }
+            else if let error = payload["error"] as? String {
+                failed = !error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            } else if let error = payload["error"] as? [Any] { failed = !error.isEmpty }
+        }
         return Boundary(ends: endTypes.contains(kind), at: at,
-                        turn: payload["turn_id"] as? String ?? "")
+                        turn: payload["turn_id"] as? String ?? "", failed: failed)
     }
 
     /// Only blocking input requests prove that Codex still needs the user. The desktop dismisses
