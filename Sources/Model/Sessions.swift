@@ -112,6 +112,7 @@ struct TurnFacts {
 
 /// The state machine behind every session row and the menu bar icon.
 final class SessionEngine {
+    private static let turnTypes = ["\"type\":\"user\"", "\"type\":\"assistant\""].map { Data($0.utf8) }
     // private so the compiler guards the seam: dropCache is the one sanctioned door in.
     private var turnLineCache: [String: (size: UInt64, mtime: Date, facts: TurnFacts)] = [:]
     private var questionCache: [String: CodexRollout.Questions] = [:]
@@ -233,8 +234,8 @@ final class SessionEngine {
             }
         } else {
             let line = scanTail(ofFileAt: path) { line -> String? in
-                line.contains("\"type\":\"user\"") || line.contains("\"type\":\"assistant\"")
-                    ? String(line) : nil
+                Self.turnTypes.contains(where: { line.range(of: $0) != nil })
+                    ? String(decoding: line, as: UTF8.self) : nil
             }
             facts.interrupted = line.map(Transcript.wasInterrupted) ?? false
             facts.turnTs = line.flatMap(Transcript.turnTimestamp)
@@ -256,20 +257,16 @@ final class SessionEngine {
     /// larger reads pay only when the tail is all bookkeeping: Claude Code appends it after an
     /// interrupt in lines measured up to 112 KB, a Codex rollout's own records run larger still,
     /// and any fixed window is a bet against the next release's line — so the ladder ends at a hard
-    /// ceiling instead. Lines reach `pick` as slices, so a scan that rejects a megabyte-long tool
-    /// result pays no copy for it.
-    private func scanTail<T>(ofFileAt path: String, _ pick: (Substring) -> T?) -> T? {
+    /// ceiling instead. Split bytes, not Unicode Characters: streaming tool output made character
+    /// splitting and substring searches dominate the polling timer's CPU.
+    private func scanTail<T>(ofFileAt path: String, _ pick: (Data) -> T?) -> T? {
         guard let fh = FileHandle(forReadingAtPath: path) else { return nil }
         defer { try? fh.close() }
         let size = (try? fh.seekToEnd()) ?? 0
         for chunk: UInt64 in [8_192, 262_144, 1_048_576] {
             try? fh.seek(toOffset: size > chunk ? size - chunk : 0)
             guard let data = try? fh.readToEnd() else { return nil }
-            // Never the failable String(data:encoding:): a window cut mid-way through a multi-
-            // byte character made it return nil for the ENTIRE chunk, and the cache then pinned
-            // that nil for as long as the file sat still — a permission wait, by definition.
-            let text = String(decoding: data, as: UTF8.self)
-            for line in text.split(separator: "\n").reversed() {
+            for line in data.split(separator: 10).reversed() {
                 if let hit = pick(line) { return hit }
             }
             if size <= chunk { return nil }  // the whole file is read — there is nowhere left to look
