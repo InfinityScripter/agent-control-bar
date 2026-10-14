@@ -107,9 +107,9 @@ struct TurnFacts {
     var interrupted = false
     /// Unix time of the last turn record — Claude's permission net runs off this clock.
     var turnTs: Double?
-    /// The rollout's newest boundary record, when that record ENDED a turn rather than starting
-    /// one. Codex only; Claude writes nothing equivalent.
+    /// The current Codex turn's completion, preserved when another turn finishes late.
     var turnOver: CodexRollout.Boundary?
+    var inputPending = false
     /// The file's own mtime, from the same stat the fields above are cached against.
     var mtime: Date = .distantPast
 }
@@ -137,15 +137,13 @@ final class SessionEngine {
     // "interrupted by user" marker (Esc / denied permission fire no hook, freezing the file). "done"
     // collapses to rest.
     func effectiveState(_ s: Session, now: Double) -> String {
+        let facts: TurnFacts?
+        if !s.transcript.isEmpty, s.provider == "codex" || isActiveState(s.state) {
+            facts = turnFacts(ofFileAt: s.transcript, provider: s.provider)
+        } else { facts = nil }
         if s.provider == "codex" {
-            if !s.transcript.isEmpty {
-                var questions = questionCache[s.transcript] ?? CodexRollout.Questions()
-                let pending = questions.pending(in: s.transcript)
-                questionCache[s.transcript] = questions
-                if pending { return "permission" }
-                if let over = turnFacts(ofFileAt: s.transcript, provider: s.provider).turnOver,
-                   over.failed, endsThisTurn(over, s) { return "permission" }
-            }
+            if facts?.inputPending == true { return "permission" }
+            if let over = facts?.turnOver, over.failed, endsThisTurn(over, s) { return "permission" }
             // Codex fires PermissionRequest before deciding whether auto-review handles it.
             if s.state == "permission" { return "idle" }
         }
@@ -159,8 +157,6 @@ final class SessionEngine {
             // transcript nets below this is a last resort, and a frozen amber dot outranks
             // every live session.
             let cap: Double = s.state == "permission" ? 1800 : (s.state == "tool" ? 3600 : 900)
-            let facts = s.transcript.isEmpty ? nil
-                                             : turnFacts(ofFileAt: s.transcript, provider: s.provider)
             if now - s.ts > cap {
                 // A streaming transcript is proof of life past the cap for a THINKING session:
                 // records append every ~1.7s median while the model streams, so a fresh mtime
@@ -229,6 +225,12 @@ final class SessionEngine {
     // its turn boundaries outright (CodexRollout). Reading a rollout with Claude's parser is what
     // this used to do, and it found nothing at all — see the header of CodexRollout.swift.
     private func turnFacts(ofFileAt path: String, provider: String) -> TurnFacts {
+        if provider == "codex" {
+            var questions = questionCache[path] ?? CodexRollout.Questions()
+            let pending = questions.pending(in: path)
+            questionCache[path] = questions
+            return TurnFacts(turnOver: questions.turnOver, inputPending: pending, mtime: questions.mtime)
+        }
         let attrs = try? FileManager.default.attributesOfItem(atPath: path)
         let size = (attrs?[.size] as? NSNumber)?.uint64Value ?? 0
         let mtime = attrs?[.modificationDate] as? Date ?? .distantPast
@@ -238,25 +240,17 @@ final class SessionEngine {
             return facts
         }
         var facts = TurnFacts(mtime: mtime)
-        if provider == "codex" {
-            // The newest boundary decides, and only one that ENDS a turn means the turn is over: a
-            // rollout whose last boundary is a start is a session mid-turn, however old the record.
-            if let newest = scanTail(ofFileAt: path, CodexRollout.boundary), newest.ends {
-                facts.turnOver = newest
-            }
-        } else {
-            let line = scanTail(ofFileAt: path) { line -> String? in
-                Self.turnTypes.contains(where: { line.range(of: $0) != nil })
-                    ? String(decoding: line, as: UTF8.self) : nil
-            }
-            facts.interrupted = line.map(Transcript.wasInterrupted) ?? false
-            facts.turnTs = line.flatMap(Transcript.turnTimestamp)
-            // A record that parses as a turn but carries no usable timestamp is format drift — the
-            // permission net dies silently without it. Once per file change, not per tick, so
-            // Console gets a trace instead of "sessions sometimes sit amber for the whole cap".
-            if let line, facts.turnTs == nil, Transcript.isTurnRecord(line) {
-                NSLog("ClaudeControlBar: turn record without a parseable timestamp — transcript format drift? \(path)")
-            }
+        let line = scanTail(ofFileAt: path) { line -> String? in
+            Self.turnTypes.contains(where: { line.range(of: $0) != nil })
+                ? String(decoding: line, as: UTF8.self) : nil
+        }
+        facts.interrupted = line.map(Transcript.wasInterrupted) ?? false
+        facts.turnTs = line.flatMap(Transcript.turnTimestamp)
+        // A record that parses as a turn but carries no usable timestamp is format drift — the
+        // permission net dies silently without it. Once per file change, not per tick, so
+        // Console gets a trace instead of "sessions sometimes sit amber for the whole cap".
+        if let line, facts.turnTs == nil, Transcript.isTurnRecord(line) {
+            NSLog("ClaudeControlBar: turn record without a parseable timestamp — transcript format drift? \(path)")
         }
         turnLineCache[path] = (size, mtime, facts)
         return facts

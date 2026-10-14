@@ -697,6 +697,79 @@ do {
           "a successful retry ends idle without an attention cue")
 }
 
+do {
+    let start = 1_800_000_000.0
+    let error = ["message": "synthetic failure"]
+    for (startType, endType) in [("task_started", "task_complete"), ("turn_started", "turn_complete")] {
+        for raw in ["done", "thinking"] {
+            let path = writeTranscript("codex-late-boundary-\(endType)-\(raw).jsonl", lines: [
+                codexEvent(ts: start - 120, startType, turn: "t1"),
+                codexEvent(ts: start, startType, turn: "t2"),
+                codexEvent(ts: start + 120, endType, turn: "t2", error: error),
+            ])
+            let currentEngine = SessionEngine()
+            var session = makeCodex(state: raw, ts: start + 120, transcript: path, turn: "t2")
+            check(currentEngine.effectiveState(session, now: start + 120) == "permission",
+                  "\(endType) needs attention before an old completion while raw \(raw)")
+            appendCodexLine(codexEvent(ts: start + 121, endType, turn: "t1"), to: path)
+            check(currentEngine.effectiveState(session, now: start + 122) == "permission",
+                  "a late old \(endType) preserves the current failure while raw \(raw)")
+            check(currentEngine.effectiveState(session, now: start + 123) == "permission",
+                  "an unchanged transcript retains the current failure while raw \(raw)")
+            check(SessionEngine().effectiveState(session, now: start + 123) == "permission",
+                  "a fresh engine also ignores the late old \(endType) while raw \(raw)")
+            appendCodexLine(codexEvent(ts: start + 124, endType, turn: "t2"), to: path)
+            check(currentEngine.effectiveState(session, now: start + 124) == "idle",
+                  "the current successful \(endType) clears its failure while raw \(raw)")
+            appendCodexLine(codexEvent(ts: start + 125, endType, turn: "t1"), to: path)
+            check(currentEngine.effectiveState(session, now: start + 125) == "idle",
+                  "a late old \(endType) preserves the current success while raw \(raw)")
+            appendCodexLine(codexEvent(ts: start + 126, endType, turn: "t1", error: error), to: path)
+            check(currentEngine.effectiveState(session, now: start + 126) == "idle",
+                  "a late old failure cannot replace current success while raw \(raw)")
+            appendCodexLine(codexEvent(ts: start + 127, startType, turn: "t3"), to: path)
+            session = makeCodex(state: "thinking", ts: start + 127, transcript: path, turn: "t3")
+            check(currentEngine.effectiveState(session, now: start + 127) == "thinking",
+                  "a new \(startType) replaces the completed current turn")
+        }
+    }
+
+    for raw in ["done", "thinking"] {
+        let path = writeTranscript("codex-late-boundary-board-\(raw).jsonl", lines: [
+            codexEvent(ts: start - 120, "task_started", turn: "t1"),
+            codexEvent(ts: start, "task_started", turn: "t2"),
+        ])
+        let board = SessionBoard(engine: SessionEngine())
+        var hook: [String: Any] = ["state": "thinking", "ts": start, "startedAt": start,
+                                   "turn_id": "t2", "transcript": path, "pid": 1,
+                                   "term_bundle": "com.apple.Terminal"]
+        var file = SessionBoard.File(key: "codex:late", path: "/codex/late.json",
+                                     provider: "codex", id: "late", mtime: Date(timeIntervalSince1970: start))
+        let rules = SessionBoard.Rules(soundThreshold: 60, stalePruneAge: 900,
+                                      thinkingWords: [], needsYou: true)
+        board.reload([file], read: { _ in hook }, branch: { _ in "" })
+        _ = board.tick(now: start, rules: rules, pidAlive: { _ in true }, frontmost: { "com.other" })
+        appendCodexLine(codexEvent(ts: start + 120, "task_complete", turn: "t2", error: error), to: path)
+        hook["state"] = raw; hook["ts"] = start + 120
+        file = SessionBoard.File(key: "codex:late", path: "/codex/late.json", provider: "codex",
+                                 id: "late", mtime: Date(timeIntervalSince1970: start + 120))
+        board.reload([file], read: { _ in hook }, branch: { _ in "" })
+        let failed = board.tick(now: start + 120, rules: rules,
+                                pidAlive: { _ in true }, frontmost: { "com.other" })
+        check(failed.lead?.eff == "permission" && failed.needsYou && !failed.chime,
+              "the current failure cues only Needs you before the late old completion while raw \(raw)")
+        appendCodexLine(codexEvent(ts: start + 121, "task_complete", turn: "t1"), to: path)
+        let late = board.tick(now: start + 122, rules: rules,
+                              pidAlive: { _ in true }, frontmost: { "com.other" })
+        check(late.lead?.eff == "permission" && !late.needsYou && !late.chime,
+              "the board retains current attention without a cue after the late old completion while raw \(raw)")
+        let repeated = board.tick(now: start + 123, rules: rules,
+                                  pidAlive: { _ in true }, frontmost: { "com.other" })
+        check(repeated.lead?.eff == "permission" && !repeated.needsYou && !repeated.chime,
+              "the board keeps attention quietly on the next tick while raw \(raw)")
+    }
+}
+
 let ended = writeTranscript("codex-ended.jsonl", lines: [
     codexEvent(ts: nowTs - 90, "task_started", turn: "t1"),
     codexEvent(ts: nowTs - 30, "task_complete", turn: "t1"),
