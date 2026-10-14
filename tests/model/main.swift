@@ -563,7 +563,7 @@ func makeCodex(state: String, ts: Double, transcript: String, turn: String = "")
 let rolloutLine = codexEvent(ts: nowTs, "task_complete", turn: "t1")
 check(!Transcript.isTurnRecord(rolloutLine) && Transcript.turnTimestamp(rolloutLine) == nil,
       "a Codex rollout line is not a Claude turn record and never was")
-check(CodexRollout.boundary(rolloutLine)?.ends == true,
+check(CodexRollout.boundary(Data(rolloutLine.utf8))?.ends == true,
       "and the Codex parser reads the same line as the end of a turn")
 
 let ended = writeTranscript("codex-ended.jsonl", lines: [
@@ -648,6 +648,67 @@ check(engine.effectiveState(makeCodex(state: "thinking", ts: nowTs - 60, transcr
 let codexShapedForClaude = writeTranscript("claude-with-codex-line.jsonl", lines: [
     codexEvent(ts: nowTs - 10, "task_complete", turn: "t1"),
 ])
+
+let unicodeOutput = codexLine(["type": "function_call_output", "call_id": "build",
+                               "output": String(repeating: "日本語🦀e\u{301}", count: 20_000)])
+let unicodeTail = writeTranscript("codex-unicode-tail.jsonl", lines: [rolloutLine, unicodeOutput])
+let unicodeSession = makeCodex(state: "tool", ts: nowTs - 60, transcript: unicodeTail, turn: "t1")
+check(engine.effectiveState(unicodeSession, now: nowTs) == "idle",
+      "a completion behind large Unicode output is found in the larger tail window")
+check(engine.effectiveState(unicodeSession, now: nowTs) == "idle",
+      "the unchanged transcript keeps the cached completion")
+appendCodexLine(codexEvent(ts: nowTs, "task_started", turn: "t1"), to: unicodeTail)
+check(engine.effectiveState(unicodeSession, now: nowTs) == "tool",
+      "an append invalidates the cache and the newest start outranks the older completion")
+appendCodexLine(codexEvent(ts: nowTs, "turn_complete", turn: "t1"), to: unicodeTail)
+check(engine.effectiveState(unicodeSession, now: nowTs) == "idle",
+      "a subsequent completion ends the turn without a final newline")
+
+let cutPath = sessionsDir + "codex-cut-utf8.jsonl"
+var cutBytes = Data((codexLine(["type": "function_call_output", "call_id": "unicode",
+                                "output": String(repeating: "🦀", count: 10_000)])
+                     + "\n" + rolloutLine).utf8)
+while cutBytes[cutBytes.count - 8_192] & 0xc0 != 0x80 { cutBytes.append(32) }
+try! cutBytes.write(to: URL(fileURLWithPath: cutPath))
+check(engine.effectiveState(makeCodex(state: "tool", ts: nowTs - 60, transcript: cutPath,
+                                     turn: "t1"), now: nowTs) == "idle",
+      "a tail window starting inside a UTF-8 code point still finds the later completion")
+
+for invalid in [
+    #"{"type":"response_item","note":"task_complete","payload":{"type":"task_complete"}}"#,
+    #"{"timestamp":"bad","type":"event_msg","payload":{"type":"task_complete"}}"#,
+    #"{"timestamp":"2026-10-14T00:00:00Z","type":"event_msg","note":"task_complete","payload":[]}"#,
+    #"{"type":"event_msg","payload":{"type":"task_complete"}"#,
+] {
+    let invalidPath = writeTranscript("codex-invalid-boundary.jsonl", lines: [invalid])
+    check(SessionEngine().effectiveState(makeCodex(state: "tool", ts: nowTs,
+                                                  transcript: invalidPath), now: nowTs) == "tool",
+          "a successful ASCII gate still requires a valid boundary envelope and timestamp")
+}
+
+let malformedClaude = writeTranscript("claude-malformed-newest.jsonl", lines: [
+    turnRecord(ts: nowTs - 30, content: "[Request interrupted by user]"),
+    #"{"type":"assistant","message":{"content":"unfinished"#,
+])
+check(engine.effectiveState(makeSession(state: "thinking", ts: nowTs - 60,
+                                        transcript: malformedClaude), now: nowTs) == "thinking",
+      "a malformed newest Claude candidate does not fall back to an older interrupt")
+
+let repairedPath = sessionsDir + "codex-invalid-utf8.jsonl"
+var repairedBytes = Data(#"{"note":""#.utf8)
+repairedBytes.append(0xff)
+repairedBytes.append(Data((#"","timestamp":"2026-10-14T00:00:00Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1"}}"#).utf8))
+try! repairedBytes.write(to: URL(fileURLWithPath: repairedPath))
+check(engine.effectiveState(makeCodex(state: "tool", ts: nowTs - 60, transcript: repairedPath,
+                                     turn: "t1"), now: nowTs) == "idle",
+      "invalid UTF-8 in an otherwise valid candidate is repaired as before")
+
+let crlfPath = writeTranscript("codex-crlf.jsonl", lines: [
+    codexEvent(ts: nowTs - 60, "task_started", turn: "t1") + "\r\n" + rolloutLine + "\r\n",
+])
+check(engine.effectiveState(makeCodex(state: "tool", ts: nowTs - 30, transcript: crlfPath,
+                                     turn: "t1"), now: nowTs) == "idle",
+      "CRLF-delimited rollout records are separate JSON lines")
 check(engine.effectiveState(makeSession(state: "thinking", ts: nowTs - 60,
                                         transcript: codexShapedForClaude), now: nowTs) == "thinking",
       "a Claude session is unmoved by a Codex boundary record")

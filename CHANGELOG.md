@@ -7,6 +7,12 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [Unreleased]
+
+### Fixed
+- Reduce CPU use while sessions are active by scanning transcript tails as bytes. Read CRLF
+  transcript records as separate lines too.
+
 ## [0.24.5] - 2026-10-08
 
 ### Changed

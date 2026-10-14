@@ -47,18 +47,18 @@ enum CodexRollout {
     /// runs large — a tool result, an image, the session_meta every file opens with, measured here
     /// at a 19 KB median and 70 KB at the widest — and the tail scan sees every one of them, so no
     /// line is handed to JSONSerialization on spec.
-    private static let needles: [String] = endTypes.union(startTypes).map { "\"\($0)\"" }
+    private static let needles: [Data] = endTypes.union(startTypes).map { Data("\"\($0)\"".utf8) }
 
     /// What a rollout line says about a turn boundary, or nil for every other record — including a
     /// tool result that merely QUOTES one of these names, which is why the substring gate above is
     /// not the answer on its own. A Codex session working on this repository produces exactly such
     /// a result, since these names are written out here in full.
     ///
-    /// Takes any string slice so the tail scan can pass a Substring without copying it first.
-    static func boundary<S: StringProtocol>(_ line: S) -> Boundary? {
-        guard needles.contains(where: { line.contains($0) }),
-              let data = line.data(using: .utf8),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+    /// Decode only candidates, repairing UTF-8 as before when a tail window cuts a code point.
+    static func boundary(_ line: Data) -> Boundary? {
+        guard needles.contains(where: { line.range(of: $0) != nil }) else { return nil }
+        let data = Data(String(decoding: line, as: UTF8.self).utf8)
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               root["type"] as? String == "event_msg",
               let payload = root["payload"] as? [String: Any],
               let kind = payload["type"] as? String,
