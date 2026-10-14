@@ -116,3 +116,9 @@ enum LimitsNote {
 - `LimitsStatus.notice(_:oauthLimits:figuresTs: Double?, now: Double) -> LimitsNotice?` — подпись вернулась к исходному контракту; nil, если `figuresTs > status.ts` (цифры обновил другой писатель позже неудачного опроса). Запись «Таск 02 — построено» про `figuresAge` устарела.
 - `LimitsStatus.signedOutBannerDue(_:oauthLimits:figuresTs:launchedAt:) -> Bool` — true только для `no-login` с `status.ts >= floor(launchedAt)` и без более свежих цифр; `StatusController.launchedAt: Double` (main.swift).
 - `claude_login`: в `.command` только `exec <shlex.quote(path)> auth login` при `os.path.isabs(path)`, иначе ветка «not found»; `STRINGS` `login.openfailed` (TimeoutExpired/OSError от open → текст, код 0).
+
+## Дополнение 2026-10-14 — знак в строке меню (R11)
+- `Sources/Model/MenuBar.swift`: `MenuBarAgent` получает `signedOut: Bool` (по умолчанию false); `MenuBarAgent.shown(..., claudeStatus: LimitsStatus?, oauthLimits: Bool, ...)` выставляет его для провайдера Claude по правилу `LimitsStatus` (`no-login`, опрос включён, `figuresTs` не новее `status.ts`) — вынести это правило в `LimitsStatus.signedOutShown(_:oauthLimits:figuresTs:) -> Bool` и использовать его и в `notice`/`signedOutBannerDue`, если там дублируется.
+- Строки: `LimitsStatus.menuBarTip` = "Claude Code is not signed in — open the panel to sign in" (константа в модели).
+- `Sources/IconRender.swift`: при `agent.signedOut` шкалы Claude с пониженной непрозрачностью + пометка в углу области шкал, ширина иконки прежняя; `signature` включает флаг; tooltip статус-айтема и accessibility-описание берут `menuBarTip`.
+- Проверки в `tests/model/main.swift`: `MenuBarAgent.shown` с `no-login` → `signedOut == true`; с `ok`, с выключенным опросом, с более свежими цифрами, с `failed` → false; `signature` различается.

@@ -2,19 +2,19 @@ window.STATE =
 {
   "version": 2,
   "slug": "self-heal-limits",
-  "dir": "2026-10-13-self-heal-limits",
+  "dir": "2026-10-13-self-heal-limits--wip",
   "title": "Самовосстановление лимитов и улучшения Agent Control Bar",
   "mode": "full",
   "depth": "normal",
   "tier": "T2",
-  "briefFile": "2026-10-13-brief.md",
+  "briefFile": "2026-10-14-brief.md",
   "memoryFile": "CLAUDE.md",
   "memoryOwner": "user",
   "skillDir": "/Users/talalaev-m/.agents/skills/autopilot",
   "baseCommit": "c969e6e",
   "startedAt": "2026-10-13T23:29:13+03:00",
-  "updatedAt": "2026-10-14T02:22:04+03:00",
-  "finishedAt": "2026-10-14T02:22:04+03:00",
+  "updatedAt": "2026-10-14T07:58:21+03:00",
+  "finishedAt": null,
   "stages": [
     {
       "id": "preflight",
@@ -25,51 +25,44 @@ window.STATE =
     {
       "id": "manifest",
       "status": "done",
-      "startedAt": "2026-10-13T23:29:26+03:00",
-      "finishedAt": "2026-10-13T23:30:19+03:00"
+      "startedAt": "2026-10-14T07:57:17+03:00",
+      "finishedAt": "2026-10-14T07:58:21+03:00"
     },
     {
       "id": "briefing",
       "status": "skipped",
-      "startedAt": "2026-10-13T23:30:19+03:00",
-      "finishedAt": "2026-10-13T23:31:38+03:00",
-      "note": "полный автомат — самобрифинг"
+      "startedAt": "2026-10-14T07:58:21+03:00",
+      "finishedAt": "2026-10-14T07:58:21+03:00",
+      "note": "полный автомат — самобрифинг, дополнение брифа"
     },
     {
       "id": "spec",
       "status": "done",
-      "startedAt": "2026-10-13T23:31:38+03:00",
-      "finishedAt": "2026-10-13T23:51:07+03:00"
+      "startedAt": "2026-10-14T07:58:21+03:00",
+      "finishedAt": "2026-10-14T07:58:21+03:00"
     },
     {
       "id": "plan",
-      "status": "done",
-      "startedAt": "2026-10-13T23:51:07+03:00",
-      "finishedAt": "2026-10-13T23:54:00+03:00"
+      "status": "active",
+      "startedAt": "2026-10-14T07:58:21+03:00"
     },
     {
       "id": "build",
-      "status": "done",
-      "startedAt": "2026-10-13T23:54:00+03:00",
-      "finishedAt": "2026-10-14T01:31:50+03:00"
+      "status": "pending"
     },
     {
       "id": "review",
-      "status": "done",
-      "startedAt": "2026-10-14T01:31:50+03:00",
-      "finishedAt": "2026-10-14T02:04:36+03:00"
+      "status": "pending"
     },
     {
       "id": "final",
-      "status": "done",
-      "startedAt": "2026-10-14T02:04:36+03:00",
-      "finishedAt": "2026-10-14T02:22:04+03:00"
+      "status": "pending"
     }
   ],
   "requirements": {
-    "total": 10,
+    "total": 12,
     "done": 10,
-    "inTicket": 0,
+    "inTicket": 2,
     "inSpec": 0,
     "placeholder": 0,
     "deferred": 0,
@@ -255,6 +248,34 @@ window.STATE =
       "commit": "2039720"
     },
     {
+      "id": "05",
+      "title": "Знак о выходе из аккаунта в строке меню",
+      "requirements": [
+        "R11",
+        "R11.1",
+        "R11i"
+      ],
+      "blockedBy": [],
+      "wave": 6,
+      "zone": [
+        "Sources/Model/MenuBar.swift",
+        "Sources/Model/LimitsStatus.swift",
+        "Sources/IconRender.swift",
+        "Sources/StatePolling.swift",
+        "Sources/Notifications.swift",
+        "Sources/PanelData.swift",
+        "tests/model/main.swift",
+        "CHANGELOG.md",
+        "README.md",
+        "README.ru.md"
+      ],
+      "review": "нет",
+      "model": "сильная",
+      "status": "pending",
+      "retries": 0,
+      "repairs": 0
+    },
+    {
       "id": "F1",
       "title": "Ремонт по ревью ветки",
       "requirements": [
@@ -282,10 +303,10 @@ window.STATE =
       "review": "да — ремонт ветки",
       "model": "сильная",
       "status": "done",
-      "retries": 0,
-      "repairs": 0,
       "startedAt": "2026-10-14T01:40:07+03:00",
       "finishedAt": "2026-10-14T02:04:35+03:00",
+      "retries": 0,
+      "repairs": 0,
       "tests": {
         "passed": 261,
         "failed": 0
@@ -305,7 +326,8 @@ window.STATE =
       "вход в Claude Code — кнопка открывает Terminal с claude auth login",
       "релиз и пуш — вопрос пользователю в конце",
       "новые функции только вокруг лимитов и самовосстановления",
-      "возраст цифр по провайдерам отдельно; Codex — свежайший живой замер"
+      "возраст цифр по провайдерам отдельно; Codex — свежайший живой замер",
+      "знак о выходе из аккаунта — в иконке строки меню, по тому же правилу, что блок в панели"
     ],
     "emptyEnv": []
   },
@@ -337,11 +359,7 @@ window.STATE =
     "Sources/PanelWindow.swift:216 (CONTROL_BAR_DUMP_MENU) печатает «Limits — » + limitsNote, теперь выходит «Limits — Limits · 4 min ago»; условие: не добавлять префикс",
     "Sources/PanelView.swift footer — раскладка с двумя провайдерами (отдельный ряд над кнопками) проверена только на копии раскладки, не в живом окне"
   ],
-  "blind": {
-    "checked": 4,
-    "matched": 4,
-    "mismatches": []
-  },
+  "blind": null,
   "beats": [
     "2026-10-13T23:29:13+03:00",
     "2026-10-13T23:29:26+03:00",
@@ -371,9 +389,12 @@ window.STATE =
     "2026-10-14T02:04:36+03:00",
     "2026-10-14T02:08:02+03:00",
     "2026-10-14T02:18:18+03:00",
-    "2026-10-14T02:22:04+03:00"
+    "2026-10-14T02:22:04+03:00",
+    "2026-10-14T07:57:17+03:00",
+    "2026-10-14T07:57:18+03:00",
+    "2026-10-14T07:58:21+03:00"
   ],
-  "rev": 47,
+  "rev": 56,
   "waiting": null,
   "waits": [],
   "log": [
@@ -701,6 +722,61 @@ window.STATE =
       "t": "2026-10-14T02:22:04+03:00",
       "k": "finish",
       "result": "обёртка statusLine чинится сама при запуске, панель объясняет сбой опроса лимитов, вход в Claude Code одной кнопкой, возраст цифр честный по провайдерам"
+    },
+    {
+      "t": "2026-10-14T07:57:17+03:00",
+      "k": "reopen"
+    },
+    {
+      "t": "2026-10-14T07:57:18+03:00",
+      "k": "stage",
+      "id": "manifest",
+      "act": "start"
+    },
+    {
+      "t": "2026-10-14T07:58:21+03:00",
+      "k": "stage",
+      "id": "briefing",
+      "act": "skip",
+      "note": "полный автомат — самобрифинг, дополнение брифа"
+    },
+    {
+      "t": "2026-10-14T07:58:21+03:00",
+      "k": "add",
+      "key": "debt.assumptions",
+      "n": 1
+    },
+    {
+      "t": "2026-10-14T07:58:21+03:00",
+      "k": "gate",
+      "g": "G1",
+      "ok": true,
+      "open": 0,
+      "total": 12
+    },
+    {
+      "t": "2026-10-14T07:58:21+03:00",
+      "k": "stage",
+      "id": "spec",
+      "act": "start"
+    },
+    {
+      "t": "2026-10-14T07:58:21+03:00",
+      "k": "stage",
+      "id": "plan",
+      "act": "start"
+    },
+    {
+      "t": "2026-10-14T07:58:21+03:00",
+      "k": "tickets",
+      "n": 6
+    },
+    {
+      "t": "2026-10-14T07:58:21+03:00",
+      "k": "gate",
+      "g": "G3",
+      "ok": true,
+      "problems": 0
     }
   ],
   "reqList": [
@@ -753,35 +829,32 @@ window.STATE =
       "id": "R10i",
       "text": "(подразумевается) подпись «Limits · 28d ago» не вводит в заблуждение: возраст цифр показывается честно по каждому провайдеру",
       "status": "done"
+    },
+    {
+      "id": "R11",
+      "text": "«если человек разлогинился надо ему где-то про это сказать» — о выходе из аккаунта Claude Code видно там, куда смотрят всегда: в строке меню, без открытия панели",
+      "status": "in-ticket"
+    },
+    {
+      "id": "R11i",
+      "text": "(подразумевается) знак не навязчив: не мигает, не меняет ширину иконки, не показывается при выключенном опросе и когда цифры обновил другой источник",
+      "status": "in-ticket"
     }
   ],
   "gates": {
     "G1": {
-      "ok": false,
-      "at": "2026-10-13T23:31:38+03:00",
-      "open": 10,
-      "total": 10
-    },
-    "G2": {
       "ok": true,
-      "at": "2026-10-13T23:51:07+03:00",
-      "found": 5,
-      "fixed": 3,
-      "deferred": 2
+      "at": "2026-10-14T07:58:21+03:00",
+      "open": 0,
+      "total": 12
     },
     "G3": {
       "ok": true,
-      "at": "2026-10-14T01:40:07+03:00",
+      "at": "2026-10-14T07:58:21+03:00",
       "problems": 0
-    },
-    "G4": {
-      "ok": true,
-      "at": "2026-10-14T02:18:18+03:00",
-      "checked": 4,
-      "matched": 4
     }
   },
-  "result": "обёртка statusLine чинится сама при запуске, панель объясняет сбой опроса лимитов, вход в Claude Code одной кнопкой, возраст цифр честный по провайдерам",
+  "result": null,
   "report": [
     "Текстовый дамп панели (переменная CONTROL_BAR_DUMP_MENU) печатает «Limits — Limits · …» и не показывает новый блок состояния — только для отладки, на экран не влияет",
     "При сбое опроса без цифр пустая полоса спрашивает «is Claude Code signed in?», а блок над ней называет сетевую причину — два текста спорят друг с другом",
