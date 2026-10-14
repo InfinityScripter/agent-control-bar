@@ -29,6 +29,7 @@ final class SettingsStore: ObservableObject {
         let updateCheckedAt: Date?
         let updateProblem: String?
         let newerVersion: String?
+        let limitsPollStatus: String
     }
     private var live: Live?
 
@@ -36,7 +37,8 @@ final class SettingsStore: ObservableObject {
         let next = Live(hooksHealth: hooksHealth, hooksChecking: hooksChecking,
                         codexPresent: codexPresent, codexHooksUntrusted: codexHooksUntrusted,
                         updateChecking: updateChecking, updateCheckedAt: updateCheckedAt,
-                        updateProblem: updateProblem, newerVersion: newerVersion)
+                        updateProblem: updateProblem, newerVersion: newerVersion,
+                        limitsPollStatus: limitsPollStatus)
         guard next != live else { return }
         live = next
         objectWillChange.send()
@@ -73,6 +75,17 @@ final class SettingsStore: ObservableObject {
     }
     var codexLimits: Binding<Bool> {
         bind({ $0.codexLimits }, { $0.applyCodexLimits($1) }, or: true)
+    }
+    /// How the last Claude poll ended, under the switch that starts it: "Last poll: ok · 4 min
+    /// ago", or the cause and how old the figures on screen are. Empty until the backend has
+    /// written a status at all, so an older backend shows no line rather than a wrong one.
+    var limitsPollStatus: String {
+        guard let controller else { return "" }
+        let now = Date().timeIntervalSince1970
+        return LimitsStatus.pollLine(
+            controller.limitsStatus,
+            polledAge: StatusController.age(of: controller.limitsStatus?.ts ?? 0, now: now),
+            figuresAge: controller.limits.map { StatusController.age(of: $0.ts, now: now) })
     }
     var codexServers: Binding<Bool> {
         bind({ $0.codexServers }, { $0.applyCodexServers($1) }, or: true)

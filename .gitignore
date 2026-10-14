@@ -22,3 +22,4 @@ __pycache__/
 # Claude Code writes per-developer local settings here when working in this repo;
 # .claude/rules/ is tracked, the local overrides must not be.
 .claude/settings.local.json
+.autopilot/serve.*

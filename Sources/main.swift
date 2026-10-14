@@ -120,6 +120,11 @@ final class StatusController: NSObject, NSWindowDelegate {
     var notificationsDenied = false     // the one macOS permission this app has; see notify()
     var lastNotifiedChangeAt: Date?     // dedupe: notifyMCPChange runs on every reload, the change lives 45 s
     var limitsMTime: Date?              // limits.json parse gate; nil forces a re-read (see loadLimits)
+    /// How the last Claude poll ended, from limits-status.json; nil until the backend writes one.
+    var limitsStatus: LimitsStatus?
+    var limitsStatusMTime: Date?        // the same gate for limits-status.json
+    var limitsNoticeSent = false        // the signed-out banner goes out once per launch
+    let launchedAt = Date().timeIntervalSince1970  // the signed-out banner counts only polls made after this
     var lastLimitsPoll: Double = 0      // so a rollover cannot bring the next poll forward into a loop
     var limitsTimer: Timer?             // the five-minute poll; each Claude request pushes it back
     var rolledOverHandled: Double = 0   // the reset stamp that already brought one poll forward
@@ -424,6 +429,7 @@ final class StatusController: NSObject, NSWindowDelegate {
         enforceSingleInstance()
         retirePredecessors()
         checkHooks()
+        healStatusLine()
         checkForUpdate()
         announceVersionChange()
         warmCanBuildFromSource()

@@ -27,6 +27,35 @@ a clock or a percentage) is usually enough. Cmd-drag rearranges menu bar items.
 
 **Icon disappeared weeks ago and never came back?** If you installed Node via Homebrew, versions before 0.4.2 wrote a version-specific Node path into the hooks, and a `brew upgrade node` broke them silently. Fixed in 0.4.2: update the app and launch it once, and the hooks repair themselves.
 
+**Status line stopped showing limits after an update or a rename?** The limits capture wraps your
+`statusLine` command with a script that lives next to the app, and that path moves: the plugin
+path carries the version, and the app bundle was renamed to Agent Control Bar. Claude Code says
+nothing when a `statusLine` command points at a file that is gone — the line just stops. Every
+launch of an installed copy repairs this by itself: if the command in
+`~/.claude/settings.json` is the one the app wrote and its file no longer exists, the path is
+re-pointed to the live wrapper (a dated `settings.json.bak-control-bar-…` backup is taken first;
+your own inner command and the other `statusLine` fields stay). Start a new Claude Code session
+to see it. To check, or to repair by hand:
+
+```bash
+/usr/bin/python3 "/Applications/Agent Control Bar.app/Contents/Resources/scripts/mcpbar.py" statusline --heal
+```
+
+It answers `statusLine wrapper is alive`, `… re-pointed to <path>`, or `capture off` when the
+status line is not this app's. Installed as a plugin, the script lives inside the plugin: its
+path is the `script` entry of `~/.claude/control-bar/paths.json`.
+
+**No data — not signed in, or *Limits poll failed*?** The Claude figures come from Anthropic's
+usage endpoint with the OAuth token Claude Code keeps in the Keychain. When that token is gone —
+you signed out of Claude Code, or logged in with `setup-token`, which lacks the scope the
+endpoint wants — the poll gets nothing, and the panel says so in a block above the limits strip
+instead of letting yesterday's numbers look fresh. Sign in again in a terminal (`claude auth
+login`) and the block clears on the next poll: within five minutes, or when you open the panel
+after a minute. *Limits poll failed: HTTPError* (or `URLError`, `timeout`) is the network or the
+endpoint, not the login; it retries on the same schedule. Settings → General → Limits shows the
+same outcome as a **Last poll** line. The raw record is
+`~/.claude/control-bar/limits-status.json`; no line there at all means the backend predates it.
+
 **Icon stuck on "thinking" in the desktop app?** If a session hits your usage limit mid-turn, Claude Code fires no hook to close it out, so the icon keeps thinking until it times out (about 15 minutes). To clear it right away, click the icon in the menu bar and press **Quit**.
 
 **The icon doesn't appear at all?**

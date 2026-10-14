@@ -7,6 +7,13 @@ enum BackendCommand {
     case limits(provider: String)
     case codexHooks
     case codexHooksApprove
+    /// Re-point this app's own dead statusLine wrapper in settings.json; a foreign or live one is
+    /// left alone by the script, so the call is safe to make on every launch.
+    case statuslineHeal
+    /// Write a `claude-login.command` next to the state files and have Terminal open it on
+    /// `claude auth login`. The script does the opening because a `.command` file needs no
+    /// Automation grant, which telling Terminal what to run over Apple Events would.
+    case claudeLogin
     case toggleServer(provider: String, name: String, on: Bool)
     case toggleTool(provider: String, server: String, tool: String, prefix: String, on: Bool)
 
@@ -20,6 +27,10 @@ enum BackendCommand {
             return ["codex-hooks"]
         case .codexHooksApprove:
             return ["codex-hooks", "approve"]
+        case .statuslineHeal:
+            return ["statusline", "--heal"]
+        case .claudeLogin:
+            return ["claude-login"]
         case .toggleServer(let provider, let name, let on):
             let words = ["toggle-server", name, on ? "--on" : "--off"]
             return provider == "codex" ? ["codex-mcp"] + words : words

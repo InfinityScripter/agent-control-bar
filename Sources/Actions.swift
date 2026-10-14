@@ -52,6 +52,13 @@ extension StatusController {
         }
     }
 
+    /// Clearing the poll stamp is what brings the figures back without a restart: the next panel
+    /// opening then polls at once instead of sitting out the 60-second gate in pollLimits.
+    func signInClaude() {
+        runQuietCommand(.claudeLogin)
+        lastLimitsPoll = 0
+    }
+
     // Row click. Desktop session: switch the app to THAT conversation (see DesktopSessions).
     // Merely focusing the app was the bug — it is normally frontmost already, so every row did
     // nothing visible and all of them did the same nothing. Focusing the app is still the

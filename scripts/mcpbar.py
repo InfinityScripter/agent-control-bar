@@ -12,8 +12,9 @@ MCP-картину ведёт этот скрипт (mcp.json), рисует в�
     report           человекочитаемая карта
     toggle-server    выключить/включить сервер целиком
     toggle-tool      выключить/включить отдельный инструмент
-    statusline       перехват лимитов: --install / --uninstall / без флага — статус
+    statusline       перехват лимитов: --install / --uninstall / --heal (перенацелить мёртвую обёртку) / без флага — статус
     limits           спросить лимиты аккаунта у эндпоинта и переписать limits.json
+    claude-login     открыть Terminal с `claude auth login` — кнопка «Sign in» в панели
     codex-limits     снять лимиты Codex со свежего rollout и переписать codex/limits.json
     codex-mcp        серверы MCP Codex: refresh | toggle-server | toggle-tool
     codex-hooks      спросить Codex, каким нашим хукам он не доверяет; approve — одобрить их
@@ -25,6 +26,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import sys
 import time
 
@@ -39,6 +41,8 @@ CLAUDE = os.path.join(HOME, ".claude")
 ROOT = os.path.join(CLAUDE, "control-bar")
 STATE = os.path.join(ROOT, "mcp.json")
 LIMITS = os.path.join(ROOT, "limits.json")
+LIMITS_STATUS = os.path.join(ROOT, "limits-status.json")
+CLAUDE_LOGIN_COMMAND = os.path.join(ROOT, "claude-login.command")
 # Сессии ведут Node-хуки: один файл на сессию, тот же каталог читает приложение.
 # Свой реестр сессий скрипт не держит намеренно — два источника правды разошлись бы.
 SESSIONS = os.path.join(ROOT, "state.d")
@@ -158,11 +162,20 @@ STRINGS = {
     "sl.off": ("capture off", "перехват выключен"),
     "sl.current": ("current command: {cmd}", "текущая команда: {cmd}"),
     "sl.unset": ("(statusLine not configured)", "(statusLine не настроен)"),
+    "sl.healed": ("statusLine wrapper re-pointed to {path}",
+                  "обёртка statusLine перенацелена на {path}"),
+    "sl.healthy": ("statusLine wrapper is alive", "обёртка statusLine жива"),
     "lim.notoken": ("no token: Claude Code is not logged in via browser OAuth",
                     "нет токена: Claude Code не залогинен через браузерный OAuth"),
     "lim.failed": ("poll failed: {e}", "опрос не удался: {e}"),
     "lim.empty": ("the response carried no limit windows", "ответ без единого окна лимитов"),
     "lim.updated": ("updated: {w}", "обновлено: {w}"),
+    "login.opened": ("opened Terminal with claude auth login",
+                     "открыла Terminal с claude auth login"),
+    "login.missing": ("claude not found — Terminal shows what to do",
+                      "claude не найден — Terminal скажет, что делать"),
+    "login.openfailed": ("Terminal did not open ({e}); run the file by hand: {path}",
+                         "Terminal не открылся ({e}); запусти файл вручную: {path}"),
     "codex.absent": ("no ~/.codex — Codex CLI is not installed here",
                      "нет ~/.codex — Codex CLI на этой машине не стоит"),
     "codex.nosnapshot": ("no rollout carries a limits snapshot yet",
@@ -1183,6 +1196,24 @@ def find_statusline_wrapper():
     return None
 
 
+def statusline_script_words(command):
+    """Слова команды с базовым именем statusline.sh — как их видит shell, не как подстроки.
+
+    ~ и $HOME раскрыты, как раскрыл бы их shell: shlex этого не делает, и os.path.exists на
+    сыром слове всегда отвечал «файла нет» — живая СВОЯ строка пользователя вида
+    `bash "$HOME/.claude/statusline.sh"` (имя из документации Claude Code) при следе старой
+    версии читалась как наша мёртвая обёртка, и починка переписывала её на нашу.
+    """
+    import shlex
+
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        words = command.split()
+    return [os.path.expandvars(os.path.expanduser(w)) for w in words
+            if os.path.basename(w) == "statusline.sh"]
+
+
 def statusline_ours(command):
     """Наша ли это команда statusLine.
 
@@ -1205,13 +1236,7 @@ def statusline_ours(command):
     installed = read_json(STATUSLINE_INSTALLED, {}).get("command") or ""
     if command == installed.strip():
         return True
-    import shlex
-
-    try:
-        words = shlex.split(command)
-    except ValueError:
-        words = command.split()
-    named = [w for w in words if os.path.basename(w) == "statusline.sh"]
+    named = statusline_script_words(command)
     wrapper = find_statusline_wrapper()
     if wrapper:
         mine = os.path.realpath(wrapper)
@@ -1219,9 +1244,7 @@ def statusline_ours(command):
             return True
     # Ниже — миграционный шим для установок, сделанных ДО появления файла-записи, и только
     # для них: запись есть и не совпала — команда чужая, «похоже на нашу» больше не аргумент.
-    # Без этого гейта чужая ЖИВАЯ команда вида `bash ~/.claude/statusline.sh` читалась как
-    # мёртвая обёртка прошлой версии: shlex не раскрывает ни ~, ни $HOME, и os.path.exists
-    # на таком слове всегда False. Шим самозакрывается первой же установкой этой версии.
+    # Шим самозакрывается первой же установкой этой версии.
     if installed:
         return False
     if any(map(os.path.exists, statusline_sidecars())):
@@ -1329,6 +1352,75 @@ def statusline_uninstall():
             return t("sl.busy")
         drop_statusline_sidecars()
         return t("sl.restored", cmd=saved or t("sl.removed"))
+
+
+def statusline_heal():
+    """Перенацелить нашу мёртвую обёртку на живую, не трогая ничего чужого.
+
+    Путь плагина несёт в себе номер версии, а имя .app сменилось при переименовании: после
+    обновления команда в settings.json указывает на файл, которого больше нет, и Claude Code
+    молча перестаёт звать строку состояния — лимиты в терминале застывают. Зовётся при каждом
+    запуске приложения, поэтому в отличие от установки не трогает ни statusline-saved.json,
+    ни внутреннюю команду человека: это починка пути, а не новая установка.
+    """
+    wrapper = find_statusline_wrapper()
+    if not wrapper:
+        return t("sl.nowrapper")
+    with settings_lock():
+        settings, seen = read_settings_for_edit()
+        if settings is None:
+            return t("sl.busy")
+        current = statusline_command(settings)
+        if not statusline_ours(current):
+            return t("sl.off")
+        if any(map(os.path.exists, statusline_script_words(current))):
+            return t("sl.healthy")
+        backup_settings()
+        healed = dict(settings["statusLine"])
+        healed["command"] = f'bash "{wrapper}"'
+        settings["statusLine"] = healed
+        if not write_settings(settings, expect=seen):
+            return t("sl.busy")
+        # Запись установки — после настроек, не до: оборвись процесс между ними, старая запись
+        # с новой командой всё равно опознаётся как наша (файл лежит рядом со скриптом), а новая
+        # запись со старой командой сделала бы её чужой — и починка больше не повторилась бы.
+        write_json(STATUSLINE_INSTALLED, {"command": healed["command"]})
+        return t("sl.healed", path=wrapper)
+
+
+# ──────────────────────────────────────────────────────────── вход в Claude Code
+
+def claude_login():
+    """Открыть Terminal с `claude auth login` — кнопка в панели вместо команды руками.
+
+    Файл .command, а не AppleScript: Terminal открывает такие файлы сам, без разрешения
+    Automation и без Apple Events, которые приложение обещало слать только для фокуса
+    вкладки. Сам вход идёт в Terminal и браузере, здесь только дверь к нему.
+    """
+    import subprocess
+
+    claude = find_claude()
+    # shutil.which отвечает относительным путём, если в PATH есть «.»; что запустит файл,
+    # зависело бы от каталога, в котором Terminal его открыл.
+    found = bool(claude) and os.path.isabs(claude)
+    if found:
+        body = f"exec {shlex.quote(claude)} auth login\n"
+    else:
+        # Окно Terminal с ошибкой «команда не найдена» закрылось бы раньше, чем человек его
+        # прочтёт: read держит его открытым до нажатия клавиши.
+        body = ("printf '%s\\n' "
+                "'Claude Code CLI not found. Install it, then run: claude auth login'\n"
+                "read -r -n 1\n")
+    os.makedirs(ROOT, mode=SECURE_DIR, exist_ok=True)
+    tmp = f"{CLAUDE_LOGIN_COMMAND}.{os.getpid()}.tmp"
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o700), "w") as fh:
+        fh.write("#!/bin/bash\n" + body)
+    os.replace(tmp, CLAUDE_LOGIN_COMMAND)
+    try:
+        subprocess.run(["/usr/bin/open", CLAUDE_LOGIN_COMMAND], check=False, timeout=30)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return t("login.openfailed", e=type(exc).__name__, path=CLAUDE_LOGIN_COMMAND)
+    return t("login.opened" if found else "login.missing")
 
 
 # ──────────────────────────────────────────────────────────── лимиты по OAuth
@@ -1454,11 +1546,19 @@ def scoped_model_window(limits, model):
     return None
 
 
+def write_limits_status(state, detail=""):
+    """Исход опроса для приложения: stdout скрипта оно не читает, а limits.json при сбое
+    не меняется — без этого файла выход из аккаунта выглядел как «цифры не двигаются»."""
+    write_json(LIMITS_STATUS, {"ts": int(time.time()), "provider": "claude",
+                               "state": state, "detail": detail}, mode=SECURE_FILE)
+
+
 def fetch_limits():
     """Один опрос: токен → эндпоинт → limits.json. Молчалив при любом сбое — прошлые
     цифры в файле лучше, чем затёртые ошибкой."""
     token = oauth_token()
     if not token:
+        write_limits_status("no-login", "no token")
         return t("lim.notoken")
     import urllib.request
 
@@ -1484,10 +1584,14 @@ def fetch_limits():
         # или 401. Снаружи он однажды и стоял — и массив вместо объекта ронял весь скрипт.
         record = usage_record(payload)
     except Exception as exc:  # noqa: BLE001 — сеть, 401, редирект, JSON: файл не трогаем
+        write_limits_status("failed", type(exc).__name__)
         return t("lim.failed", e=type(exc).__name__)
     if not record:
+        write_limits_status("empty", "no windows")
         return t("lim.empty")
     write_json(LIMITS, record)
+    # После limits.json, не до: «ok» рядом с прежними цифрами обещало бы свежесть, которой нет.
+    write_limits_status("ok")
     windows = ", ".join(f"{k} {v['used_percentage']}%" for k, v in record.items()
                         if isinstance(v, dict))
     return t("lim.updated", w=windows)
@@ -2008,6 +2112,8 @@ def main(argv):
         print(doctor())
     elif command == "limits":
         print(fetch_limits())
+    elif command == "claude-login":
+        print(claude_login())
     elif command == "codex-limits":
         print(codex.fetch_codex_limits())
     elif command == "codex-hooks":
@@ -2055,6 +2161,8 @@ def main(argv):
             print(statusline_install())
         elif "--uninstall" in rest:
             print(statusline_uninstall())
+        elif "--heal" in rest:
+            print(statusline_heal())
         else:
             current, ours = statusline_state()
             print(t("sl.on" if ours else "sl.off")

@@ -205,8 +205,11 @@ def merge_codex_limits(previous, fresh):
     означало бы показать второй недельный лимит с прежними процентами и временем сброса.
     Другой пул сохраняется отдельно: резервное primary не заменяет обычное primary.
 
-    Возраст записи — самый СТАРЫЙ из замеров: подпись «measured N min ago» одна на всю
-    группу, и свежесть резервного окна ничего не говорит про обычное, снятое утром.
+    Возраст записи — свежайший замер среди окон обычного пула, а при их отсутствии среди всех:
+    подпись «measured N min ago» одна на группу, а резерв после смены подписки может неделями
+    не обновляться — по самому старому окну панель писала «28d ago» при живых цифрах. Свежий
+    резерв при этом обычные окна, снятые утром, не омолаживает. Замеры самих окон не меняются:
+    «окно закончилось» Swift решает по ним, а не по возрасту записи.
     """
     def measured(window):
         stamp = window.get("ts")
@@ -228,10 +231,11 @@ def merge_codex_limits(previous, fresh):
     record["windows"] = sorted((w for snapshot in pools.values() for w in snapshot),
                                key=lambda w: (w["pool"] != "codex",
                                               CODEX_WINDOW_ORDER.get(w["kind"], 2), w["kind"]))
-    stamps = [w["ts"] for w in record["windows"]
+    ordinary = [w for w in record["windows"] if w["pool"] == "codex"]
+    stamps = [w["ts"] for w in (ordinary or record["windows"])
               if isinstance(w["ts"], (int, float)) and not isinstance(w["ts"], bool)]
     if stamps:
-        record["ts"] = min(stamps)
+        record["ts"] = max(stamps)
     # План приходит не в каждом снимке: резервные записи Codex шлют его так же исправно, а
     # вот минимальные — нет, и терять подписку из-за одного бедного снимка незачем.
     if not record.get("plan") and isinstance(previous, dict) and previous.get("plan"):
