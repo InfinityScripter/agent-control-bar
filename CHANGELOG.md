@@ -7,7 +7,7 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
-## [0.25.1] - 2026-10-14
+## [Unreleased]
 
 ### Added
 - **Odds of an early limit reset.** A card under the limits strip shows whenreset.app's estimate
@@ -17,6 +17,8 @@ from, and are kept so the history reads continuously.
   too. The app asks the site at most every 15 minutes and keeps the last answer, so the card shows
   at launch and says when the figures are old. **Limit reset odds** in Settings → General → Limits
   turns it off, which also stops the request.
+
+## [0.25.1] - 2026-10-14
 
 ### Fixed
 - **Codex shows Needs you when it needs attention.** Command approvals and blocking questions
