@@ -844,6 +844,203 @@ check(engine.effectiveState(makeSession(state: "thinking", ts: nowTs - 60,
                                         transcript: codexShapedForClaude), now: nowTs) == "thinking",
       "a Claude session is unmoved by a Codex boundary record")
 
+// The optional desktop Question is a current-turn notice, independent of the working state.
+do {
+    let now = 1_800_000_000.0
+    func item(_ value: [String: Any], turn: String = "notice-turn", at: Double = now + 1,
+              pretty: Bool = false) -> String {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let root: [String: Any] = ["timestamp": iso.string(from: Date(timeIntervalSince1970: at)),
+            "type": "event_msg", "payload": ["type": "item_completed", "turn_id": turn, "item": value]]
+        return String(decoding: try! JSONSerialization.data(withJSONObject: root,
+            options: pretty ? [.prettyPrinted] : []), as: UTF8.self)
+    }
+    let question: [String: Any] = ["type": "AgentMessage", "id": "notice-item", "delivery": "async",
+        "questions": [["title": "First", "options": []], ["title": "Second", "options": []]]]
+    let askedLine = item(question)
+    func reply(_ index: Any, id: String = "notice-item", prefix: String = "request_user_input_async") -> String {
+        let questionID = String(decoding: try! JSONSerialization.data(withJSONObject: [prefix, id, index]), as: UTF8.self)
+        let answer = String(decoding: try! JSONSerialization.data(withJSONObject:
+            ["questionItemId": questionID, "question": "First", "answer": "Yes"]), as: UTF8.self)
+        return "<send_user_message_question_reply>\n\(answer)\n</send_user_message_question_reply>"
+    }
+    func user(_ text: String, steering: String? = nil, turn: String = "notice-turn") -> String {
+        let content: [[String: Any]] = [["type": "text", "text": text]]
+        if let steering {
+            return item(["type": "SteeringUserMessage", "id": "reply", "status": steering,
+                         "input": content], turn: turn, at: now + 2)
+        }
+        return item(["type": "UserMessage", "id": "reply", "content": content], turn: turn, at: now + 2)
+    }
+    let start = codexEvent(ts: now, "task_started", turn: "notice-turn")
+    let noticePath = writeTranscript("codex-async-notice.jsonl", lines: [start])
+    let noticeEngine = SessionEngine()
+    let noticeBoard = SessionBoard(engine: noticeEngine)
+    let file = SessionBoard.File(key: "codex:notice", path: "/notice.json", provider: "codex",
+                                 id: "notice", mtime: Date(timeIntervalSince1970: 1))
+    var json: [String: Any] = ["state": "thinking", "provider": "codex", "transcript": noticePath,
+        "turn_id": "notice-turn", "ts": now, "startedAt": now - 120, "pid": 1]
+    let rules = SessionBoard.Rules(soundThreshold: 60, stalePruneAge: 900, thinkingWords: [], needsYou: true)
+    func tick() -> SessionBoard.Tick {
+        noticeBoard.tick(now: now + 3, rules: rules, pidAlive: { _ in true }, frontmost: { "com.other" })
+    }
+    func bar() -> MenuBarAgent {
+        MenuBarAgent.shown(.codex, board: noticeBoard, claude: nil, claudeStatus: nil,
+                          oauthLimits: true, codex: nil, now: now + 3)[0]
+    }
+    noticeBoard.reload([file], read: { _ in json }) { _ in "" }
+    _ = tick()
+    let before = bar()
+    check(!Session(json: ["asyncQuestion": true], id: "empty").asyncQuestion,
+          "the async notice defaults to false and is not trusted from a hook file")
+    appendCodexLine(askedLine, to: noticePath)
+    let asked = tick()
+    check(asked.lead?.asyncQuestion == true,
+          "a real async AgentMessage creates a separate current-turn Question notice")
+    check(asked.lead?.eff == "thinking" && asked.lead?.startedAt == now - 120 && !asked.needsYou && !asked.chime,
+          "the Question leaves Thinking and its live clock running without either sound")
+    let marked = bar()
+    check(marked.asyncQuestion && !marked.badge && marked.signature != before.signature,
+          "the Codex question fact changes the icon cache signature without a permission badge")
+    check(marked.timer(show: true, now: now + 3) == before.timer(show: true, now: now + 3)
+          && marked.animates(.pet("codex")) == before.animates(.pet("codex")),
+          "the Question preserves the working timer and companion animation")
+    let symbol = NSImage(systemSymbolName: Provider.codex.glyph, accessibilityDescription: "Codex")!
+    symbol.isTemplate = true
+    let questionIcon = marked.markedIcon(symbol, fallback: false, permissionColor: .systemOrange)
+    check(questionIcon !== symbol && questionIcon.accessibilityDescription?.contains("Вопрос") == true,
+          "the async marker draws and names a quiet question mark beside the Codex icon")
+    let blank = NSImage(size: NSSize(width: 18, height: 18))
+    blank.isTemplate = true
+    let drawnMark = marked.markedIcon(blank, fallback: false, permissionColor: .systemOrange)
+    check(drawnMark.isTemplate && crabHasPixel(drawnMark) { $0.alphaComponent > 0.5 },
+          "the Question marker has visible adaptive pixels without a permission colour")
+    json["state"] = "tool"
+    noticeBoard.reload([SessionBoard.File(key: file.key, path: file.path, provider: file.provider,
+        id: file.id, mtime: Date(timeIntervalSince1970: 2))], read: { _ in json }) { _ in "" }
+    let working = tick()
+    check(working.lead?.asyncQuestion == true && working.lead?.eff == "tool" && !working.needsYou && !working.chime,
+          "the same quiet Question survives a real hook transition from Thinking to Working")
+
+    appendCodexLine(codexLine(["type": "function_call_output", "call_id": "notice-item",
+                              "output": #"{"accepted":true}"#]), to: noticePath)
+    check(tick().lead?.asyncQuestion == true, "accepted:true acknowledges the tool and does not answer its Question")
+    for status in ["pending", "rejected"] {
+        appendCodexLine(user(reply(0), steering: status), to: noticePath)
+        check(tick().lead?.asyncQuestion == true, "a \(status) steering reply does not clear the notice")
+    }
+    for index in [true, 0.5, -1, 9] as [Any] {
+        appendCodexLine(user(reply(index)), to: noticePath)
+        check(tick().lead?.asyncQuestion == true, "an invalid question index \(index) cannot clear the notice")
+    }
+    appendCodexLine(user(reply(0, id: "another-item")), to: noticePath)
+    appendCodexLine(user(reply(0, prefix: "request_user_input")), to: noticePath)
+    appendCodexLine(user("<send_user_message_question_reply>broken</send_user_message_question_reply>"), to: noticePath)
+    check(tick().lead?.asyncQuestion == true, "unknown IDs, another request type and malformed replies keep the notice")
+    appendCodexLine(user(reply(0), steering: "accepted"), to: noticePath)
+    check(tick().lead?.asyncQuestion == true, "an accepted partial reply leaves the other Question index visible")
+    appendCodexLine(askedLine, to: noticePath)
+    appendCodexLine(user(reply(1)), to: noticePath)
+    check(tick().lead?.asyncQuestion == false, "a duplicate item does not revive an answered index; the last reply clears it")
+    check(bar().signature == before.signature, "clearing the Question also clears its render cache signature")
+    try! (start + "\n" + askedLine).write(toFile: noticePath, atomically: true, encoding: .utf8)
+    _ = tick()
+    let responseReply = String(decoding: try! JSONSerialization.data(withJSONObject: [
+        "timestamp": "2027-01-15T08:00:02.000Z", "type": "response_item", "payload": [
+            "type": "message", "role": "user", "content": [["type": "input_text", "text": reply(0)]]]]), as: UTF8.self)
+    appendCodexLine(responseReply, to: noticePath)
+    check(tick().lead?.asyncQuestion == true, "the accepted response_item reply clears only its matching index")
+    appendCodexLine(user(reply(1)), to: noticePath)
+    check(tick().lead?.asyncQuestion == false, "a following accepted UserMessage clears the last index across both wire forms")
+
+    for boundary in ["task_started", "turn_started", "task_complete", "turn_complete", "turn_aborted"] {
+        try! (start + "\n" + askedLine).write(toFile: noticePath, atomically: true, encoding: .utf8)
+        check(tick().lead?.asyncQuestion == true, "the notice exists before \(boundary)")
+        appendCodexLine(codexEvent(ts: now + 2, boundary,
+            turn: CodexRollout.startTypes.contains(boundary) ? "next-turn" : "notice-turn"), to: noticePath)
+        check(tick().lead?.asyncQuestion == false, "\(boundary) clears the current-turn notice")
+    }
+    try! (start + "\n" + askedLine).write(toFile: noticePath, atomically: true, encoding: .utf8)
+    _ = tick()
+    appendCodexLine(item(question, turn: "old-turn"), to: noticePath)
+    appendCodexLine(codexEvent(ts: now + 2, "turn_complete", turn: "old-turn"), to: noticePath)
+    appendCodexLine(user(reply(0), turn: "old-turn"), to: noticePath)
+    appendCodexLine(user(reply(1), turn: "old-turn"), to: noticePath)
+    check(tick().lead?.asyncQuestion == true, "late records from another turn neither create nor clear this turn's notice")
+    appendCodexLine(user("Continue with the current task"), to: noticePath)
+    check(tick().lead?.asyncQuestion == false, "a new actual user message clears the informational notice")
+
+    let invalidItems: [[String: Any]] = [
+        ["type": "AgentMessage", "id": "notice-item", "delivery": "async", "questions": []],
+        ["type": "AgentMessage", "id": "notice-item", "delivery": "sync", "questions": question["questions"]!],
+        ["type": "AgentMessage", "delivery": "async", "questions": question["questions"]!],
+        ["type": "AgentMessage", "id": "notice-item", "delivery": "async", "questions": [[:]]],
+        ["type": "ToolResult", "id": "notice-item", "delivery": "async", "questions": question["questions"]!],
+    ]
+    for invalid in invalidItems {
+        try! (start + "\n" + item(invalid)).write(toFile: noticePath, atomically: true, encoding: .utf8)
+        check(tick().lead?.asyncQuestion == false, "an incomplete or non-async item creates no Question notice")
+    }
+    let quote = codexLine(["type": "function_call_output", "call_id": "quote", "output": askedLine])
+    try! (start + "\n" + quote + "\n" + questionCall + "\n" + questionAccepted)
+        .write(toFile: noticePath, atomically: true, encoding: .utf8)
+    check(tick().lead?.asyncQuestion == false, "quoted Question events and accepted async calls alone create no notice")
+    try! (start + "\n" + item(question, turn: "old-turn") + "\n" + item(question, at: now - 1))
+        .write(toFile: noticePath, atomically: true, encoding: .utf8)
+    check(tick().lead?.asyncQuestion == false, "another turn or a pre-start timestamp cannot create this turn's Question")
+    try! (start + "\n" + codexEvent(ts: now + 2, "task_complete", turn: "notice-turn") + "\n" + askedLine)
+        .write(toFile: noticePath, atomically: true, encoding: .utf8)
+    check(tick().lead?.asyncQuestion == false, "a late Question after turn completion stays cleared")
+
+    let prettyLine = item(question, pretty: true).replacingOccurrences(of: "\n", with: " ")
+    try! (start + "\n" + String(prettyLine.dropLast())).write(toFile: noticePath, atomically: true, encoding: .utf8)
+    check(tick().lead?.asyncQuestion == false, "an incomplete final JSON record is deferred")
+    let tail = FileHandle(forWritingAtPath: noticePath)!
+    tail.seekToEndOfFile(); tail.write(Data("}".utf8)); tail.closeFile()
+    check(tick().lead?.asyncQuestion == true, "the completed whitespace-formatted record creates the notice once")
+    check(tick().lead?.asyncQuestion == true && !tick().needsYou, "an unchanged transcript keeps the notice quietly on later ticks")
+    try! start.write(toFile: noticePath, atomically: false, encoding: .utf8)
+    check(tick().lead?.asyncQuestion == false, "shrinking the transcript clears cached Questions")
+    try! (start + "\n" + askedLine).write(toFile: noticePath, atomically: true, encoding: .utf8)
+    check(tick().lead?.asyncQuestion == true, "a replacement transcript is parsed from its beginning")
+    try! (start + "\n" + quote).write(toFile: noticePath, atomically: true, encoding: .utf8)
+    check(tick().lead?.asyncQuestion == false, "replacing the transcript cannot retain the old Question")
+    try! (start + "\n" + askedLine).write(toFile: noticePath, atomically: true, encoding: .utf8)
+    _ = tick()
+    try! FileManager.default.removeItem(atPath: noticePath)
+    noticeEngine.dropCache(forTranscript: noticePath)
+    check(tick().lead?.asyncQuestion == false, "deletion and cache reset remove the current-turn notice")
+
+    try! (start + "\n" + askedLine + "\n" + blockingQuestionCall)
+        .write(toFile: noticePath, atomically: true, encoding: .utf8)
+    let blocked = tick()
+    let permissionBar = bar()
+    check(blocked.lead?.asyncQuestion == true && blocked.lead?.eff == "permission" && blocked.needsYou,
+          "a real blocking request keeps permission priority over the separate async notice")
+    check(permissionBar.badge && permissionBar.signature != marked.signature
+          && permissionBar.markedIcon(symbol, fallback: false, permissionColor: .systemOrange)
+                .accessibilityDescription?.contains("Вопрос") != true,
+          "permission changes the cache and replaces the quiet question marker")
+    try! (start + "\n" + askedLine + "\n" + codexEvent(ts: now + 2, "task_complete",
+            turn: "notice-turn", error: ["message": "synthetic failure"]))
+        .write(toFile: noticePath, atomically: true, encoding: .utf8)
+    let failed = tick()
+    check(failed.lead?.asyncQuestion == false && failed.lead?.eff == "permission" && !failed.chime,
+          "a terminal error clears Question and preserves the established Needs you path")
+    json["turn_id"] = "another-turn"
+    noticeBoard.reload([SessionBoard.File(key: file.key, path: file.path, provider: file.provider,
+        id: file.id, mtime: Date(timeIntervalSince1970: 3))], read: { _ in json }) { _ in "" }
+    try! (start + "\n" + askedLine).write(toFile: noticePath, atomically: true, encoding: .utf8)
+    check(tick().lead?.asyncQuestion == false, "a session state for another turn never inherits the notice")
+    let claudeBoard = SessionBoard(engine: SessionEngine())
+    claudeBoard.reload([SessionBoard.File(key: "claude:notice", path: file.path, provider: "claude",
+        id: "notice", mtime: file.mtime)], read: { _ in json }) { _ in "" }
+    let claude = claudeBoard.tick(now: now + 3, rules: rules, pidAlive: { _ in true }, frontmost: { nil })
+    check(claude.lead?.asyncQuestion == false && claude.lead?.eff == "tool" && !claude.needsYou,
+          "Codex Question records do not change a Claude session")
+}
+
 // The js→swift seam for Codex, written by the real update.js during the node suite.
 let codexSessionSeamPath = FileManager.default.currentDirectoryPath + "/build/seam/codex-session.json"
 if !FileManager.default.fileExists(atPath: codexSessionSeamPath) {

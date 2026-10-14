@@ -7,6 +7,9 @@ import Foundation
 // fixture the node suite writes for the model checks.
 
 struct Session {
+    static let asyncQuestionHint: String = "Codex задал необязательный вопрос в текущем запросе. Работа может продолжаться. "
+        + "Крестик и Skip закрывают карточку только в Codex; пометка исчезнет после ответов или окончания запроса."
+
     var id: String, state: String, label: String, project: String, transcript: String
     var cwd: String         // session working directory; "" on pre-upgrade files
     var entrypoint: String  // CLAUDE_CODE_ENTRYPOINT: "cli", "claude-desktop", …
@@ -53,6 +56,7 @@ struct Session {
     var turnID: String = ""
 
     var eff: String = ""   // effective state, recomputed once per tick in evaluate()
+    var asyncQuestion = false
     var branch: String = ""      // git branch (or short SHA when detached); "" outside a repo
     var displayName: String = "" // project, parent-qualified when two live sessions share a name
 
@@ -121,6 +125,12 @@ final class SessionEngine {
     func dropCache(forTranscript path: String) {
         turnLineCache[path] = nil
         questionCache[path] = nil
+    }
+
+    /// Read after effectiveState refreshes the shared parser, without a second file read per tick.
+    func asyncQuestion(_ s: Session) -> Bool {
+        s.provider == "codex"
+            && (questionCache[s.transcript]?.hasAsyncQuestion(turn: s.turnID, at: s.ts) ?? false)
     }
 
     // Per-session effective state with two recovery nets: an absolute age cap, plus the transcript

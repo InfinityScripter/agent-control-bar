@@ -177,6 +177,10 @@ struct PanelSessionRow: View {
                                     .font(.system(size: 13, weight: .medium))
                                     .lineLimit(1)
                                     .truncationMode(.middle)
+                                if let question = session.questionLabel {
+                                    PanelTag(text: question).fixedSize()
+                                        .help(Session.asyncQuestionHint)
+                                }
                                 Spacer(minLength: 0)
                                 if let pct = session.pct {
                                     Text("\(session.assumed ? "~" : "")\(pct)%")
@@ -186,7 +190,7 @@ struct PanelSessionRow: View {
                                 }
                                 if !session.tag.isEmpty { PanelTag(text: session.tag).fixedSize() }
                             }
-                            Text(session.subtitle)
+                            Text(session.activityText)
                                 .font(.system(size: 11, weight: session.eff == "permission" ? .semibold : .regular))
                                 .foregroundStyle(session.eff == "permission" ? .primary : .secondary)
                                 .lineLimit(1)
@@ -196,7 +200,8 @@ struct PanelSessionRow: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Click to bring this session's window to the front")
+                .help(session.questionLabel == nil ? "Click to bring this session's window to the front"
+                                                  : Session.asyncQuestionHint)
 
                 Button { store.toggleExpanded(session.id) } label: {
                     // The glyph is 9pt. Without a frame and a shape around it the hit area IS the
