@@ -735,6 +735,167 @@ class StatusLineObject(unittest.TestCase):
         self.assertEqual(self.read()["statusLine"], self.ORIGINAL)
 
 
+
+class StatusLineHeal(unittest.TestCase):
+    """Починка обёртки при запуске: после переименования приложения путь плагина в settings.json
+    умирает, и statusLine молча перестаёт рисовать лимиты. Чинится ТОЛЬКО наша мёртвая команда;
+    чужая строка состояния и живая наша не трогаются — ни записи, ни бэкапа."""
+
+    ORIGINAL = {
+        "type": "command", "command": "printf old",
+        "padding": 2, "refreshInterval": 5, "hideVimModeIndicator": True,
+    }
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp()
+        claude = os.path.join(self.home, ".claude")
+        root = os.path.join(claude, "control-bar")
+        os.makedirs(root, exist_ok=True)
+        self.settings = os.path.join(claude, "settings.json")
+        self.patched = {
+            "SETTINGS": self.settings,
+            "ROOT": root,
+            "STATUSLINE_INNER": os.path.join(root, "statusline-inner-command"),
+            "STATUSLINE_SAVED": os.path.join(root, "statusline-saved.json"),
+            "STATUSLINE_INSTALLED": os.path.join(root, "statusline-installed.json"),
+        }
+        self.saved = {k: getattr(home(k), k) for k in self.patched}
+        for k, v in self.patched.items():
+            setattr(home(k), k, v)
+        self.dead = f'bash "{os.path.join(self.home, "plugin-old", "hooks", "statusline.sh")}"'
+        self.wrapper = mcpbar.find_statusline_wrapper()
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            setattr(home(k), k, v)
+
+    def write(self, data):
+        with open(self.settings, "w") as fh:
+            json.dump(data, fh)
+
+    def raw(self):
+        with open(self.settings, "rb") as fh:
+            return fh.read()
+
+    def read(self):
+        return json.loads(self.raw())
+
+    def backups(self):
+        return glob.glob(f"{self.settings}.bak-control-bar-*")
+
+    def leave_trace(self, installed=True):
+        """След установки прошлой версии: сохранённый объект и внутренняя команда, а запись
+        установки — по желанию (её не вели версии до появления statusline-installed.json)."""
+        mcpbar.write_json(self.patched["STATUSLINE_SAVED"], dict(self.ORIGINAL))
+        with open(self.patched["STATUSLINE_INNER"], "w") as fh:
+            fh.write(self.ORIGINAL["command"] + "\n")
+        if installed:
+            mcpbar.write_json(self.patched["STATUSLINE_INSTALLED"], {"command": self.dead})
+
+    def test_мёртвый_путь_из_записи_установки_перенацеливается(self):
+        """Команда буква в букву та, что писала установка, а файла по ней больше нет: это и есть
+        обновлённый плагин. Подменяется одно поле command; padding и refreshInterval живут,
+        запись установки и бэкап — как у установки."""
+        import contextlib
+        import io
+
+        self.write({"statusLine": {**self.ORIGINAL, "command": self.dead}})
+        self.leave_trace()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = mcpbar.main(["statusline", "--heal"])
+        self.assertEqual(code, 0)
+        self.assertEqual(out.getvalue().strip(), mcpbar.t("sl.healed", path=self.wrapper))
+        after = self.read()["statusLine"]
+        self.assertEqual(after["command"], f'bash "{self.wrapper}"')
+        self.assertEqual(after["padding"], 2)
+        self.assertEqual(after["refreshInterval"], 5)
+        self.assertTrue(after["hideVimModeIndicator"])
+        self.assertEqual(mcpbar.read_json(self.patched["STATUSLINE_INSTALLED"])["command"],
+                         f'bash "{self.wrapper}"')
+        self.assertEqual(len(self.backups()), 1)
+        self.assertEqual(mcpbar.read_json(self.patched["STATUSLINE_SAVED"]), self.ORIGINAL)
+        with open(self.patched["STATUSLINE_INNER"]) as fh:
+            self.assertEqual(fh.read(), self.ORIGINAL["command"] + "\n")
+
+    def test_живая_наша_обёртка_не_переписывается(self):
+        """Запуск — это не установка: пока файл по команде существует, settings.json не трогается
+        ни байтом, бэкап не множится."""
+        self.write({"statusLine": dict(self.ORIGINAL)})
+        mcpbar.statusline_install()
+        before, backups = self.raw(), len(self.backups())
+        self.assertEqual(mcpbar.statusline_heal(), mcpbar.t("sl.healthy"))
+        self.assertEqual(self.raw(), before)
+        self.assertEqual(len(self.backups()), backups)
+
+    def test_чужая_команда_не_трогается_ни_живая_ни_мёртвая(self):
+        """statusline.sh — имя из документации Claude Code; чужой файл с таким именем может и
+        существовать, и быть удалён. Без следа установки ни тот ни другой не наш: байты файла
+        прежние, бэкапа нет."""
+        alive = os.path.join(self.home, "bin", "statusline.sh")
+        os.makedirs(os.path.dirname(alive))
+        with open(alive, "w") as fh:
+            fh.write("#!/bin/bash\nprintf mine\n")
+        gone = os.path.join(self.home, "bin", "removed", "statusline.sh")
+        for foreign in (f'bash "{alive}"', f'bash "{gone}"', 'bash "$HOME/.claude/statusline.sh"'):
+            self.write({"statusLine": {"type": "command", "command": foreign}})
+            before = self.raw()
+            self.assertEqual(mcpbar.statusline_heal(), mcpbar.t("sl.off"), foreign)
+            self.assertEqual(self.raw(), before, foreign)
+            self.assertEqual(self.backups(), [], foreign)
+
+    def test_обёртка_прошлой_версии_без_записи_установки_чинится(self):
+        """Версии до statusline-installed.json оставляли только сохранённый объект и внутреннюю
+        команду. Их мёртвая обёртка — наша по шиму в statusline_ours, и после починки запись
+        установки появляется с новой командой."""
+        self.write({"statusLine": {**self.ORIGINAL, "command": self.dead}})
+        self.leave_trace(installed=False)
+        self.assertEqual(mcpbar.statusline_heal(), mcpbar.t("sl.healed", path=self.wrapper))
+        self.assertEqual(self.read()["statusLine"]["command"], f'bash "{self.wrapper}"')
+        self.assertEqual(mcpbar.read_json(self.patched["STATUSLINE_INSTALLED"])["command"],
+                         f'bash "{self.wrapper}"')
+        self.assertEqual(len(self.backups()), 1)
+
+    def test_нечитаемый_settings_откладывает_починку(self):
+        """Человек правит файл руками, между двумя нажатиями он невалиден. Запуск приложения
+        в этот момент — «занято», файл не тронут; следующий запуск повторит."""
+        broken = '{"statusLine": {"command": ' + self.dead + ','
+        with open(self.settings, "w") as fh:
+            fh.write(broken)
+        self.leave_trace()
+        self.assertEqual(mcpbar.statusline_heal(), mcpbar.t("sl.busy"))
+        with open(self.settings) as fh:
+            self.assertEqual(fh.read(), broken)
+        self.assertEqual(self.backups(), [])
+
+    def test_без_statusline_ничего_не_меняется(self):
+        """Нет statusLine — нечего чинить, даже если след установки на диске остался."""
+        self.write({"permissions": {"deny": ["mcp__wiki__Read"]}})
+        self.leave_trace()
+        before = self.raw()
+        self.assertEqual(mcpbar.statusline_heal(), mcpbar.t("sl.off"))
+        self.assertEqual(self.raw(), before)
+        self.assertNotIn("statusLine", self.read())
+        self.assertEqual(self.backups(), [])
+
+    def test_живая_чужая_команда_через_переменную_при_следе_старой_версии_не_трогается(self):
+        """Сайдкары старой версии без записи установки плюс СВОЯ живая строка пользователя по
+        пути через ~ или $HOME — имя из документации Claude Code. shlex такие слова не
+        раскрывает, и os.path.exists на них отвечал «файла нет»: живая команда читалась как
+        мёртвая обёртка прошлой версии, починка переписывала её на нашу обёртку с устаревшей
+        внутренней командой, а второй запуск отвечал «alive»."""
+        alive = os.path.join(self.home, ".claude", "statusline.sh")
+        with open(alive, "w") as fh:
+            fh.write("#!/bin/bash\nprintf mine\n")
+        self.leave_trace(installed=False)
+        with mock.patch.dict(os.environ, {"HOME": self.home}):
+            for foreign in ('bash "$HOME/.claude/statusline.sh"', "bash ~/.claude/statusline.sh"):
+                self.write({"statusLine": {"type": "command", "command": foreign}})
+                before = self.raw()
+                self.assertEqual(mcpbar.statusline_heal(), mcpbar.t("sl.off"), foreign)
+                self.assertEqual(self.raw(), before, foreign)
+                self.assertEqual(self.backups(), [], foreign)
+
 class ProjectServers(unittest.TestCase):
     """Серверы local- и project-scope видны только из каталога проекта, поэтому общий
     `claude mcp list` (его cwd закреплён на корне) их не показывает — они добираются
@@ -1341,6 +1502,247 @@ class UsageToken(unittest.TestCase):
         # прогона не увидел бы.
         self.assertEqual(mcpbar.t("lim.failed", e="HTTPError"), result)
         self.assertFalse(os.path.exists(mcpbar.LIMITS))
+
+
+class LimitsStatusFile(unittest.TestCase):
+    """Каждый опрос оставляет limits-status.json: получилось или нет и почему.
+
+    Приложение не читает stdout скрипта, а limits.json при сбое не трогается — поэтому
+    выход из аккаунта Claude Code сутками выглядел как «цифры просто не двигаются». Файл
+    состояния — единственный канал, по которому панель узнаёт причину.
+    """
+
+    def setUp(self):
+        import http.server
+        import threading
+
+        class Target(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b'{"five_hour": {"utilization": 5}}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        class Bouncer(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", "http://127.0.0.1:1/")
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        self.target = http.server.HTTPServer(("127.0.0.1", 0), Target)
+        self.bouncer = http.server.HTTPServer(("127.0.0.1", 0), Bouncer)
+        for server in (self.target, self.bouncer):
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.target_url = "http://127.0.0.1:%d/" % self.target.server_address[1]
+        self.bouncer_url = "http://127.0.0.1:%d/" % self.bouncer.server_address[1]
+
+        self._dir = tempfile.TemporaryDirectory()
+        self.saved = {k: getattr(home(k), k)
+                      for k in ("USAGE_URL", "LIMITS", "LIMITS_STATUS", "oauth_token")}
+        mcpbar.USAGE_URL = self.target_url
+        mcpbar.LIMITS = os.path.join(self._dir.name, "limits.json")
+        mcpbar.LIMITS_STATUS = os.path.join(self._dir.name, "limits-status.json")
+        mcpbar.oauth_token = lambda: "SECRET"
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            setattr(home(k), k, v)
+        for server in (self.target, self.bouncer):
+            server.shutdown()
+            server.server_close()
+        self._dir.cleanup()
+
+    def status(self):
+        with open(mcpbar.LIMITS_STATUS) as fh:
+            return json.load(fh)
+
+    def test_успех_пишет_ok_после_limits_json(self):
+        before = int(time.time())
+        mcpbar.fetch_limits()
+        self.assertTrue(os.path.exists(mcpbar.LIMITS))
+        status = self.status()
+        self.assertEqual(status["state"], "ok")
+        self.assertEqual(status["provider"], "claude")
+        self.assertEqual(status["detail"], "")
+        self.assertIsInstance(status["ts"], int)
+        self.assertGreaterEqual(status["ts"], before)
+        self.assertEqual(stat.S_IMODE(os.stat(mcpbar.LIMITS_STATUS).st_mode), 0o600)
+
+    def test_без_токена_состояние_no_login_и_шов_для_swift(self):
+        mcpbar.oauth_token = lambda: None
+        mcpbar.fetch_limits()
+        status = self.status()
+        self.assertEqual(status["state"], "no-login")
+        self.assertEqual(status["detail"], "no token")
+        self.assertFalse(os.path.exists(mcpbar.LIMITS))
+
+        # Артефакт для swift-стороны шва: model-проверка читает этот файл.
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        seam_dir = os.path.join(repo, "build", "seam")
+        os.makedirs(seam_dir, exist_ok=True)
+        shutil.copyfile(mcpbar.LIMITS_STATUS, os.path.join(seam_dir, "limits-status.json"))
+
+    def test_сбой_пишет_failed_с_именем_исключения_и_не_трогает_limits(self):
+        mcpbar.write_json(mcpbar.LIMITS, {"ts": 1, "source": "oauth",
+                                          "five_hour": {"used_percentage": 42, "resets_at": None}})
+        mcpbar.USAGE_URL = self.bouncer_url
+        mcpbar.fetch_limits()
+        status = self.status()
+        self.assertEqual(status["state"], "failed")
+        self.assertEqual(status["detail"], "HTTPError")
+        self.assertEqual(mcpbar.read_json(mcpbar.LIMITS)["five_hour"]["used_percentage"], 42)
+
+    def test_ответ_без_окон_состояние_empty(self):
+        mcpbar.USAGE_URL = "data:application/json,{}"
+        mcpbar.fetch_limits()
+        self.assertEqual(self.status()["state"], "empty")
+        self.assertFalse(os.path.exists(mcpbar.LIMITS))
+
+
+class ClaudeLogin(unittest.TestCase):
+    """Кнопка «Sign in to Claude Code»: скрипт пишет claude-login.command и отдаёт его `open`.
+
+    Terminal открывает такой файл сам, без разрешения Automation. Сам вход здесь не идёт:
+    `open` подменён, а файл исполняется с поддельным `claude`, который только записывает,
+    с какими словами его позвали.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.root = os.path.join(self.tmp, "control-bar")
+        self.saved = {k: getattr(home(k), k) for k in ("ROOT", "CLAUDE_LOGIN_COMMAND", "LANG")}
+        mcpbar.ROOT = self.root
+        mcpbar.CLAUDE_LOGIN_COMMAND = os.path.join(self.root, "claude-login.command")
+        mcpbar.LANG = "en"
+        self.opened = []
+        self.real_run = subprocess.run
+
+        def fake_open(args, **kw):
+            self.opened.append(args)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        self.run_patch = mock.patch.object(subprocess, "run", fake_open)
+        self.run_patch.start()
+
+    def tearDown(self):
+        self.run_patch.stop()
+        for k, v in self.saved.items():
+            setattr(home(k), k, v)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def fake_claude(self, dirname="my bin"):
+        """Поддельный бинарь в каталоге с пробелом: кавычки в .command должны его пережить."""
+        path = os.path.join(self.tmp, dirname, "claude")
+        os.makedirs(os.path.dirname(path))
+        log = os.path.join(self.tmp, "claude-args")
+        with open(path, "w") as fh:
+            fh.write(f'#!/bin/bash\nprintf "%s\\n" "$*" > "{log}"\n')
+        os.chmod(path, 0o700)
+        return path, log
+
+    def run_command_file(self):
+        """Как Terminal: исполнить файл, stdin пустой — `read` не ждёт клавишу вечно."""
+        return self.real_run(
+            ["/bin/bash", mcpbar.CLAUDE_LOGIN_COMMAND],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
+        )
+
+    def test_найденный_бинарь_запускается_с_auth_login(self):
+        claude, log = self.fake_claude()
+        with mock.patch.object(mcpbar, "find_claude", return_value=claude):
+            answer = mcpbar.claude_login()
+        self.assertEqual(answer, "opened Terminal with claude auth login")
+        self.assertEqual(self.opened, [["/usr/bin/open", mcpbar.CLAUDE_LOGIN_COMMAND]])
+        self.assertEqual(stat.S_IMODE(os.stat(mcpbar.CLAUDE_LOGIN_COMMAND).st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(os.stat(self.root).st_mode), 0o700)
+        self.assertEqual(os.listdir(self.root), ["claude-login.command"])
+        with open(mcpbar.CLAUDE_LOGIN_COMMAND) as fh:
+            text = fh.read()
+        self.assertTrue(text.startswith("#!/bin/bash\n"))
+        self.assertIn(f"exec '{claude}' auth login", text)
+        self.assertNotIn("not found", text)
+        self.run_command_file()
+        with open(log) as fh:
+            self.assertEqual(fh.read().strip(), "auth login")
+
+    def test_путь_с_долларом_и_кавычкой_доходит_до_bash_целым(self):
+        """`$` внутри двойных кавычек bash раскрывает, а одинарную кавычку внутри одинарных
+        не закрыть: путь надо экранировать, а не оборачивать."""
+        claude, log = self.fake_claude("my $bin's")
+        with mock.patch.object(mcpbar, "find_claude", return_value=claude):
+            answer = mcpbar.claude_login()
+        self.assertEqual(answer, "opened Terminal with claude auth login")
+        ran = self.run_command_file()
+        self.assertEqual(ran.returncode, 0, ran.stderr)
+        with open(log) as fh:
+            self.assertEqual(fh.read().strip(), "auth login")
+
+    def test_относительный_путь_к_claude_не_попадает_в_команду(self):
+        """shutil.which отвечает относительным путём, если в PATH есть «.»: что запустит файл,
+        зависело бы от каталога, в котором Terminal его открыл."""
+        with mock.patch.object(mcpbar, "find_claude", return_value="bin/claude"):
+            answer = mcpbar.claude_login()
+        self.assertEqual(answer, "claude not found — Terminal shows what to do")
+        with open(mcpbar.CLAUDE_LOGIN_COMMAND) as fh:
+            text = fh.read()
+        self.assertNotIn("exec", text)
+        self.assertNotIn("bin/claude", text)
+        self.assertIn("not found", text)
+
+    def test_без_бинаря_terminal_объясняет_и_ждёт_клавишу(self):
+        """Terminal всё равно открывается: пустое окно с ошибкой, закрывшееся само, человек
+        прочитать не успеет. Поэтому текст и ожидание клавиши, а не exec несуществующего."""
+        with mock.patch.object(mcpbar, "find_claude", return_value=None):
+            answer = mcpbar.claude_login()
+        self.assertEqual(answer, "claude not found — Terminal shows what to do")
+        self.assertEqual(self.opened, [["/usr/bin/open", mcpbar.CLAUDE_LOGIN_COMMAND]])
+        self.assertEqual(stat.S_IMODE(os.stat(mcpbar.CLAUDE_LOGIN_COMMAND).st_mode), 0o700)
+        with open(mcpbar.CLAUDE_LOGIN_COMMAND) as fh:
+            text = fh.read()
+        self.assertTrue(text.startswith("#!/bin/bash\n"))
+        self.assertNotIn("exec", text)
+        self.assertIn("read -r -n 1", text)
+        shown = self.run_command_file()
+        self.assertEqual(shown.stdout.strip(),
+                         "Claude Code CLI not found. Install it, then run: claude auth login")
+
+    def test_команда_claude_login_печатает_ответ_и_выходит_нулём(self):
+        """Приложение stdout не читает, а ненулевой выход попадает в его лог как сбой."""
+        import contextlib
+        import io
+
+        out = io.StringIO()
+        with mock.patch.object(mcpbar, "find_claude", return_value=None), \
+             contextlib.redirect_stdout(out):
+            code = mcpbar.main(["claude-login"])
+        self.assertEqual(code, 0)
+        self.assertEqual(out.getvalue().strip(), "claude not found — Terminal shows what to do")
+        self.assertEqual(len(self.opened), 1)
+
+    def test_зависший_или_упавший_open_отвечает_текстом_а_не_traceback(self):
+        """Ненулевой выход с traceback приложение пишет в лог как сбой бэкенда. Файл к этому
+        моменту уже записан, и ответ называет его, чтобы запустить вручную."""
+        import contextlib
+        import io
+
+        for exc in (subprocess.TimeoutExpired(["/usr/bin/open"], 30), OSError(5, "boom")):
+            with self.subTest(exc=type(exc).__name__):
+                out = io.StringIO()
+                with mock.patch.object(subprocess, "run", side_effect=exc), \
+                     mock.patch.object(mcpbar, "find_claude", return_value=None), \
+                     contextlib.redirect_stdout(out):
+                    code = mcpbar.main(["claude-login"])
+                self.assertEqual(code, 0)
+                self.assertIn(type(exc).__name__, out.getvalue())
+                self.assertIn(mcpbar.CLAUDE_LOGIN_COMMAND, out.getvalue())
+                self.assertTrue(os.path.exists(mcpbar.CLAUDE_LOGIN_COMMAND))
 
 
 class ReadJsonShape(unittest.TestCase):
@@ -2125,7 +2527,7 @@ class CodexLimits(unittest.TestCase):
         self.assertEqual(mcpbar_codex.merge_codex_limits(merged, fresh), merged)
 
     def test_старый_снимок_не_возвращает_удалённое_окно(self):
-        previous = {"ts": 1_789_000_000, "source": "rollout", "windows": [
+        previous = {"ts": 1_789_020_000, "source": "rollout", "windows": [
             self.window("primary", ts=1_789_020_000, used=7, minutes=10080,
                         resets=1_789_621_616),
             self.window("primary", pool="reserve", minutes=10080, resets=1_789_616_476),
@@ -2138,15 +2540,39 @@ class CodexLimits(unittest.TestCase):
         merged = mcpbar_codex.merge_codex_limits(previous, stale)
         self.assertEqual(merged, previous)
 
-    def test_возраст_записи_это_самый_старый_замер(self):
-        """Подпись «measured N min ago» одна на всю группу, и врать она обязана в свою
-        сторону: свежесть резервного окна ничего не говорит про обычное, снятое утром."""
-        previous = {"ts": 1_789_000_000, "source": "rollout", "windows": [self.window()]}
+    def test_возраст_записи_это_свежайший_замер_обычного_пула(self):
+        """Подпись «measured N min ago» одна на группу, а резерв после смены подписки может
+        неделями не обновляться: по самому старому окну панель писала «28d ago» при живых
+        цифрах обычного пула. Окна пула «codex» и решают, свежи ли цифры."""
+        stale_reserve = self.window("primary", pool="reserve", ts=1_789_000_000, minutes=10080,
+                                    resets=1_789_616_476)
+        fresh_ordinary = self.window("primary", ts=1_789_020_000)
+        merged = mcpbar_codex.merge_codex_limits(
+            {"ts": 1_789_000_000, "source": "rollout", "windows": [stale_reserve]},
+            {"ts": 1_789_020_000, "source": "rollout", "windows": [fresh_ordinary]})
+        self.assertEqual(merged["ts"], 1_789_020_000)
+        # Swift решает «окно закончилось» по замеру самого окна, а не по корню.
+        self.assertEqual({(w["pool"], w["ts"]) for w in merged["windows"]},
+                         {("codex", 1_789_020_000), ("reserve", 1_789_000_000)})
+        # Свежий резерв не омолаживает обычные окна, снятые утром.
+        merged = mcpbar_codex.merge_codex_limits(
+            {"ts": 1_789_000_000, "source": "rollout", "windows": [self.window()]},
+            {"ts": 1_789_020_000, "source": "rollout", "windows": [
+                self.window("primary", pool="reserve", ts=1_789_020_000, minutes=10080,
+                            resets=1_789_616_476)]})
+        self.assertEqual(merged["ts"], 1_789_000_000)
+
+    def test_без_обычного_пула_возраст_это_свежайший_замер_резерва(self):
+        """Нечего противопоставлять: единственные окна — резервные, их замер и есть возраст.
+        Окна пула могут нести разные замеры (файл прошлой версии, ручная правка) — берётся
+        свежайший, а не самый старый."""
         fresh = {"ts": 1_789_020_000, "source": "rollout", "windows": [
-            self.window("primary", pool="reserve", ts=1_789_020_000, minutes=10080,
+            self.window("primary", pool="reserve", ts=1_789_010_000, minutes=10080,
+                        resets=1_789_616_476),
+            self.window("secondary", pool="reserve", ts=1_789_020_000, minutes=10080,
                         resets=1_789_616_476),
         ]}
-        self.assertEqual(mcpbar_codex.merge_codex_limits(previous, fresh)["ts"], 1_789_000_000)
+        self.assertEqual(mcpbar_codex.merge_codex_limits(None, fresh)["ts"], 1_789_020_000)
 
     def test_файл_прошлой_версии_переезжает_без_потери(self):
         """До этой версии пул стоял пометкой на всей записи, а момент замера был один на файл.

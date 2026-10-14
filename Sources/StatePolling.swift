@@ -31,6 +31,17 @@ extension StatusController {
         limits = Limits(json: root)
     }
 
+    /// limits-status.json — why the last poll left limits.json as it was, when it did. Missing
+    /// means an older backend that never writes it, and the panel then behaves as it always has.
+    func loadLimitsStatus() {
+        let path = (root as NSString).appendingPathComponent("limits-status.json")
+        switch StateFileLook.at(path, gate: &limitsStatusMTime) {
+        case .missing: limitsStatus = nil
+        case .unchanged: break
+        case .changed(let object): limitsStatus = LimitsStatus(json: object)
+        }
+    }
+
     /// Both Codex files are read on the same stat-per-tick gate as the Claude one above; the gate
     /// and what its three answers mean are in Sources/Model/StateFileGate.swift.
     func codexStateFile(at name: String, gate: inout Date?) -> StateFileLook {
@@ -89,6 +100,8 @@ extension StatusController {
         // — refreshed on our own timer, not by anything they just did — is noise.
         if codexServers { codexMCP.reloadIfChanged() }
         loadLimits()
+        loadLimitsStatus()
+        notifyLimitsSignedOut()
         pollLimitsIfRolledOver(now: now)
         loadCodexLimits()
         loadCodexHooks()

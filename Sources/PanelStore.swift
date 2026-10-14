@@ -137,6 +137,9 @@ final class PanelStore: ObservableObject {
     /// user who cancels out of the Finder still has the block in front of them.
     func approveCodexHooks() { controller?.approveCodexHooks() }
     func revealCodexHooks() { controller?.revealCodexHooks() }
+    /// Same again: Terminal coming forward closes the panel by itself, and an open that failed
+    /// leaves the block, button and all, in front of the user.
+    func signInClaude() { controller?.signInClaude() }
     func openSettingsJSON() { controller?.closePanel(); controller?.openSettingsJSON() }
     func openSettings() { controller?.closePanel(); controller?.openSettingsWindow() }
     func openNotificationSettings() { controller?.closePanel(); controller?.openNotificationSettings() }
@@ -227,9 +230,12 @@ struct PanelLimitGroup: Equatable, Identifiable {
 
     var id: String { provider }
 
-    /// What the group's tooltip says: who, on what plan, measured when.
+    /// What the group's tooltip says: who, on what plan, measured when — and, for Codex, where the
+    /// figures come from: they are the last snapshot a Codex session wrote, so they stand still
+    /// while no session is running and "measured 3d ago" is not a polling fault.
     var tip: String {
-        [title, plan, "measured " + age].compactMap { $0 }.joined(separator: " · ")
+        let source = provider == Provider.codex.id ? "from the last Codex session" : nil
+        return [title, plan, "measured " + age, source].compactMap { $0 }.joined(separator: " · ")
     }
 }
 
@@ -264,8 +270,13 @@ struct PanelSnapshot: Equatable {
     /// drawn empty: an empty bar reads as "you have not used it", which is not what "no data"
     /// means.
     var limitGroups: [PanelLimitGroup] = []
-    /// Why the strip is empty, or how old its figures are. One line, always present.
+    /// The footer line while the strip has figures ("Limits · 4 min ago", "Claude 1d ago · Codex
+    /// just now"); why the strip is empty otherwise. One line, always present.
     var limitsNote = ""
+    /// Why the last Claude poll brought no figures, when it did not: drawn over the strip, with the
+    /// old figures left in place under it. Nil while the poll succeeds, the API poll is off, or
+    /// the backend is too old to say.
+    var limitsNotice: PanelLimitsNotice?
     /// How the strip stacks the groups, and which one the switcher is showing — the remembered
     /// pick already resolved against the groups there are, see LimitsBoard.showing.
     var limitsLayout: PanelLimitsLayout = .rows
@@ -329,6 +340,12 @@ struct PanelHooks: Equatable {
     let hint: String?
     /// A look is running right now, so the button says so instead of offering another.
     let checking: Bool
+}
+
+struct PanelLimitsNotice: Equatable {
+    let title: String
+    let hint: String
+    let offerSignIn: Bool
 }
 
 /// What the row cannot carry, shown when the row is expanded: the same blocks the hover card drew.
@@ -456,6 +473,7 @@ extension PanelSnapshot {
         codexHooksChecking = c.codexHooksChecking
         hooks = c.panelHooks()
         (limitGroups, limitsNote) = c.panelLimitGroups(now: now)
+        limitsNotice = c.panelLimitsNotice(now: now)
         limitsLayout = c.limitsLayout
         limitsProvider = LimitsBoard.showing(c.limitsProvider, among: limitGroups.map(\.provider))
             ?? c.limitsProvider

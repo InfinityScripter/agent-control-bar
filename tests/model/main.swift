@@ -779,6 +779,138 @@ if let data = FileManager.default.contents(atPath: limitsSeamPath),
         + "(/usr/bin/python3 -m unittest discover -s tests), it writes build/seam/limits.json")
 }
 
+// MARK: LimitsStatus — why the last poll brought no figures
+// limits-status.json is written by mcpbar.py on every poll, including the ones that leave
+// limits.json alone. The app reads the state as a string, like every other status from the
+// scripts, and only ever decides three things from it: what the block over the strip says, what
+// the empty strip says, and what the Settings line says.
+let failedStatus = LimitsStatus(json: ["state": "failed", "ts": 1_791_921_000, "detail": "HTTPError"])
+check(failedStatus?.state == "failed" && failedStatus?.detail == "HTTPError",
+      "state and detail read as strings")
+check(failedStatus?.ts == 1_791_921_000, "an integer ts reads as the stamp, not as zero")
+check(LimitsStatus(json: ["ts": 1.0, "detail": "x"]) == nil, "no state, no status")
+check(LimitsStatus(json: ["state": "ok"])?.detail == "" && LimitsStatus(json: ["state": "ok"])?.ts == 0,
+      "a bare state has safe defaults for the rest")
+
+let limitsStatusSeamPath = FileManager.default.currentDirectoryPath + "/build/seam/limits-status.json"
+if let data = FileManager.default.contents(atPath: limitsStatusSeamPath),
+   let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+    let seamStatus = LimitsStatus(json: root)
+    check(seamStatus?.state == "no-login", "the signed-out poll crosses over as no-login")
+    check((seamStatus?.ts ?? 0) > 0 && seamStatus?.detail == "no token",
+          "the stamp and the short reason cross over")
+} else {
+    check(false, "limits-status seam fixture missing at \(limitsStatusSeamPath) — run the python "
+        + "suite first (/usr/bin/python3 -m unittest discover -s tests), it writes "
+        + "build/seam/limits-status.json")
+}
+
+let polledAt = 1_000_000.0
+let signedOut = LimitsStatus(json: ["state": "no-login", "ts": 1_000_000, "detail": "no token"])
+let pollFailed = LimitsStatus(json: ["state": "failed", "ts": 1_000_000, "detail": "HTTPError"])
+let pollEmpty = LimitsStatus(json: ["state": "empty", "ts": 1_000_000, "detail": "no windows"])
+let pollOK = LimitsStatus(json: ["state": "ok", "ts": 1_000_000, "detail": ""])
+check(LimitsStatus.notice(pollOK, oauthLimits: true, figuresTs: polledAt - 240, now: polledAt) == nil,
+      "a successful poll has nothing to say")
+check(LimitsStatus.notice(signedOut, oauthLimits: false, figuresTs: polledAt - 86_400, now: polledAt) == nil,
+      "with the API poll switched off, no block whatever the file says")
+check(LimitsStatus.notice(nil, oauthLimits: true, figuresTs: polledAt - 86_400, now: polledAt) == nil,
+      "no status file (an older backend) means the panel behaves as before")
+check(LimitsStatus.notice(signedOut, oauthLimits: true, figuresTs: polledAt - 86_400, now: polledAt)
+        == LimitsNotice(title: "Claude Code is not signed in",
+                        hint: "Limits stopped updating 1d ago. Sign in to resume.",
+                        offerSignIn: true),
+      "signed out, with old figures: the block names the cause and how old the figures are")
+check(LimitsStatus.notice(signedOut, oauthLimits: true, figuresTs: nil, now: polledAt)
+        == LimitsNotice(title: "Claude Code is not signed in",
+                        hint: "Sign in to see limits.", offerSignIn: true),
+      "signed out with no figures at all: no age is invented")
+check(LimitsStatus.notice(pollFailed, oauthLimits: true, figuresTs: polledAt - 7_200, now: polledAt)
+        == LimitsNotice(title: "Limits poll failed: HTTPError",
+                        hint: "Showing figures from 2h ago. The next poll is a few minutes away.",
+                        offerSignIn: false),
+      "a failed poll names the exception and offers no sign-in")
+check(LimitsStatus.notice(pollEmpty, oauthLimits: true, figuresTs: nil, now: polledAt)
+        == LimitsNotice(title: "The usage endpoint returned no limit windows",
+                        hint: "No figures yet. The next poll is a few minutes away.",
+                        offerSignIn: false),
+      "an empty answer is its own cause, not a sign-in problem")
+// limits.json has a second writer, the statusLine capture. While it keeps the figures moving
+// and only the API poll fails, the block would sit over live figures saying they stopped.
+check(LimitsStatus.notice(pollFailed, oauthLimits: true, figuresTs: polledAt + 60, now: polledAt + 120) == nil,
+      "figures written after the failed poll: nothing to explain, the figures are live")
+check(LimitsStatus.notice(signedOut, oauthLimits: true, figuresTs: polledAt + 1, now: polledAt + 120) == nil,
+      "the same for a sign-out: fresher figures mean another source is still feeding the strip")
+check(LimitsStatus.notice(pollFailed, oauthLimits: true, figuresTs: polledAt - 60, now: polledAt + 120)
+        == LimitsNotice(title: "Limits poll failed: HTTPError",
+                        hint: "Showing figures from 3 min ago. The next poll is a few minutes away.",
+                        offerSignIn: false),
+      "figures older than the failed poll: the block stays, dated from the figures")
+check(LimitsStatus.notice(pollFailed, oauthLimits: true, figuresTs: polledAt, now: polledAt + 120) != nil,
+      "figures and poll stamped the same second: the poll's own verdict stands")
+
+// The one signed-out banner. The first tick reads whatever limits-status.json was left from the
+// previous run, before this launch's own poll has answered; a banner off that file announces a
+// sign-out that may be a day old and already over.
+check(LimitsStatus.signedOutBannerDue(signedOut, oauthLimits: true, figuresTs: nil, launchedAt: polledAt + 1) == false,
+      "a no-login file from before this launch is not news")
+check(LimitsStatus.signedOutBannerDue(signedOut, oauthLimits: true, figuresTs: nil, launchedAt: polledAt - 10) == true,
+      "a poll made since launch that found no login: the banner goes out")
+check(LimitsStatus.signedOutBannerDue(signedOut, oauthLimits: true, figuresTs: nil, launchedAt: polledAt + 0.4) == true,
+      "the script stamps whole seconds: a poll answered within the launch second still counts")
+check(LimitsStatus.signedOutBannerDue(signedOut, oauthLimits: true, figuresTs: polledAt + 30, launchedAt: polledAt - 10) == false,
+      "figures refreshed by the other writer since the poll: no banner, as there is no block")
+check(LimitsStatus.signedOutBannerDue(signedOut, oauthLimits: true, figuresTs: polledAt - 86_400, launchedAt: polledAt - 10) == true,
+      "old figures do not hold the banner back")
+check(LimitsStatus.signedOutBannerDue(pollFailed, oauthLimits: true, figuresTs: nil, launchedAt: polledAt - 10) == false,
+      "only a sign-out is announced; a failed poll is the panel's business")
+check(LimitsStatus.signedOutBannerDue(signedOut, oauthLimits: false, figuresTs: nil, launchedAt: polledAt - 10) == false,
+      "with the API poll switched off, no banner whatever the file says")
+check(LimitsStatus.signedOutBannerDue(nil, oauthLimits: true, figuresTs: nil, launchedAt: polledAt - 10) == false,
+      "no status file, no banner")
+
+// The menu bar sign: the same rule as the panel block, so the icon never says what the panel
+// does not show.
+check(LimitsStatus.menuBarTip == "Claude Code is not signed in — open the panel to sign in",
+      "the icon tip names the cause and the way out")
+check(LimitsStatus.signedOutShown(signedOut, oauthLimits: true, figuresTs: nil) == true,
+      "signed out with no figures at all shows the sign")
+check(LimitsStatus.signedOutShown(signedOut, oauthLimits: true, figuresTs: polledAt - 86_400) == true,
+      "signed out with day-old figures shows the sign")
+check(LimitsStatus.signedOutShown(signedOut, oauthLimits: true, figuresTs: polledAt + 1) == false,
+      "figures newer than the poll hide the sign: the other writer keeps them moving")
+check(LimitsStatus.signedOutShown(signedOut, oauthLimits: false, figuresTs: nil) == false,
+      "with the API poll switched off there is no sign whatever the file says")
+check(LimitsStatus.signedOutShown(pollFailed, oauthLimits: true, figuresTs: nil) == false
+      && LimitsStatus.signedOutShown(pollEmpty, oauthLimits: true, figuresTs: nil) == false,
+      "a failed or empty poll is not a sign-out")
+check(LimitsStatus.signedOutShown(pollOK, oauthLimits: true, figuresTs: nil) == false
+      && LimitsStatus.signedOutShown(nil, oauthLimits: true, figuresTs: nil) == false,
+      "ok and no status file show no sign")
+
+check(LimitsStatus.emptyStripText(signedOut, oauthLimits: false) == "Limits are switched off in Settings",
+      "switched off wins over whatever the file says")
+check(LimitsStatus.emptyStripText(nil, oauthLimits: true) == "No data yet — is Claude Code signed in?",
+      "no status file: the strip's old wording")
+check(LimitsStatus.emptyStripText(pollFailed, oauthLimits: true) == "No data yet — is Claude Code signed in?",
+      "a failed poll keeps the old wording; the block above carries the cause")
+check(LimitsStatus.emptyStripText(signedOut, oauthLimits: true)
+        == "Claude Code is not signed in — sign in to see limits",
+      "signed out: the strip says so instead of guessing")
+
+check(LimitsStatus.pollLine(nil, polledAge: "4 min ago", figuresAge: nil) == "",
+      "no status file: Settings shows no line")
+check(LimitsStatus.pollLine(pollOK, polledAge: "4 min ago", figuresAge: "4 min ago")
+        == "Last poll: ok · 4 min ago", "ok: when the poll ran")
+check(LimitsStatus.pollLine(signedOut, polledAge: "4 min ago", figuresAge: "1d ago")
+        == "Last poll: not signed in · figures from 1d ago", "signed out: how old the figures are")
+check(LimitsStatus.pollLine(signedOut, polledAge: "4 min ago", figuresAge: nil)
+        == "Last poll: not signed in", "signed out with no figures: no age is invented")
+check(LimitsStatus.pollLine(pollFailed, polledAge: "4 min ago", figuresAge: "1d ago")
+        == "Last poll: failed (HTTPError) · figures from 1d ago", "failed: the exception, in brackets")
+check(LimitsStatus.pollLine(pollEmpty, polledAge: "4 min ago", figuresAge: nil)
+        == "Last poll: no limit windows", "empty: worded, not the raw state")
+
 // MARK: Changelog — the "What's new" source
 
 let changelogFixture = """
@@ -1617,6 +1749,38 @@ check(!AnalyticsPing.configured || AnalyticsPing.endpoint.hasPrefix("https://"),
       "a configured endpoint is https or it is nothing")
 check(["arm64", "x86_64", "other"].contains(AnalyticsPing.arch), "arch is one of three words")
 
+// MARK: LimitsNote — how old each provider's figures are, said once per provider
+
+// The footer used to quote the oldest stamp for everybody: a Claude poll that stopped a day ago
+// made live Codex figures read "1d ago" too. The wording is pinned literally, because the line
+// shares 300pt with two buttons and "measured 4 minutes ago" once truncated to nothing.
+check(LimitsNote.age(of: 1_000, now: 1_000) == "just now", "the same second is just now")
+check(LimitsNote.age(of: 1_000, now: 1_059) == "just now", "under a minute is still just now")
+check(LimitsNote.age(of: 1_000, now: 1_060) == "1 min ago", "a minute is the first minute count")
+check(LimitsNote.age(of: 1_000, now: 1_000 + 59 * 60 + 59) == "59 min ago",
+      "minutes run up to the hour")
+check(LimitsNote.age(of: 1_000, now: 1_000 + 3_600) == "1h ago", "an hour rolls minutes into hours")
+check(LimitsNote.age(of: 1_000, now: 1_000 + 23 * 3_600 + 3_599) == "23h ago",
+      "hours run up to the day")
+check(LimitsNote.age(of: 1_000, now: 1_000 + 24 * 3_600) == "1d ago", "a day rolls hours into days")
+check(LimitsNote.age(of: 1_000, now: 1_000 + 28 * 24 * 3_600) == "28d ago",
+      "and a month-old stamp reads in days, not as 40320 minutes")
+check(LimitsNote.age(of: 5_000, now: 1_000) == "just now",
+      "a stamp from the future (clock skew) reads as just now rather than a negative age")
+check(LimitsNote.age(of: 0, now: .nan) == "just now", "a NaN clock cannot trap the conversion")
+
+check(LimitsNote.footer([]) == "", "no provider, no footer")
+check(LimitsNote.footer([(title: "Claude", age: "4 min ago")]) == "Limits · 4 min ago",
+      "one provider keeps the line the panel always had")
+check(LimitsNote.footer([(title: "Codex", age: "just now")]) == "Limits · just now",
+      "and a lone Codex strip names no provider either: there is nothing to tell it from")
+check(LimitsNote.footer([(title: "Claude", age: "1d ago"), (title: "Codex", age: "just now")])
+        == "Claude 1d ago · Codex just now",
+      "two providers each carry their own age")
+check(LimitsNote.footer([(title: "A", age: "1h ago"), (title: "B", age: "2h ago"),
+                         (title: "C", age: "3h ago")]) == "A 1h ago · B 2h ago · C 3h ago",
+      "and a third one is joined the same way")
+
 // MARK: LimitsSet — one shape for two providers, and one place that decides "this is stale"
 
 // Claude's three windows, named once in the model rather than in the panel: the strip, the text
@@ -1876,6 +2040,11 @@ if !FileManager.default.fileExists(atPath: poolsSeamPath) {
             + "\(seamSet.windows.map { $0.title })")
     check(seamSet.windows.map { $0.window.used } == [97, 15, 29],
           "with the figures each pool was last measured at")
+    // The reserve turn was measured an hour (3600 s) after the ordinary ones. The record's own age
+    // is the ordinary pool's: a fresh reserve figure must not make the morning's windows look new.
+    check(seamSet.ts == 1_789_120_800, "the record is as old as the ordinary pool: \(seamSet.ts)")
+    check(seamSet.windows.compactMap { $0.ts } == [1_789_120_800, 1_789_120_800, 1_789_124_400],
+          "while each window keeps the stamp it was measured at: \(seamSet.windows.map { $0.ts })")
     // The fixture's five-hour window resets at 2026-09-11T11:00Z; an hour later the ordinary
     // session pool is free again and only the reserve figure is worth reading.
     check(seamSet.drawable(at: 1_789_128_000).map { $0.window.used } == [0, 15, 29],
@@ -2737,7 +2906,7 @@ do {
         NamedWindow(key: "primary", title: "1h", badge: nil, minutes: 60,
                     window: LimitWindow(used: 80, resets: now + 600)),
     ], source: "rollout", ts: now, plan: nil)
-    let both = MenuBarAgent.shown(.both, board: board, claude: claude, codex: codex, now: now)
+    let both = MenuBarAgent.shown(.both, board: board, claude: claude, claudeStatus: nil, oauthLimits: true, codex: codex, now: now)
     check(both.map(\.provider.id) == ["claude", "codex"], "Both draws two ordered provider blocks")
     check(both[0].lead?.id == "new" && both[1].lead?.id == "wait",
           "each provider picks its own priority and newest working session")
@@ -2752,13 +2921,13 @@ do {
     check(tick.lead?.id == "wait" && board.word(for: "claude:old") == "Musing",
           "building provider blocks does not tick the board or change its edge state")
     for pick in [AgentDisplay.claude, .codex] {
-        let only = MenuBarAgent.shown(pick, board: board, claude: claude, codex: codex, now: now)
+        let only = MenuBarAgent.shown(pick, board: board, claude: claude, claudeStatus: nil, oauthLimits: true, codex: codex, now: now)
         check(only.count == 1 && only[0].provider.id == pick.rawValue, "single-agent mode draws only \(pick.rawValue)")
     }
-    check(MenuBarAgent.shown(.hidden, board: board, claude: claude, codex: codex, now: now).isEmpty,
+    check(MenuBarAgent.shown(.hidden, board: board, claude: claude, claudeStatus: nil, oauthLimits: true, codex: codex, now: now).isEmpty,
           "Hidden has no status, clocks or bars to compose")
     let empty = SessionBoard(engine: SessionEngine())
-    let resting = MenuBarAgent.shown(.both, board: empty, claude: claude, codex: nil, now: now)
+    let resting = MenuBarAgent.shown(.both, board: empty, claude: claude, claudeStatus: nil, oauthLimits: true, codex: nil, now: now)
     check(resting.count == 2 && resting.allSatisfy { $0.lead == nil && $0.mood == .sleeping && $0.startedAt == 0 },
           "both icons remain present with no sessions")
     check(resting[0].gauge.fiveHour == 0.4 && resting[1].gauge.isEmpty,
@@ -2767,13 +2936,42 @@ do {
                               window: LimitWindow(used: 36, resets: now - 1))
     let mixed = LimitsSet(provider: "codex", windows: codex.windows + [reserve],
                           source: "rollout", ts: now - 60, plan: nil)
-    let honest = MenuBarAgent.shown(.codex, board: board, claude: nil, codex: mixed, now: now)[0]
+    let honest = MenuBarAgent.shown(.codex, board: board, claude: nil, claudeStatus: nil, oauthLimits: true, codex: mixed, now: now)[0]
     check(honest.gauge.fiveHour == 0.8 && honest.gauge.sevenDay == nil,
           "ordinary Codex windows do not borrow an expired reserve as a second bar")
     let reserveOnly = LimitsSet(provider: "codex", windows: [reserve], source: "rollout", ts: now - 60, plan: nil)
-    let fallback = MenuBarAgent.shown(.codex, board: board, claude: nil, codex: reserveOnly, now: now)[0]
+    let fallback = MenuBarAgent.shown(.codex, board: board, claude: nil, claudeStatus: nil, oauthLimits: true, codex: reserveOnly, now: now)[0]
     check(fallback.gauge.fiveHour == 0 && fallback.gauge.labels.0 == "7d" && fallback.reserve,
           "reserve-only fallback keeps its reported duration and reset behaviour")
+    // Signed out: only Claude's block carries the sign, by the panel's rule, with its own signature
+    // so the icon cache redraws exactly when the sign comes or goes.
+    let noLogin = LimitsStatus(json: ["state": "no-login", "ts": now, "detail": "no token"])
+    let signedOutAgents = MenuBarAgent.shown(.both, board: board, claude: claude, claudeStatus: noLogin,
+                                             oauthLimits: true, codex: codex, now: now)
+    check(signedOutAgents[0].signedOut && !signedOutAgents[1].signedOut,
+          "a no-login poll marks Claude's block and never Codex's")
+    check(!both[0].signedOut, "without a status file nobody is signed out")
+    let okStatus = LimitsStatus(json: ["state": "ok", "ts": now, "detail": ""])
+    check(!MenuBarAgent.shown(.both, board: board, claude: claude, claudeStatus: okStatus,
+                              oauthLimits: true, codex: codex, now: now)[0].signedOut,
+          "an ok poll shows no sign")
+    check(!MenuBarAgent.shown(.both, board: board, claude: claude, claudeStatus: noLogin,
+                              oauthLimits: false, codex: codex, now: now)[0].signedOut,
+          "with the API poll switched off the sign stays away")
+    let staleNoLogin = LimitsStatus(json: ["state": "no-login", "ts": now - 60, "detail": "no token"])
+    check(!MenuBarAgent.shown(.both, board: board, claude: claude, claudeStatus: staleNoLogin,
+                              oauthLimits: true, codex: codex, now: now)[0].signedOut,
+          "figures newer than the poll hide the sign")
+    let failed = LimitsStatus(json: ["state": "failed", "ts": now, "detail": "HTTPError"])
+    check(!MenuBarAgent.shown(.both, board: board, claude: claude, claudeStatus: failed,
+                              oauthLimits: true, codex: codex, now: now)[0].signedOut,
+          "a failed poll is not a sign-out")
+    check(MenuBarAgent.shown(.both, board: board, claude: nil, claudeStatus: noLogin,
+                             oauthLimits: true, codex: codex, now: now)[0].signedOut,
+          "no figures at all still shows the sign")
+    check(signedOutAgents[0].signature != both[0].signature
+          && signedOutAgents[0].signature.hasPrefix(both[0].gauge.signature),
+          "the sign is part of the block's signature on top of the bars' own")
     check(both[0].timer(show: true, now: now) == "2m 0s"
           && both[1].timer(show: true, now: now).isEmpty
           && both[0].timer(show: false, now: now).isEmpty,
@@ -2858,6 +3056,8 @@ let backendGolden: [(BackendCommand, [String])] = [
     (.mcpRefresh(provider: "codex"), ["codex-mcp", "refresh"]),
     (.codexHooks, ["codex-hooks"]),
     (.codexHooksApprove, ["codex-hooks", "approve"]),
+    (.statuslineHeal, ["statusline", "--heal"]),
+    (.claudeLogin, ["claude-login"]),
     (.toggleServer(provider: "claude", name: "wiki", on: false), ["toggle-server", "wiki", "--off"]),
     (.toggleServer(provider: "codex", name: "wiki", on: true),
      ["codex-mcp", "toggle-server", "wiki", "--on"]),

@@ -8,6 +8,11 @@ struct MenuBarAgent {
     let working: Int
     let gauge: Gauge
     var reserve = false
+    /// Claude Code is signed out and the icon says so: dimmed bars and a mark. Never set for Codex.
+    var signedOut = false
+
+    /// Everything that changes what the block looks like, for the icon cache key.
+    var signature: String { gauge.signature + (signedOut ? "|signed-out" : "") }
 
     var startedAt: Double { lead.map { isWorkingState($0.eff) ? $0.startedAt : 0 } ?? 0 }
     var badge: Bool { lead?.eff == "permission" }
@@ -26,8 +31,9 @@ struct MenuBarAgent {
         return attentionBadgeIcon(icon, color: color)
     }
 
-    static func shown(_ display: AgentDisplay, board: SessionBoard,
-                      claude: LimitsSet?, codex: LimitsSet?, now: Double) -> [MenuBarAgent] {
+    static func shown(_ display: AgentDisplay, board: SessionBoard, claude: LimitsSet?,
+                      claudeStatus: LimitsStatus?, oauthLimits: Bool, codex: LimitsSet?,
+                      now: Double) -> [MenuBarAgent] {
         Provider.all.filter { display.inBar($0.id) }.map { provider in
             let own = board.sessions.values.filter { $0.provider == provider.id }
             let lead = board.lead(for: [provider.id])
@@ -37,7 +43,9 @@ struct MenuBarAgent {
                 mood: CrabMood.display(forEffectiveStates: own.map(\.eff), leadState: lead?.eff),
                 working: own.filter { isWorkingState($0.eff) }.count,
                 gauge: limits.gauge(at: now),
-                reserve: provider == .codex && limits.codexBarWindows(at: now).first?.title == "Reserve")
+                reserve: provider == .codex && limits.codexBarWindows(at: now).first?.title == "Reserve",
+                signedOut: provider == .claude
+                    && LimitsStatus.signedOutShown(claudeStatus, oauthLimits: oauthLimits, figuresTs: claude?.ts))
         }
     }
 

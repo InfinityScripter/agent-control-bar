@@ -13,6 +13,43 @@ from, and are kept so the history reads continuously.
 - Reduce CPU use while sessions are active by scanning transcript tails as bytes. Read CRLF
   transcript records as separate lines too.
 
+## [0.25.0] - 2026-10-14
+
+### Added
+- **The panel says why the Claude limits stopped updating.** Every poll now leaves
+  `~/.claude/control-bar/limits-status.json` with its outcome, and when it brought no figures the
+  panel shows a block over the limits strip — "Claude Code is not signed in", "Limits poll
+  failed: HTTPError" — with how old the figures underneath are. The old figures stay visible; the
+  block disappears on the next successful poll, and is never shown while "Limits via Anthropic
+  API" is off. The first signed-out poll after a launch also posts one macOS notification, and
+  Settings → Limits carries a "Last poll: …" line under the switch.
+- **One button to sign Claude Code back in.** When the block says Claude Code is not signed in,
+  it carries a "Sign in to Claude Code" button. The backend writes a tiny
+  `~/.claude/control-bar/claude-login.command` and has Terminal open it on `claude auth login`;
+  when no `claude` binary can be found, Terminal says so and waits for a key instead of closing.
+  Once signed in, the next panel opening polls at once and the block goes away.
+- **The menu bar shows a signed-out Claude Code without opening the panel.** When the limits
+  poll finds no login, the Claude bars in the status item are dimmed with a small mark in their
+  corner, and the item's tooltip and VoiceOver description read "Claude Code is not signed in —
+  open the panel to sign in". The sign follows the panel block's rule exactly — only for a
+  missing login, never while "Limits via Anthropic API" is off or newer figures are arriving —
+  keeps the item's width, does not blink, and goes away on the next successful poll.
+
+### Fixed
+- **The status line keeps showing limits after an update or a rename.** The plugin path carries
+  the version and the app bundle changed its name, so the `statusLine` command in
+  `~/.claude/settings.json` could point at a wrapper that no longer exists — and the terminal
+  limits silently froze. Every launch of an installed copy now runs `statusline --heal`: when
+  the command is this app's own and its file is gone, only the path is re-pointed to the live
+  wrapper. Your inner command, `padding` and the other `statusLine` fields stay as they were; a
+  foreign status line, or a live wrapper, is never touched.
+- **The limits footer dates each provider by its own figures.** With Claude and Codex both
+  shown, the line under the strip used to quote the oldest stamp for both, so a stalled Claude
+  poll made live Codex figures read "28d ago". It now says "Claude 1d ago · Codex just now" on a
+  row of its own; with one provider it stays "Limits · 4 min ago". Codex's age follows the
+  ordinary limit windows rather than a long-idle reserve one, and the Codex tooltip says the
+  figures come from the last Codex session.
+
 ## [0.24.5] - 2026-10-08
 
 ### Changed

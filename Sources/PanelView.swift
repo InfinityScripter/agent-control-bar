@@ -71,6 +71,9 @@ struct PanelView: View {
 
     @ViewBuilder
     private var limitsStrip: some View {
+        // Over the strip, not in place of it: the figures under it are still the last true
+        // reading, and the block is what says how far from the truth they have drifted.
+        if let notice = store.snapshot.limitsNotice { limitsNoticeBlock(notice) }
         let groups = store.snapshot.limitGroups
         if groups.isEmpty {
             Text(store.snapshot.limitsNote)
@@ -101,6 +104,27 @@ struct PanelView: View {
             }
         }
     }
+
+    private func limitsNoticeBlock(_ notice: PanelLimitsNotice) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            PanelNotice(glyph: "exclamationmark.triangle", text: notice.title)
+            Text(notice.hint)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 4)
+            if notice.offerSignIn {
+                Button("Sign in to Claude Code") { store.signInClaude() }
+                    .buttonStyle(PanelButtonStyle())
+                    .help(Self.signInHelp)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.bottom, 7)
+    }
+
+    private static let signInHelp: String = "Opens Terminal on `claude auth login`; finish "
+        + "signing in there and the figures come back on the next poll"
 
     /// Which provider the switcher is showing; the snapshot has already resolved the remembered
     /// pick against the groups there are.
@@ -262,25 +286,34 @@ struct PanelView: View {
         .help("macOS asks once per app, ever. Alerts stay muted until this is switched back on.")
     }
 
+    @ViewBuilder
     private var footer: some View {
-        HStack(spacing: 8) {
-            Text(store.snapshot.limitGroups.isEmpty ? "" : "Limits · " + store.snapshot.limitsNote)
-                .font(.system(size: 10.5))
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-            Spacer(minLength: 0)
-            Button { store.openSettings() } label: {
-                Label("Settings", systemImage: "gearshape")
-                    .labelStyle(PanelIconLabelStyle())
+        // Two providers' ages ("Claude 1d ago · Codex just now") are wider than the room the
+        // buttons leave in 300pt and would be cut to "Claude 1d ago · Co…", so that line gets a row
+        // of its own. One provider keeps its short line beside the buttons.
+        let stacked = store.snapshot.limitGroups.count > 1
+        let note = Text(store.snapshot.limitGroups.isEmpty ? "" : store.snapshot.limitsNote)
+            .font(.system(size: 10.5))
+            .foregroundStyle(.tertiary)
+            .lineLimit(1)
+        VStack(alignment: .leading, spacing: 5) {
+            if stacked { note }
+            HStack(spacing: 8) {
+                if !stacked { note }
+                Spacer(minLength: 0)
+                Button { store.openSettings() } label: {
+                    Label("Settings", systemImage: "gearshape")
+                        .labelStyle(PanelIconLabelStyle())
+                }
+                .buttonStyle(PanelButtonStyle())
+                .keyboardShortcut(",", modifiers: .command)
+                Button { store.quit() } label: {
+                    Label("Quit", systemImage: "power")
+                        .labelStyle(PanelIconLabelStyle())
+                }
+                .buttonStyle(PanelButtonStyle())
+                .keyboardShortcut("q", modifiers: .command)
             }
-            .buttonStyle(PanelButtonStyle())
-            .keyboardShortcut(",", modifiers: .command)
-            Button { store.quit() } label: {
-                Label("Quit", systemImage: "power")
-                    .labelStyle(PanelIconLabelStyle())
-            }
-            .buttonStyle(PanelButtonStyle())
-            .keyboardShortcut("q", modifiers: .command)
         }
         .padding(.top, 9)
         .padding(.horizontal, 3)
