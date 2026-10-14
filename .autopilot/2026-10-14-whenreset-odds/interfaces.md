@@ -56,7 +56,7 @@ enum ResetOddsFeed {
 }
 ```
 
-### Контроллер — `Sources/ResetOdds.swift` (extension StatusController) + хранимые поля в `main.swift`
+### Контроллер — `Sources/ResetOddsFetch.swift` (extension StatusController) + хранимые поля в `main.swift`
 
 Владеет: сетью, кэшем в UserDefaults, таймером, выключателем. Ключи UserDefaults: `"resetOdds"` (Bool, выключатель), `"lastResetOddsAttempt"` (Double), `"resetOddsCache"` (Data), `"resetOddsFetchedAt"` (Double).
 
@@ -68,7 +68,7 @@ var resetOddsFetchedAt: Double = 0 // epoch секунд последнего у
 var resetOddsProblem: String?      // текст последнего сбоя; nil после удачи
 var resetOddsRunning = false
 
-// Sources/ResetOdds.swift
+// Sources/ResetOddsFetch.swift
 func loadResetOddsCache()                 // зовётся из init
 func fetchResetOddsIfDue(force: Bool = false)
 func applyResetOdds(_ on: Bool)           // пишет "resetOdds"; off → кэш и поля очищены; on → fetch(force: true); затем refreshCounts()
@@ -128,3 +128,20 @@ struct PanelResetOddsRow: Equatable, Identifiable {
 - Сборка по умолчанию кладёт `.app` в `build/` внутри рабочей копии — это безопасно (`CONTROL_BAR_APP` не нужен).
 - Копия из `build/` с тем же bundle id **сама уходит** при запуске, если установленная уже работает (`enforceSingleInstance`, AppLifecycle.swift:62). Для дампа и скриншота: скопируй собранный `.app` в `/tmp/acb-whenreset-app/`, в копии поменяй `CFBundleIdentifier` в Info.plist на `io.github.infinityscripter.claude-control-bar.dev` (`/usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier …'`) и переподпиши ad-hoc (`codesign --force --deep -s - …`). Такая копия не считается установленной (не в /Applications), хуки не ставит, предшественников не трогает. UserDefaults у неё свои — кэш пустой, ответ сети приходит за ~1 с.
 - Скриншот панели: запусти копию с `CONTROL_BAR_DIAGNOSE=menu`, через ~5 с `screencapture -x` и вырежи панель; затем завершай только свой процесс (по pid). Если панель не видно (иконку спрятал менеджер строки меню), отрисуй `PanelResetOddsCard` в PNG через `ImageRenderer` во временном исполняемом файле в `/tmp` и скажи об этом в отчёте.
+
+### T01 — построено
+
+- Контроллер живёт в `Sources/ResetOddsFetch.swift` (имя `ResetOdds.swift` уже занято моделью, swiftc не принимает два файла с одним именем).
+- Модель сверх оговорённого: `ResetOddsFeed.monthDay(_:) -> String?`, `count(_:) -> Int?`, `date(_:) -> String?`, `ResetOddsProduct.init(id:json:)`. Значения вне 0…1 → nil (не 100).
+- Контроллер: `loadResetOddsCache()`, `fetchResetOddsIfDue(force:)`, `applyResetOdds(_:)`, `openResetOddsSite()`, `panelResetOdds(now:) -> PanelResetOdds?`, `static resetOddsRow(_:agent:now:)`.
+- Снимок: `PanelResetOdds`, `PanelResetOddsRow`, `PanelSnapshot.resetOdds`, `PanelStore.resetOddsID = "reset-odds"`, `PanelStore.openResetOddsSite()`, `PanelLimitGroup.earlyReset: String?` (дописывается в `tip`).
+- **Высота плашки уже учтена в `panelStripExtra` (PanelData.swift): 30 pt свёрнутая, 190 pt развёрнутая по `store.expanded`.** Таск 02, если плашка получится другой высоты, правит эти числа там же.
+
+### T02 — построено
+
+- `struct PanelResetOddsCard: View` (Sources/PanelResetOdds.swift), `extension PanelResetOdds { func cardHeight(open: Bool) -> CGFloat }` — `panelStripExtra` берёт высоту отсюда (35 pt свёрнутая, ~238–274 pt раскрытая, только при `state == "ok"`), `PanelStore.toggleResetOdds()`, `static PanelResetOddsCard.spoken(_:)`.
+- Ссылка «whenreset.app» — `NSColor.linkColor`.
+
+### F1 — построено
+
+- `struct ResetOddsLook: Equatable` (Model) — состояние, продукты, stale, note; `ResetOddsFeed.maxAnswerBytes = 1_048_576`, `readable(byteCount:)`, `lastReset(_:now:)`, `countsLine(total:last30d:)`, `bankedLine(banked:regular:)`. `ResetOdds(data:)` отказывает ответам больше 1 МБ.
