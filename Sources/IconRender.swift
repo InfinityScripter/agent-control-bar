@@ -6,6 +6,7 @@ extension StatusController {
 
     func renderMenuBar(now: Double) {
         var agents = MenuBarAgent.shown(agentDisplay, board: board, claude: limits?.set,
+                                       claudeStatus: limitsStatus, oauthLimits: oauthLimits,
                                        codex: codexWindows, now: now)
         if agents.isEmpty {
             agents = [MenuBarAgent(provider: .claude, lead: nil, mood: .sleeping, working: 0, gauge: Gauge())]
@@ -43,7 +44,7 @@ extension StatusController {
             render.label = agent.lead.map { isActiveState($0.eff) ? statusText($0, eff: $0.eff) : "" } ?? ""
             let marker = agent.markerColor(fallback: chosen == nil, permissionColor: Self.amber)
             let cacheKey = [motionKey, marker.map { "\($0)" } ?? "", render.color.map { "\($0)" } ?? "template",
-                            agent.gauge.signature, NSApp.effectiveAppearance.name.rawValue].joined(separator: "|")
+                            agent.signature, NSApp.effectiveAppearance.name.rawValue].joined(separator: "|")
             if render.cacheKey != cacheKey { render.cacheKey = cacheKey; render.frames = [:] }
             barRenders[provider] = render
         }
@@ -83,7 +84,8 @@ extension StatusController {
                     return true
                 }
                 fixed.isTemplate = badged.isTemplate
-                image = render.agent.gauge.image(icon: fixed)
+                let gauged = render.agent.gauge.image(icon: fixed)
+                image = render.agent.signedOut ? signedOutIcon(gauged, bars: !render.agent.gauge.isEmpty) : gauged
                 render.frames[frame] = image
                 barRenders[provider] = render
             }
@@ -95,7 +97,9 @@ extension StatusController {
             var description = "\(render.agent.provider.title): \(session?.eff ?? "idle")"
             if let session { description += ", " + sessionMenuLine(session) }
             let gauge = render.agent.gauge
-            if !gauge.isEmpty {
+            if render.agent.signedOut {
+                description = LimitsStatus.menuBarTip
+            } else if !gauge.isEmpty {
                 description += render.agent.reserve ? ", Reserve: " : ", limits: "
                 description += gauge.rows.map { "\(Gauge.spoken($0.0)) \(($0.1 * 100).rounded().clampedInt)%" }.joined(separator: ", ")
             }
@@ -120,6 +124,38 @@ extension StatusController {
     }
 
     // MARK: icon
+
+    /// The signed-out look of a finished block: the bars at reduced opacity and a mark in the
+    /// top-right corner of their area, inside the same bounds — a wider item would be parked
+    /// behind the overflow chevron. Without bars the mark sits on the icon itself.
+    func signedOutIcon(_ gauged: NSImage, bars: Bool) -> NSImage {
+        let size = gauged.size
+        let stripX = bars ? max(0, size.width - Gauge.sideInset - Gauge.labelW - Gauge.labelGap - Gauge.barW) : size.width
+        let mark: CGFloat = 8
+        let markBox = NSRect(x: size.width - (bars ? Gauge.sideInset : 0) - mark,
+                             y: size.height - mark - 1, width: mark, height: mark)
+        let image = NSImage(size: size, flipped: false) { _ in
+            let kept = NSRect(x: 0, y: 0, width: stripX, height: size.height)
+            let strip = NSRect(x: stripX, y: 0, width: size.width - stripX, height: size.height)
+            gauged.draw(in: kept, from: kept, operation: .sourceOver, fraction: 1)
+            if strip.width > 0 { gauged.draw(in: strip, from: strip, operation: .sourceOver, fraction: 0.45) }
+            // The "!" of the filled symbol is a cutout, and a dimmed bar showing through it reads
+            // as a smudge: clear a halo first.
+            NSGraphicsContext.current?.saveGraphicsState()
+            NSGraphicsContext.current?.compositingOperation = .destinationOut
+            NSBezierPath(ovalIn: markBox.insetBy(dx: -1, dy: -1)).fill()
+            NSGraphicsContext.current?.restoreGraphicsState()
+            if let symbol = NSImage(systemSymbolName: "exclamationmark.circle.fill", accessibilityDescription: nil) {
+                NSColor.labelColor.setFill()
+                markBox.fill()
+                symbol.draw(in: markBox, from: .zero, operation: .destinationIn, fraction: 1)
+            }
+            return true
+        }
+        image.isTemplate = gauged.isTemplate
+        image.accessibilityDescription = LimitsStatus.menuBarTip
+        return image
+    }
 
     static func loadFrames() -> [NSImage] { decodePNGs(claudeSparkFramePNGs) }
     static func decodePNGs(_ list: [String]) -> [NSImage] {

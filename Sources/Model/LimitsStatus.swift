@@ -40,7 +40,7 @@ extension LimitsStatus {
     static func notice(_ status: LimitsStatus?, oauthLimits: Bool, figuresTs: Double?, now: Double) -> LimitsNotice? {
         guard let status = explainable(status, oauthLimits: oauthLimits, figuresTs: figuresTs) else { return nil }
         let figuresAge = figuresTs.map { LimitsNote.age(of: $0, now: now) }
-        if status.state == "no-login" {
+        if signedOutShown(status, oauthLimits: oauthLimits, figuresTs: figuresTs) {
             let hint = figuresAge.map { "Limits stopped updating \($0). Sign in to resume." }
                 ?? "Sign in to see limits."
             return LimitsNotice(title: "Claude Code is not signed in", hint: hint, offerSignIn: true)
@@ -59,12 +59,20 @@ extension LimitsStatus {
     /// Gated like the block, so the banner never says what the panel does not show.
     static func signedOutBannerDue(_ status: LimitsStatus?, oauthLimits: Bool, figuresTs: Double?,
                                    launchedAt: Double) -> Bool {
-        guard let status = explainable(status, oauthLimits: oauthLimits, figuresTs: figuresTs),
-              status.state == "no-login" else { return false }
+        guard let status, signedOutShown(status, oauthLimits: oauthLimits, figuresTs: figuresTs) else { return false }
         // The script stamps whole seconds, so a poll answered within the launch second carries a
         // stamp just below launchedAt and must still count as this launch's.
         return status.ts >= launchedAt.rounded(.down)
     }
+
+    /// Whether anything on screen — the panel block, the one banner, the menu bar sign — may say
+    /// Claude Code is signed out. One rule for all three, so the icon never says what the panel
+    /// does not show.
+    static func signedOutShown(_ status: LimitsStatus?, oauthLimits: Bool, figuresTs: Double?) -> Bool {
+        explainable(status, oauthLimits: oauthLimits, figuresTs: figuresTs)?.state == "no-login"
+    }
+
+    static let menuBarTip = "Claude Code is not signed in — open the panel to sign in"
 
     private static func explainable(_ status: LimitsStatus?, oauthLimits: Bool, figuresTs: Double?) -> LimitsStatus? {
         guard oauthLimits, let status, status.state != "ok" else { return nil }

@@ -22,6 +22,12 @@ from, and are kept so the history reads continuously.
   `~/.claude/control-bar/claude-login.command` and has Terminal open it on `claude auth login`;
   when no `claude` binary can be found, Terminal says so and waits for a key instead of closing.
   Once signed in, the next panel opening polls at once and the block goes away.
+- **The menu bar shows a signed-out Claude Code without opening the panel.** When the limits
+  poll finds no login, the Claude bars in the status item are dimmed with a small mark in their
+  corner, and the item's tooltip and VoiceOver description read "Claude Code is not signed in —
+  open the panel to sign in". The sign follows the panel block's rule exactly — only for a
+  missing login, never while "Limits via Anthropic API" is off or newer figures are arriving —
+  keeps the item's width, does not blink, and goes away on the next successful poll.
 
 ### Fixed
 - **The status line keeps showing limits after an update or a rename.** The plugin path carries

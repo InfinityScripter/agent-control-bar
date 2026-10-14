@@ -808,6 +808,25 @@ check(LimitsStatus.signedOutBannerDue(signedOut, oauthLimits: false, figuresTs: 
 check(LimitsStatus.signedOutBannerDue(nil, oauthLimits: true, figuresTs: nil, launchedAt: polledAt - 10) == false,
       "no status file, no banner")
 
+// The menu bar sign: the same rule as the panel block, so the icon never says what the panel
+// does not show.
+check(LimitsStatus.menuBarTip == "Claude Code is not signed in — open the panel to sign in",
+      "the icon tip names the cause and the way out")
+check(LimitsStatus.signedOutShown(signedOut, oauthLimits: true, figuresTs: nil) == true,
+      "signed out with no figures at all shows the sign")
+check(LimitsStatus.signedOutShown(signedOut, oauthLimits: true, figuresTs: polledAt - 86_400) == true,
+      "signed out with day-old figures shows the sign")
+check(LimitsStatus.signedOutShown(signedOut, oauthLimits: true, figuresTs: polledAt + 1) == false,
+      "figures newer than the poll hide the sign: the other writer keeps them moving")
+check(LimitsStatus.signedOutShown(signedOut, oauthLimits: false, figuresTs: nil) == false,
+      "with the API poll switched off there is no sign whatever the file says")
+check(LimitsStatus.signedOutShown(pollFailed, oauthLimits: true, figuresTs: nil) == false
+      && LimitsStatus.signedOutShown(pollEmpty, oauthLimits: true, figuresTs: nil) == false,
+      "a failed or empty poll is not a sign-out")
+check(LimitsStatus.signedOutShown(pollOK, oauthLimits: true, figuresTs: nil) == false
+      && LimitsStatus.signedOutShown(nil, oauthLimits: true, figuresTs: nil) == false,
+      "ok and no status file show no sign")
+
 check(LimitsStatus.emptyStripText(signedOut, oauthLimits: false) == "Limits are switched off in Settings",
       "switched off wins over whatever the file says")
 check(LimitsStatus.emptyStripText(nil, oauthLimits: true) == "No data yet — is Claude Code signed in?",
@@ -2826,7 +2845,7 @@ do {
         NamedWindow(key: "primary", title: "1h", badge: nil, minutes: 60,
                     window: LimitWindow(used: 80, resets: now + 600)),
     ], source: "rollout", ts: now, plan: nil)
-    let both = MenuBarAgent.shown(.both, board: board, claude: claude, codex: codex, now: now)
+    let both = MenuBarAgent.shown(.both, board: board, claude: claude, claudeStatus: nil, oauthLimits: true, codex: codex, now: now)
     check(both.map(\.provider.id) == ["claude", "codex"], "Both draws two ordered provider blocks")
     check(both[0].lead?.id == "new" && both[1].lead?.id == "wait",
           "each provider picks its own priority and newest working session")
@@ -2841,13 +2860,13 @@ do {
     check(tick.lead?.id == "wait" && board.word(for: "claude:old") == "Musing",
           "building provider blocks does not tick the board or change its edge state")
     for pick in [AgentDisplay.claude, .codex] {
-        let only = MenuBarAgent.shown(pick, board: board, claude: claude, codex: codex, now: now)
+        let only = MenuBarAgent.shown(pick, board: board, claude: claude, claudeStatus: nil, oauthLimits: true, codex: codex, now: now)
         check(only.count == 1 && only[0].provider.id == pick.rawValue, "single-agent mode draws only \(pick.rawValue)")
     }
-    check(MenuBarAgent.shown(.hidden, board: board, claude: claude, codex: codex, now: now).isEmpty,
+    check(MenuBarAgent.shown(.hidden, board: board, claude: claude, claudeStatus: nil, oauthLimits: true, codex: codex, now: now).isEmpty,
           "Hidden has no status, clocks or bars to compose")
     let empty = SessionBoard(engine: SessionEngine())
-    let resting = MenuBarAgent.shown(.both, board: empty, claude: claude, codex: nil, now: now)
+    let resting = MenuBarAgent.shown(.both, board: empty, claude: claude, claudeStatus: nil, oauthLimits: true, codex: nil, now: now)
     check(resting.count == 2 && resting.allSatisfy { $0.lead == nil && $0.mood == .sleeping && $0.startedAt == 0 },
           "both icons remain present with no sessions")
     check(resting[0].gauge.fiveHour == 0.4 && resting[1].gauge.isEmpty,
@@ -2856,13 +2875,42 @@ do {
                               window: LimitWindow(used: 36, resets: now - 1))
     let mixed = LimitsSet(provider: "codex", windows: codex.windows + [reserve],
                           source: "rollout", ts: now - 60, plan: nil)
-    let honest = MenuBarAgent.shown(.codex, board: board, claude: nil, codex: mixed, now: now)[0]
+    let honest = MenuBarAgent.shown(.codex, board: board, claude: nil, claudeStatus: nil, oauthLimits: true, codex: mixed, now: now)[0]
     check(honest.gauge.fiveHour == 0.8 && honest.gauge.sevenDay == nil,
           "ordinary Codex windows do not borrow an expired reserve as a second bar")
     let reserveOnly = LimitsSet(provider: "codex", windows: [reserve], source: "rollout", ts: now - 60, plan: nil)
-    let fallback = MenuBarAgent.shown(.codex, board: board, claude: nil, codex: reserveOnly, now: now)[0]
+    let fallback = MenuBarAgent.shown(.codex, board: board, claude: nil, claudeStatus: nil, oauthLimits: true, codex: reserveOnly, now: now)[0]
     check(fallback.gauge.fiveHour == 0 && fallback.gauge.labels.0 == "7d" && fallback.reserve,
           "reserve-only fallback keeps its reported duration and reset behaviour")
+    // Signed out: only Claude's block carries the sign, by the panel's rule, with its own signature
+    // so the icon cache redraws exactly when the sign comes or goes.
+    let noLogin = LimitsStatus(json: ["state": "no-login", "ts": now, "detail": "no token"])
+    let signedOutAgents = MenuBarAgent.shown(.both, board: board, claude: claude, claudeStatus: noLogin,
+                                             oauthLimits: true, codex: codex, now: now)
+    check(signedOutAgents[0].signedOut && !signedOutAgents[1].signedOut,
+          "a no-login poll marks Claude's block and never Codex's")
+    check(!both[0].signedOut, "without a status file nobody is signed out")
+    let okStatus = LimitsStatus(json: ["state": "ok", "ts": now, "detail": ""])
+    check(!MenuBarAgent.shown(.both, board: board, claude: claude, claudeStatus: okStatus,
+                              oauthLimits: true, codex: codex, now: now)[0].signedOut,
+          "an ok poll shows no sign")
+    check(!MenuBarAgent.shown(.both, board: board, claude: claude, claudeStatus: noLogin,
+                              oauthLimits: false, codex: codex, now: now)[0].signedOut,
+          "with the API poll switched off the sign stays away")
+    let staleNoLogin = LimitsStatus(json: ["state": "no-login", "ts": now - 60, "detail": "no token"])
+    check(!MenuBarAgent.shown(.both, board: board, claude: claude, claudeStatus: staleNoLogin,
+                              oauthLimits: true, codex: codex, now: now)[0].signedOut,
+          "figures newer than the poll hide the sign")
+    let failed = LimitsStatus(json: ["state": "failed", "ts": now, "detail": "HTTPError"])
+    check(!MenuBarAgent.shown(.both, board: board, claude: claude, claudeStatus: failed,
+                              oauthLimits: true, codex: codex, now: now)[0].signedOut,
+          "a failed poll is not a sign-out")
+    check(MenuBarAgent.shown(.both, board: board, claude: nil, claudeStatus: noLogin,
+                             oauthLimits: true, codex: codex, now: now)[0].signedOut,
+          "no figures at all still shows the sign")
+    check(signedOutAgents[0].signature != both[0].signature
+          && signedOutAgents[0].signature.hasPrefix(both[0].gauge.signature),
+          "the sign is part of the block's signature on top of the bars' own")
     check(both[0].timer(show: true, now: now) == "2m 0s"
           && both[1].timer(show: true, now: now).isEmpty
           && both[0].timer(show: false, now: now).isEmpty,
