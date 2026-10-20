@@ -129,7 +129,7 @@ extension StatusController {
                                    age: LimitsNote.age(of: entry.set.ts, now: now),
                                    plan: entry.set.plan, worst: worst,
                                    earlyReset: odds?.product(agent.id)?.p24
-                                       .map { "Early reset in 24h: \($0)% (whenreset.app)" })
+                                       .map { "Early reset chance in 24h: \($0)% (whenreset.app)" })
         }
         return (groups, LimitsNote.footer(groups.map { (title: $0.title, age: $0.age) }))
     }
@@ -198,13 +198,13 @@ extension StatusController {
         let open = panelStore.expanded.contains(PanelStore.resetOddsID)
         let odds = panelResetOdds(now: Date().timeIntervalSince1970)?.cardHeight(open: open) ?? 0
         guard limitsBoard.shown(at: Date().timeIntervalSince1970).count > 1 else { return odds }
-        return odds + (limitsLayout == .rows ? 80 : 40)
+        return odds + (limitsLayout == .rows ? 93 : 40)
     }
 
     /// The banner, the limits strip, the tabs and the footer, plus the gap under the menu bar.
     /// Deliberately generous: over-reserving costs a little scrolling, under-reserving costs the
     /// panel its anchor.
-    static let panelChromeHeight: CGFloat = 260
+    static let panelChromeHeight: CGFloat = 273
 
     // MARK: MCP
 

@@ -242,6 +242,8 @@ final class StatusController: NSObject, NSWindowDelegate {
     var resetOddsFetchedAt: Double = 0
     var resetOddsProblem: String?
     var resetOddsRunning = false
+    var resetAnnouncementTracker = ResetAnnouncementTracker()
+    let resetCelebration = ResetCelebrationPresenter()
     var soundThreshold: Double = 0  // 0 = off; else the min turn length (seconds) that chimes on completion
     var needsYouSound = NeedsYouSound.defaultChoice  // system sound name; "" = off
     var needsYouPlayer: NSSound?  // the loaded pick, replaced when the pick changes
@@ -364,10 +366,14 @@ final class StatusController: NSObject, NSWindowDelegate {
                 NSApp.activate(ignoringOtherApps: true)
                 self?.statusItem.button?.performClick(nil)
             }
-        // CONTROL_BAR_DIAGNOSE=settings opens the Settings window by itself, for the same reason
-        // `menu` opens the panel: neither can be reached from outside the app. The window is only
-        // ever raised from the panel's own button, so a change to a settings screen could not be
-        // looked at without a person sitting at the machine to click it.
+        // Preview uses the production presenter without inventing an event or touching its ledger.
+        } else if ProcessInfo.processInfo.environment["CONTROL_BAR_DIAGNOSE"] == "reset-preview" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                guard let self else { return }
+                self.resetCelebration.show(providers: Provider.all.map(\.id),
+                                           anchor: self.statusItem.button, preview: true)
+            }
+        // CONTROL_BAR_DIAGNOSE=settings opens the Settings window for native inspection.
         } else if ProcessInfo.processInfo.environment["CONTROL_BAR_DIAGNOSE"] == "settings" {
             Timer.scheduledTimer(withTimeInterval: 3, repeats: false) { [weak self] _ in
                 self?.openSettingsWindow()

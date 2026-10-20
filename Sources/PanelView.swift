@@ -1,5 +1,33 @@
 import SwiftUI
 
+
+private struct ProviderHeaderMark: View {
+    let provider: String
+    let size: CGFloat
+
+    private static let claudeImage = Data(base64Encoded: claudeLogoPNG).flatMap(NSImage.init(data:))
+    private static let codexImage = Data(base64Encoded: codexLogoPNG).flatMap(NSImage.init(data:))
+
+    @ViewBuilder
+    var body: some View {
+        if provider == "codex", let image = Self.codexImage {
+            Image(nsImage: image)
+                .renderingMode(.original)
+                .resizable()
+                .scaledToFit()
+                .frame(width: size, height: size)
+                .accessibilityHidden(true)
+        } else if provider == "claude", let image = Self.claudeImage {
+            Image(nsImage: image)
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
+                .frame(width: size, height: size)
+                .accessibilityHidden(true)
+        }
+    }
+}
+
 // The panel itself: the limits strip, the two tabs, and the footer. Everything above the tabs is
 // deliberately fixed — the strip and the banner are what a glance is for, and a glance should not
 // have to scroll or switch tabs to land on them.
@@ -147,21 +175,13 @@ struct PanelView: View {
         .help(group.tip)
     }
 
-    /// Who the row belongs to, and when the first of its windows comes back. The reset sits here
-    /// rather than in every cell because at 300pt a cell has room for a name, a figure and a bar
-    /// — and the window that resets first is the only one whose countdown changes a decision.
+    /// The nearest window is a useful summary; each tile below keeps its own countdown.
     private func limitHeader(_ group: PanelLimitGroup) -> some View {
         HStack(spacing: 4) {
-            Image(systemName: group.glyph).font(.system(size: 9, weight: .semibold))
+            ProviderHeaderMark(provider: group.provider, size: 14)
             Text(group.plan.map { "\(group.title) · \($0)" } ?? group.title)
                 .font(.system(size: 10, weight: .semibold))
                 .lineLimit(1)
-            Spacer(minLength: 4)
-            if let resets = group.resets {
-                Text("resets \(resets)")
-                    .font(.system(size: 9.5).monospacedDigit())
-                    .lineLimit(1)
-            }
         }
         .foregroundStyle(.secondary)
         .padding(.horizontal, 3)
@@ -180,16 +200,10 @@ struct PanelView: View {
                 Button { store.selectLimitsProvider(group.provider) } label: {
                     VStack(spacing: 4) {
                         HStack(spacing: 5) {
-                            Image(systemName: group.glyph).font(.system(size: 10, weight: .medium))
+                            ProviderHeaderMark(provider: group.provider, size: 15)
                             Text(group.title)
                                 .font(.system(size: 11.5, weight: active ? .medium : .regular))
                                 .lineLimit(1)
-                            if let resets = group.resets {
-                                Text(resets)
-                                    .font(.system(size: 10).monospacedDigit())
-                                    .foregroundStyle(.tertiary)
-                                    .lineLimit(1)
-                            }
                         }
                         .foregroundStyle(active ? Color.primary : Color.secondary)
                         if let worst = group.worst {
@@ -359,6 +373,11 @@ struct PanelLimitTile: View {
             }
             PanelBar(value: limit.fraction, fill: tint)
                 .padding(.top, 2)
+            Text(limit.resets.map { "in \($0)" } ?? "—")
+                .font(.system(size: 9).monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(height: 11, alignment: .leading)
         }
         .padding(.horizontal, 8)
         .padding(.top, 6)

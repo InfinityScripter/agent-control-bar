@@ -9,6 +9,13 @@ extension StatusController {
         let d = UserDefaults.standard
         resetOdds = d.data(forKey: "resetOddsCache").flatMap { ResetOdds(data: $0) }
         resetOddsFetchedAt = resetOdds == nil ? 0 : d.double(forKey: "resetOddsFetchedAt")
+        let ledger = d.dictionary(forKey: "resetAnnouncementLedger")
+        resetAnnouncementTracker = ResetAnnouncementTracker(json: ledger)
+        if ledger == nil, let resetOdds {
+            // Upgrade an existing raw cache silently; historical events are not new announcements.
+            _ = resetAnnouncementTracker.consume(resetOdds, now: Date().timeIntervalSince1970)
+            d.set(resetAnnouncementTracker.json, forKey: "resetAnnouncementLedger")
+        }
     }
 
     /// `force` is the switch being turned on: someone who just asked for the odds should not
@@ -45,13 +52,17 @@ extension StatusController {
         // Switched off while the request was out: the answer is dropped, not cached behind the
         // switch's back.
         guard resetOddsOn else { return }
-        if let odds, let data {
+        if error == nil, let odds, let data {
             let now = Date().timeIntervalSince1970
             resetOdds = odds
             resetOddsFetchedAt = now
             resetOddsProblem = nil
+            let announcements = resetAnnouncementTracker.consume(odds, now: now)
+            // Store identities before presenting, so the next launch cannot repeat this batch.
+            UserDefaults.standard.set(resetAnnouncementTracker.json, forKey: "resetAnnouncementLedger")
             UserDefaults.standard.set(data, forKey: "resetOddsCache")
             UserDefaults.standard.set(now, forKey: "resetOddsFetchedAt")
+            resetCelebration.show(providers: announcements.map(\.provider), anchor: statusItem.button)
         } else {
             // The previous figures stay: an old estimate, labelled as old, is still the estimate.
             resetOddsProblem = ResetOddsFeed.problem(status: status, error: error)
@@ -68,7 +79,9 @@ extension StatusController {
         if on {
             fetchResetOddsIfDue(force: true)
         } else {
-            for key in ["resetOddsCache", "resetOddsFetchedAt", "lastResetOddsAttempt"] { d.removeObject(forKey: key) }
+            for key in ["resetOddsCache", "resetOddsFetchedAt", "lastResetOddsAttempt", "resetAnnouncementLedger"] { d.removeObject(forKey: key) }
+            resetAnnouncementTracker = ResetAnnouncementTracker()
+            resetCelebration.close()
             resetOdds = nil
             resetOddsFetchedAt = 0
             resetOddsProblem = nil

@@ -4091,5 +4091,107 @@ check(ResetOddsFeed.lastReset("2026-10-03", now: oddsNow) == "today", "a reset t
 check(ResetOddsFeed.lastReset("2026-10-02", now: oddsNow) == "1d ago", "yesterday is 1d ago")
 check(ResetOddsFeed.lastReset(nil, now: oddsNow) == nil, "no date, no age")
 
+// MARK: Public reset announcements — events, never ordinary limit-window expiry
+
+let resetEventNow = 1_792_000_000.0
+func resetEvent(_ id: String, _ at: Double, kind: String = "regular", type: String = "reset") -> [String: Any] {
+    ["id": id, "ts": ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: at)),
+     "type": type, "kind": kind]
+}
+func resetAnswer(_ events: [String: [[String: Any]]]) -> ResetOdds {
+    ResetOdds(json: ["products": events.mapValues { ["events": $0] }])!
+}
+let parsedAnnouncements = ResetOdds(json: ["products": [
+    "claude": ["events": [resetEvent("c", resetEventNow), resetEvent("bank", resetEventNow, kind: "banked"),
+                           resetEvent("unknown", resetEventNow, kind: "mystery"),
+                           resetEvent("scheduled", resetEventNow, type: "scheduled"),
+                           ["id": "bad", "ts": "2026-02-31T12:00:00Z", "type": "reset", "kind": "regular"],
+                           resetEvent(" ", resetEventNow),
+                           ["id": "missing-ts", "type": "reset", "kind": "regular"]]],
+    "codex": [:] as [String: Any], "unknown": ["events": [resetEvent("x", resetEventNow)]]]])!
+check(parsedAnnouncements.announcements["claude"] == [ResetAnnouncement(provider: "claude", id: "c", at: resetEventNow)]
+      && parsedAnnouncements.announcements["codex"] == nil && parsedAnnouncements.announcements["unknown"] == nil,
+      "announcements accept only known-provider regular reset identities with valid timestamps; omitted events stay absent")
+
+var announcementTracker = ResetAnnouncementTracker()
+let baselineAnnouncements = announcementTracker.consume(resetAnswer(["claude": [resetEvent("old", resetEventNow - 100)]]), now: resetEventNow)
+let missingAnnouncements = announcementTracker.consume(ResetOdds(json: ["products": ["claude": [:] as [String: Any]]])!, now: resetEventNow)
+let freshAnnouncements = announcementTracker.consume(resetAnswer([
+    "claude": [resetEvent("old", resetEventNow - 100), resetEvent("new", resetEventNow - 10)],
+    "codex": [resetEvent("codex-history", resetEventNow - 5)]]), now: resetEventNow)
+check(baselineAnnouncements.isEmpty && missingAnnouncements.isEmpty
+      && freshAnnouncements == [ResetAnnouncement(provider: "claude", id: "new", at: resetEventNow - 10)],
+      "first snapshot and each new provider baseline silently; a later regular reset emits once after missing events")
+
+let savedAnnouncementJSON = try! JSONSerialization.jsonObject(with: JSONSerialization.data(withJSONObject: announcementTracker.json)) as! [String: Any]
+var restartedAnnouncements = ResetAnnouncementTracker(json: savedAnnouncementJSON)
+let afterRestart = restartedAnnouncements.consume(resetAnswer(["claude": [
+    resetEvent("later", resetEventNow - 1), resetEvent("new", resetEventNow - 10), resetEvent("old", resetEventNow - 100)]]), now: resetEventNow)
+let correctedReplay = restartedAnnouncements.consume(resetAnswer(["claude": [
+    resetEvent("old", resetEventNow), resetEvent("later", resetEventNow - 1), resetEvent("new", resetEventNow - 10),
+    resetEvent("later", resetEventNow - 1)]]), now: resetEventNow)
+let independentIdentity = restartedAnnouncements.consume(resetAnswer(["codex": [
+    resetEvent("new", resetEventNow - 1), resetEvent("codex-history", resetEventNow - 5)]]), now: resetEventNow)
+check(afterRestart.map(\.id) == ["later"] && correctedReplay.isEmpty
+      && independentIdentity.map(\.provider) == ["codex"],
+      "persisted provider plus id survives restart, reordering, duplicate rows and timestamp correction without suppressing another provider")
+
+var timedAnnouncements = ResetAnnouncementTracker()
+_ = timedAnnouncements.consume(resetAnswer(["claude": [resetEvent("baseline", resetEventNow - 100),
+                                                        resetEvent("future", resetEventNow + 20)]]), now: resetEventNow)
+let timedBatch = timedAnnouncements.consume(resetAnswer(["claude": [
+    resetEvent("backfill", resetEventNow - 200), resetEvent("same-a", resetEventNow - 100),
+    resetEvent("same-b", resetEventNow - 100), resetEvent("newest", resetEventNow - 1),
+    resetEvent("future", resetEventNow + 20)]]), now: resetEventNow)
+_ = timedAnnouncements.consume(resetAnswer(["claude": []]), now: resetEventNow)
+_ = timedAnnouncements.consume(resetAnswer(["claude": [resetEvent("regressed", resetEventNow - 150)]]), now: resetEventNow)
+var timedRestart = ResetAnnouncementTracker(json: timedAnnouncements.json)
+let futureArrives = timedRestart.consume(resetAnswer(["claude": [resetEvent("future", resetEventNow + 20)]]), now: resetEventNow + 30)
+let correctedBackfill = timedRestart.consume(resetAnswer(["claude": [resetEvent("backfill", resetEventNow + 25),
+    resetEvent("twin-a", resetEventNow + 20), resetEvent("twin-b", resetEventNow + 20)]]), now: resetEventNow + 30)
+check(timedBatch.map(\.id) == ["same-a", "same-b", "newest"]
+      && futureArrives.map(\.id) == ["future"] && correctedBackfill.map(\.id) == ["twin-a", "twin-b"],
+      "watermark survives empty/regressed responses and restart; backfill stays silent, future remains unconsumed, equal timestamps keep separate ids")
+
+let migrationRawCache = try! JSONSerialization.data(withJSONObject: ["products": ["claude": ["events": [resetEvent("cache-old", resetEventNow - 100)]]]])
+var migratedAnnouncements = ResetAnnouncementTracker()
+let migrationBaseline = migratedAnnouncements.consume(ResetOdds(data: migrationRawCache)!, now: resetEventNow)
+let mixedEvents: [Any] = [NSNull(), "bad row", resetEvent("cache-old", resetEventNow - 100),
+    resetEvent("after-cache", resetEventNow - 10),
+    ["id": "numeric-time", "ts": resetEventNow, "type": "reset", "kind": "regular"],
+    ["id": "boolean-time", "ts": true, "type": "reset", "kind": "regular"],
+    resetEvent("banked", resetEventNow, kind: "banked"), resetEvent("unknown-kind", resetEventNow, kind: "other")]
+let mixedAnswer = ResetOdds(json: ["products": ["claude": ["events": mixedEvents]]])!
+let afterMigration = migratedAnnouncements.consume(mixedAnswer, now: resetEventNow)
+let beforeOmission = NSDictionary(dictionary: migratedAnnouncements.json)
+_ = migratedAnnouncements.consume(ResetOdds(json: ["products": ["claude": ["events": "malformed"]]])!, now: resetEventNow)
+let stateSurvived = beforeOmission.isEqual(to: migratedAnnouncements.json)
+var switchedOnAgain = ResetAnnouncementTracker()
+let newBaselineAfterOff = switchedOnAgain.consume(mixedAnswer, now: resetEventNow)
+var invalidClockTracker = ResetAnnouncementTracker(json: ["version": 1, "providers": ["claude": ["ids": ["cache-old"], "newest": true]]])
+let invalidClock = invalidClockTracker.consume(mixedAnswer, now: .nan)
+let clockRecovers = invalidClockTracker.consume(mixedAnswer, now: resetEventNow)
+check(migrationBaseline.isEmpty && afterMigration.map(\.id) == ["after-cache"] && stateSurvived
+      && newBaselineAfterOff.isEmpty && invalidClock.isEmpty && clockRecovers.isEmpty,
+      "raw-cache migration, opt-out baseline and malformed/partial inputs stay silent without discarding valid sibling events or the ledger")
+
+var malformedFirstTracker = ResetAnnouncementTracker()
+let malformedFirst = ResetOdds(json: ["products": ["claude": ["events": [["type": "reset", "kind": "regular", "id": "broken", "ts": "invalid"]]]]])!
+_ = malformedFirstTracker.consume(malformedFirst, now: resetEventNow)
+let historyAfterMalformed = malformedFirstTracker.consume(resetAnswer(["claude": [resetEvent("historical", resetEventNow - 100)]]), now: resetEventNow)
+var bankedFirstTracker = ResetAnnouncementTracker()
+_ = bankedFirstTracker.consume(resetAnswer(["claude": [resetEvent("valid-banked", resetEventNow - 100, kind: "banked")]]), now: resetEventNow)
+let afterBankedBaseline = bankedFirstTracker.consume(resetAnswer(["claude": [resetEvent("reported-later", resetEventNow - 10)]]), now: resetEventNow)
+check(historyAfterMalformed.isEmpty && afterBankedBaseline.map(\.id) == ["reported-later"],
+      "only malformed records cannot establish a first baseline; a valid banked history can establish an empty regular baseline")
+
+var futureFirstTracker = ResetAnnouncementTracker()
+_ = futureFirstTracker.consume(resetAnswer(["claude": [resetEvent("future-first", resetEventNow + 20)]]), now: resetEventNow)
+let historyAfterFutureOnly = futureFirstTracker.consume(resetAnswer(["claude": [resetEvent("history-first", resetEventNow - 100), resetEvent("future-first", resetEventNow + 20)]]), now: resetEventNow)
+let afterValidBaseline = futureFirstTracker.consume(resetAnswer(["claude": [resetEvent("future-first", resetEventNow + 20)]]), now: resetEventNow + 30)
+let repeatFuture = futureFirstTracker.consume(resetAnswer(["claude": [resetEvent("future-first", resetEventNow + 20)]]), now: resetEventNow + 30)
+check(historyAfterFutureOnly.isEmpty && afterValidBaseline.map(\.id) == ["future-first"] && repeatFuture.isEmpty,
+      "future-only first response defers baseline; historical recovery is silent and the future event later emits exactly once")
+
 print(failures == 0 ? "\nall model checks passed" : "\n\(failures) failed")
 exit(failures == 0 ? 0 : 1)
