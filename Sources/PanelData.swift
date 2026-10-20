@@ -196,8 +196,10 @@ extension StatusController {
         // The reset-odds card sits above the scrolling half too, one line folded and a block per
         // provider unfolded.
         let open = panelStore.expanded.contains(PanelStore.resetOddsID)
-        let odds = panelResetOdds(now: Date().timeIntervalSince1970)?.cardHeight(open: open) ?? 0
-        guard limitsBoard.shown(at: Date().timeIntervalSince1970).count > 1 else { return odds }
+        let odds = panelVisibility.chance
+            ? panelResetOdds(now: Date().timeIntervalSince1970)?.cardHeight(open: open) ?? 0 : 0
+        guard panelVisibility.limits,
+              limitsBoard.shown(at: Date().timeIntervalSince1970).count > 1 else { return odds }
         return odds + (limitsLayout == .rows ? 93 : 40)
     }
 

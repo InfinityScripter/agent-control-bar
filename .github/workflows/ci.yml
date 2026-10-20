@@ -58,7 +58,7 @@ jobs:
   # the solver gives up long before code generation. Fails loudly when the image stops shipping
   # a Swift 6.0 Xcode — then pin an older image or retire the job, but do not let it pass empty.
   swift-6-0:
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -85,7 +85,7 @@ jobs:
             Sources/*.swift Sources/Model/*.swift -framework Cocoa -framework SwiftUI
 
   check:
-    runs-on: macos-latest
+    runs-on: macos-15-intel
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0

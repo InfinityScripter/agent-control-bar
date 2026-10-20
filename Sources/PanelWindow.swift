@@ -214,59 +214,65 @@ extension StatusController {
         }
         // The layout the strip is in is printed too: with two providers the dump is the only
         // place to check that the switcher is showing the one it was left on.
-        lines.append("Limits — " + snapshot.limitsNote
-            + (snapshot.limitGroups.count > 1 ? "  [\(snapshot.limitsLayout.rawValue)]" : ""))
-        let showing = snapshot.limitsProvider
-        for group in snapshot.limitGroups {
-            let hidden = snapshot.limitGroups.count > 1
-                && snapshot.limitsLayout == .switcher
-                && group.provider != showing
-            lines.append("  \(group.tip)"
-                + (hidden ? "  [behind the switcher]" : ""))
-            for limit in group.limits {
-                lines.append("    \(limit.title)\(limit.badge.map { " [\($0)]" } ?? "") \(limit.used)%"
-                    + (limit.resets.map { "  resets in \($0)" } ?? ""))
+        if snapshot.visibility.limits {
+            lines.append("Limits — " + snapshot.limitsNote
+                + (snapshot.limitGroups.count > 1 ? "  [\(snapshot.limitsLayout.rawValue)]" : ""))
+            let showing = snapshot.limitsProvider
+            for group in snapshot.limitGroups {
+                let hidden = snapshot.limitGroups.count > 1
+                    && snapshot.limitsLayout == .switcher
+                    && group.provider != showing
+                lines.append("  \(group.tip)"
+                    + (hidden ? "  [behind the switcher]" : ""))
+                for limit in group.limits {
+                    lines.append("    \(limit.title)\(limit.badge.map { " [\($0)]" } ?? "") \(limit.used)%"
+                        + (limit.resets.map { "  resets in \($0)" } ?? ""))
+                }
             }
         }
-        if let odds = snapshot.resetOdds { lines += describeResetOdds(odds) }
-        lines.append("Sessions (\(snapshot.sessions.count))")
-        if let hooks = snapshot.hooks {
-            lines.append("  [hooks] \(hooks.title) — \(hooks.reason)"
-                + (hooks.hint.map { " — \($0)" } ?? "")
-                + (hooks.checking ? "  [checking]" : ""))
-        }
-        for session in snapshot.sessions {
-            // session.subtitle, not a second spelling of it: the row draws that exact sentence, and
-            // the point of this dump is to say what the row says.
-            lines.append("  \(session.name) · \(session.subtitle)"
-                + (session.pct.map { "  ctx \(session.assumed ? "~" : "")\($0)%" } ?? "")
-                + (session.tag.isEmpty ? "" : "  " + session.tag)
-                // Where a click on this row would land, when it is the agent's own deep link
-                // rather than "raise the terminal". Printed because it is the one thing about a
-                // row that cannot be seen by looking at it — and the dump exists for exactly the
-                // checks that clicking cannot make.
-                + (session.threadURL.map { "  → \($0.absoluteString)" } ?? ""))
-        }
-        if snapshot.offerOpenClaude { lines.append("  Open Claude") }
-        if snapshot.codexHooksBlocked {
-            lines.append("  Approve Codex's hooks to see its sessions"
-                + " (\(snapshot.codexHooksUntrusted) waiting)")
-        }
-        lines.append("MCP — \(snapshot.mcp.summary) · \(snapshot.mcp.toolsLine)")
-        if let change = snapshot.mcp.change { lines.append("  changed: \(change)") }
-        for group in snapshot.mcp.groups {
-            lines.append("  \(group.title)")
-            for server in group.servers {
-                lines.append("    \(server.state) \(server.name)  \(server.tail)"
-                    + (server.enabled ? "" : "  [off]")
-                    + (server.tools.isEmpty ? "" : "  (\(server.tools.count) tools)"))
+        if snapshot.visibility.chance, let odds = snapshot.resetOdds { lines += describeResetOdds(odds) }
+        if snapshot.visibility.sessions {
+            lines.append("Sessions (\(snapshot.sessions.count))")
+            if let hooks = snapshot.hooks {
+                lines.append("  [hooks] \(hooks.title) — \(hooks.reason)"
+                    + (hooks.hint.map { " — \($0)" } ?? "")
+                    + (hooks.checking ? "  [checking]" : ""))
+            }
+            for session in snapshot.sessions {
+                // session.subtitle, not a second spelling of it: the row draws that exact sentence, and
+                // the point of this dump is to say what the row says.
+                lines.append("  \(session.name) · \(session.subtitle)"
+                    + (session.pct.map { "  ctx \(session.assumed ? "~" : "")\($0)%" } ?? "")
+                    + (session.tag.isEmpty ? "" : "  " + session.tag)
+                    // Where a click on this row would land, when it is the agent's own deep link
+                    // rather than "raise the terminal". Printed because it is the one thing about a
+                    // row that cannot be seen by looking at it — and the dump exists for exactly the
+                    // checks that clicking cannot make.
+                    + (session.threadURL.map { "  → \($0.absoluteString)" } ?? ""))
+            }
+            if snapshot.offerOpenClaude { lines.append("  Open Claude") }
+            if snapshot.codexHooksBlocked {
+                lines.append("  Approve Codex's hooks to see its sessions"
+                    + " (\(snapshot.codexHooksUntrusted) waiting)")
             }
         }
-        if !snapshot.mcp.waitingAuth.isEmpty {
-            lines.append("  Waiting for authorisation — run /mcp in a terminal")
-            for name in snapshot.mcp.waitingAuth { lines.append("    \(name)") }
+        if snapshot.visibility.mcp {
+            lines.append("MCP — \(snapshot.mcp.summary) · \(snapshot.mcp.toolsLine)")
+            if let change = snapshot.mcp.change { lines.append("  changed: \(change)") }
+            for group in snapshot.mcp.groups {
+                lines.append("  \(group.title)")
+                for server in group.servers {
+                    lines.append("    \(server.state) \(server.name)  \(server.tail)"
+                        + (server.enabled ? "" : "  [off]")
+                        + (server.tools.isEmpty ? "" : "  (\(server.tools.count) tools)"))
+                }
+            }
+            if !snapshot.mcp.waitingAuth.isEmpty {
+                lines.append("  Waiting for authorisation — run /mcp in a terminal")
+                for name in snapshot.mcp.waitingAuth { lines.append("    \(name)") }
+            }
+            if let error = snapshot.mcp.error { lines.append("  Check failed: \(error)") }
         }
-        if let error = snapshot.mcp.error { lines.append("  Check failed: \(error)") }
         if snapshot.notificationsDenied { lines.append("Notifications are off") }
         lines.append("Settings…   ⌘,")
         lines.append("Quit   ⌘Q")

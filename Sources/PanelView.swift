@@ -48,38 +48,40 @@ struct PanelView: View {
                 PanelUpdateBanner(update: update, store: store)
                     .padding(.bottom, 7)
             }
-            limitsStrip
-            if let odds = store.snapshot.resetOdds {
+            if store.snapshot.visibility.limits { limitsStrip }
+            if store.snapshot.visibility.chance, let odds = store.snapshot.resetOdds {
                 PanelResetOddsCard(store: store, odds: odds)
             }
-            tabBar
-            // The panel grows with its content up to a cap and scrolls past it, so a machine with
-            // two servers does not get the window a machine with twenty needs. Both halves of that
-            // are load-bearing, and each one was a bug on its own:
-            //
-            //   .fixedSize on the CONTENT makes it report its ideal height whatever the scroll
-            //   view proposes. Without it the frame below and the measurement feed each other and
-            //   the list collapses to nothing while the panel around it looks perfectly healthy.
-            //
-            //   .fixedSize on the SCROLL VIEW instead — which looks like the tidier spelling —
-            //   is wrong: a list longer than the cap then draws at full height straight through
-            //   its own frame, over the tabs above it and the footer below.
-            //
-            // The height is read back through onAppear/onChange rather than a PreferenceKey: a
-            // preference published from inside a ScrollView's content arrived here as its default
-            // 0 and never moved, which is the same collapse by another route.
-            ScrollView(.vertical) {
-                content
-                    .fixedSize(horizontal: false, vertical: true)
-                    .overlay(GeometryReader { geo in
-                        Color.clear
-                            .onAppear { contentHeight = geo.size.height }
-                            .onChange(of: geo.size.height) { contentHeight = $0 }
-                    })
+            if !store.snapshot.visibility.tabs.isEmpty {
+                tabBar
+                // The panel grows with its content up to a cap and scrolls past it, so a machine with
+                // two servers does not get the window a machine with twenty needs. Both halves of that
+                // are load-bearing, and each one was a bug on its own:
+                //
+                //   .fixedSize on the CONTENT makes it report its ideal height whatever the scroll
+                //   view proposes. Without it the frame below and the measurement feed each other and
+                //   the list collapses to nothing while the panel around it looks perfectly healthy.
+                //
+                //   .fixedSize on the SCROLL VIEW instead — which looks like the tidier spelling —
+                //   is wrong: a list longer than the cap then draws at full height straight through
+                //   its own frame, over the tabs above it and the footer below.
+                //
+                // The height is read back through onAppear/onChange rather than a PreferenceKey: a
+                // preference published from inside a ScrollView's content arrived here as its default
+                // 0 and never moved, which is the same collapse by another route.
+                ScrollView(.vertical) {
+                    content
+                        .fixedSize(horizontal: false, vertical: true)
+                        .overlay(GeometryReader { geo in
+                            Color.clear
+                                .onAppear { contentHeight = geo.size.height }
+                                .onChange(of: geo.size.height) { contentHeight = $0 }
+                        })
+                }
+                .scrollIndicators(.never)
+                .frame(height: min(max(contentHeight, 1), store.snapshot.contentCap))
+                .clipped()
             }
-            .scrollIndicators(.never)
-            .frame(height: min(max(contentHeight, 1), store.snapshot.contentCap))
-            .clipped()
             if store.snapshot.notificationsDenied { notificationsWarning }
             footer
         }
@@ -238,7 +240,7 @@ struct PanelView: View {
 
     private var tabBar: some View {
         HStack(spacing: 2) {
-            ForEach(PanelTab.allCases) { tab in
+            ForEach(store.snapshot.visibility.tabs) { tab in
                 Button { store.tab = tab } label: {
                     HStack(spacing: 5) {
                         Image(systemName: tab.icon).font(.system(size: 11, weight: .medium))
@@ -308,8 +310,8 @@ struct PanelView: View {
         // Two providers' ages ("Claude 1d ago · Codex just now") are wider than the room the
         // buttons leave in 300pt and would be cut to "Claude 1d ago · Co…", so that line gets a row
         // of its own. One provider keeps its short line beside the buttons.
-        let stacked = store.snapshot.limitGroups.count > 1
-        let note = Text(store.snapshot.limitGroups.isEmpty ? "" : store.snapshot.limitsNote)
+        let stacked = store.snapshot.visibility.limits && store.snapshot.limitGroups.count > 1
+        let note = Text(!store.snapshot.visibility.limits || store.snapshot.limitGroups.isEmpty ? "" : store.snapshot.limitsNote)
             .font(.system(size: 10.5))
             .foregroundStyle(.tertiary)
             .lineLimit(1)
