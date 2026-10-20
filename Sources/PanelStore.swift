@@ -67,6 +67,7 @@ final class PanelStore: ObservableObject {
         petAtlases = ["claude": controller.petAtlas(of: "claude"),
                       "codex": controller.petAtlas(of: "codex")].compactMapValues { $0 }
         let next = PanelSnapshot(controller, mcp: mcpCache, update: stagedUpdate(controller))
+        if let selected = next.visibility.selectedTab(tab), selected != tab { tab = selected }
         if next != snapshot { snapshot = next }
     }
 
@@ -178,15 +179,6 @@ final class PanelStore: ObservableObject {
 
 // MARK: - the picture
 
-enum PanelTab: String, CaseIterable, Identifiable {
-    case sessions, mcp
-
-    var id: String { rawValue }
-    var title: String { self == .sessions ? "Sessions" : "MCP" }
-    /// Both are SF Symbols the app already relies on elsewhere; nothing is bundled for them.
-    var icon: String { self == .sessions ? "terminal" : "powerplug" }
-}
-
 /// How the strip shows more than one provider. A setting rather than a decision taken here
 /// because the two answers are both right and for different people: someone watching two agents
 /// at once wants both rows on screen, someone who mostly uses one wants the figures big and the
@@ -253,6 +245,7 @@ struct PanelLimitGroup: Equatable, Identifiable {
 }
 
 struct PanelSnapshot: Equatable {
+    var visibility = PanelVisibility()
     /// The panel's width, still the `boxWidth` knob in uiconfig.json that the menu honoured. It is
     /// read per refresh because the file is meant to be edited while the app runs.
     var width: CGFloat = PanelTheme.width
@@ -502,6 +495,7 @@ extension PanelSnapshot {
     /// every server and tool; reading the installed bundle's Info.plist off disk).
     init(_ c: StatusController, mcp: PanelMCP, update: PanelUpdate?) {
         let now = Date().timeIntervalSince1970
+        visibility = c.panelVisibility
         width = c.boxWidth
         contentCap = c.panelContentCap
         sessions = c.panelSessions(now: now)

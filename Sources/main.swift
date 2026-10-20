@@ -211,6 +211,7 @@ final class StatusController: NSObject, NSWindowDelegate {
     var petPreviewCache: [(pet: Pet, atlas: PetAtlas?)] = []
     var iconPreviewCache: [(icon: MenuBarIcon, name: String, frames: [NSImage])] = []
     var petIconCache: [String: PetIconFrames?] = [:]
+    var panelVisibility = PanelVisibility()
     var showTimer = false
     var iconSystem = false // false = brand Orange; true = adaptive black/white (template image)
     var useThinkingWords = true     // rotate a playful verb ("Manifesting…") in place of "Thinking…"
@@ -298,6 +299,7 @@ final class StatusController: NSObject, NSWindowDelegate {
     override init() {
         super.init()
         let d = UserDefaults.standard
+        panelVisibility = PanelVisibility(defaults: d)
         if d.object(forKey: "showTimer") != nil { showTimer = d.bool(forKey: "showTimer") }
         if d.object(forKey: "iconSystem") != nil { iconSystem = d.bool(forKey: "iconSystem") }
         if d.object(forKey: "thinkingWords") != nil { useThinkingWords = d.bool(forKey: "thinkingWords") }

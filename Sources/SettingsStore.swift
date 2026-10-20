@@ -64,6 +64,19 @@ final class SettingsStore: ObservableObject {
             })
     }
 
+    func panelBlock(_ field: WritableKeyPath<PanelVisibility, Bool>) -> Binding<Bool> {
+        bind({ $0.panelVisibility[keyPath: field] }, { controller, on in
+            var visibility = controller.panelVisibility
+            visibility[keyPath: field] = on
+            controller.applyPanelVisibility(visibility)
+        }, or: true)
+    }
+
+    func showAllPanelBlocks() {
+        objectWillChange.send()
+        controller?.applyPanelVisibility(PanelVisibility())
+    }
+
     var showTimer: Binding<Bool> {
         bind({ $0.showTimer }, { $0.applyShowTimer($1) }, or: false)
     }
@@ -220,6 +233,12 @@ final class SettingsStore: ObservableObject {
 // menu's @objc choosers; they moved here whole when the Options block became a window, so the
 // behaviour of every switch is unchanged and there is still one place that performs it.
 extension StatusController {
+
+    func applyPanelVisibility(_ visibility: PanelVisibility) {
+        panelVisibility = visibility
+        visibility.save(to: UserDefaults.standard)
+        panelStore.refresh()
+    }
 
     func applyShowTimer(_ on: Bool) {
         showTimer = on

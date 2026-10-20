@@ -179,6 +179,18 @@ private struct GeneralSettings: View {
                 Text(Self.agentFooter)
             }
             Section {
+                Toggle("Limits", isOn: store.panelBlock(\.limits))
+                Toggle("Chance", isOn: store.panelBlock(\.chance))
+                Toggle("Sessions", isOn: store.panelBlock(\.sessions))
+                Toggle("MCP", isOn: store.panelBlock(\.mcp))
+                Button("Show all") { store.showAllPanelBlocks() }
+                    .help("Shows every panel block without enabling disabled data sources.")
+            } header: {
+                Text("Panel")
+            } footer: {
+                Text("Choose which blocks appear in the panel. Data collection and notifications stay on their existing settings.")
+            }
+            Section {
                 Toggle("Exact terminal focus", isOn: store.exactTerminalFocus)
             } header: {
                 Text("Sessions")

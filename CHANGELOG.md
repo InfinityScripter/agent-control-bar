@@ -7,6 +7,14 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.27.0] - 2026-10-20
+
+### Added
+- Choose which panel blocks to show in Settings → General → Panel: Limits, Chance, Sessions
+  and MCP. Each switch applies at once, and the app remembers the choice after a restart.
+- Settings stays accessible with all blocks hidden. Show all restores all four blocks.
+  Hiding blocks leaves data collection and notifications running.
+
 ## [0.26.0] - 2026-10-20
 
 ### Added

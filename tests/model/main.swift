@@ -4193,5 +4193,32 @@ let repeatFuture = futureFirstTracker.consume(resetAnswer(["claude": [resetEvent
 check(historyAfterFutureOnly.isEmpty && afterValidBaseline.map(\.id) == ["future-first"] && repeatFuture.isEmpty,
       "future-only first response defers baseline; historical recovery is silent and the future event later emits exactly once")
 
+let visibilitySuite = "panel-visibility-check-" + UUID().uuidString
+let visibilityDefaults = UserDefaults(suiteName: visibilitySuite)!
+check(PanelVisibility(defaults: visibilityDefaults) == PanelVisibility(),
+      "missing visibility preferences preserve all four blocks")
+visibilityDefaults.set(false, forKey: "oauthLimits")
+visibilityDefaults.set(false, forKey: "resetOdds")
+var visibilityCombinationsOK = true
+for mask in 0..<16 {
+    let visibility = PanelVisibility(limits: mask & 1 != 0, chance: mask & 2 != 0,
+                                     sessions: mask & 4 != 0, mcp: mask & 8 != 0)
+    visibility.save(to: visibilityDefaults)
+    let reloaded = PanelVisibility(defaults: visibilityDefaults)
+    let expectedTabs: [PanelTab] = (mask & 4 != 0 ? [.sessions] : []) + (mask & 8 != 0 ? [.mcp] : [])
+    visibilityCombinationsOK = visibilityCombinationsOK && reloaded == visibility && visibility.tabs == expectedTabs
+    for selected in PanelTab.allCases {
+        let expected = expectedTabs.contains(selected) ? selected : expectedTabs.first
+        visibilityCombinationsOK = visibilityCombinationsOK && visibility.selectedTab(selected) == expected
+    }
+}
+check(visibilityCombinationsOK, "all 16 visibility combinations persist and never select a hidden tab")
+PanelVisibility().save(to: visibilityDefaults)
+check(PanelVisibility(defaults: visibilityDefaults) == PanelVisibility()
+      && visibilityDefaults.object(forKey: "oauthLimits") as? Bool == false
+      && visibilityDefaults.object(forKey: "resetOdds") as? Bool == false,
+      "show all restores only panel visibility, preserving data and reset opt-outs")
+visibilityDefaults.removePersistentDomain(forName: visibilitySuite)
+
 print(failures == 0 ? "\nall model checks passed" : "\n\(failures) failed")
 exit(failures == 0 ? 0 : 1)
