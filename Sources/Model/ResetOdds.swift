@@ -41,9 +41,24 @@ extension ResetOddsProduct {
 /// is read by newer code through this same parser.
 struct ResetOdds: Equatable {
     let products: [ResetOddsProduct]
+    /// A missing key means the response omitted events; it must not erase that provider’s ledger.
+    let announcements: [String: [ResetAnnouncement]]
 
     init?(json: [String: Any]) {
         guard let all = json["products"] as? [String: Any] else { return nil }
+        announcements = Dictionary(uniqueKeysWithValues: Provider.all.compactMap { provider in
+            guard let product = all[provider.id] as? [String: Any],
+                  let events = product["events"] as? [Any] else { return nil }
+            let history = events.compactMap { value -> (ResetAnnouncement, Bool)? in
+                guard let event = value as? [String: Any],
+                      let announcement = ResetAnnouncement(provider: provider.id, json: event) else { return nil }
+                return (announcement, event["kind"] as? String == "regular")
+            }
+            // An empty history is valid. A nonempty but unreadable history cannot establish
+            // the first baseline: the next readable historical response must stay silent.
+            guard events.isEmpty || !history.isEmpty else { return nil }
+            return (provider.id, history.filter { $0.1 }.map { $0.0 })
+        })
         let parsed = all.compactMap { id, value -> ResetOddsProduct? in
             (value as? [String: Any]).map { ResetOddsProduct(id: id, json: $0) }
         }

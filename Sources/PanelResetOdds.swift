@@ -65,7 +65,7 @@ struct PanelResetOddsCard: View {
                 Button { store.toggleResetOdds() } label: { PanelResetOddsSummary(odds: odds) }
                     .buttonStyle(.plain)
                     .accessibilityLabel(Self.spoken(odds.rows))
-                    .help(odds.stale ? odds.note : Self.summaryHelp)
+                    .help(odds.stale ? Self.summaryHelp + " · " + odds.note : Self.summaryHelp)
                 Button { store.toggleResetOdds() } label: {
                     PanelDisclosure(open: open)
                         .frame(width: 24, height: Metrics.header)
@@ -87,7 +87,7 @@ struct PanelResetOddsCard: View {
         let parts = rows.map { row in
             row.title + " " + (row.p24.map { "\($0) percent" } ?? "unknown")
         }
-        return "Reset odds in 24 hours: " + parts.joined(separator: ", ")
+        return "Reset chance within 24 hours: " + parts.joined(separator: ", ")
     }
 }
 
@@ -95,16 +95,16 @@ private struct PanelResetOddsSummary: View {
     let odds: PanelResetOdds
 
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "arrow.counterclockwise")
+        HStack(spacing: 4) {
+            Image(systemName: "dice")
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.secondary)
-            Text("Reset in 24h")
-                .font(.system(size: 11.5))
+            Text("Reset chance · 24h")
+                .font(.system(size: 10.5))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             Spacer(minLength: 4)
-            ForEach(odds.rows) { PanelResetOddsPill(row: $0) }
+            ForEach(odds.rows) { PanelResetOddsPill(row: $0).fixedSize() }
         }
         .padding(.leading, 9)
         .frame(height: Metrics.header)
@@ -117,15 +117,15 @@ private struct PanelResetOddsPill: View {
     let row: PanelResetOddsRow
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 3) {
             Image(systemName: row.glyph)
                 .font(.system(size: 8.5, weight: .semibold))
                 .foregroundStyle(.secondary)
             Text(PanelResetOddsCell.percent(row.p24))
-                .font(.system(size: 11.5, weight: .semibold).monospacedDigit())
+                .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
                 .foregroundStyle(row.p24 == nil ? Color.secondary : Color.primary)
         }
-        .padding(.horizontal, 7)
+        .padding(.horizontal, 5)
         .padding(.vertical, 2.5)
         .background(Capsule().fill(PanelTheme.raisedFill(scheme)))
     }
@@ -138,12 +138,12 @@ private struct PanelResetOddsPending: View {
     private var loading: Bool { odds.state == "loading" }
 
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "arrow.counterclockwise")
+        HStack(spacing: 4) {
+            Image(systemName: "dice")
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.tertiary)
-            Text("Reset odds")
-                .font(.system(size: 11.5))
+            Text("Reset chance · 24h")
+                .font(.system(size: 10.5))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .layoutPriority(1)
@@ -158,8 +158,8 @@ private struct PanelResetOddsPending: View {
         .padding(.horizontal, 9)
         .frame(height: Metrics.header)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(loading ? "Reset odds loading" : "Reset odds unavailable: " + odds.note)
-        .help(loading ? "Asking whenreset.app" : odds.note)
+        .accessibilityLabel(loading ? "Reset chance within 24 hours loading" : "Reset chance within 24 hours unavailable: " + odds.note)
+        .help(loading ? "Asking whenreset.app for the chance of an early reset within 24 hours" : "Reset chance unavailable: " + odds.note)
     }
 }
 
@@ -261,7 +261,7 @@ private struct PanelResetOddsCell: View {
         .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
             .fill(PanelTheme.wellFill(scheme)))
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Reset within \(spoken): " + (value.map { "\($0) percent" } ?? "unknown"))
+        .accessibilityLabel("Reset chance within \(spoken): " + (value.map { "\($0) percent" } ?? "unknown"))
     }
 }
 

@@ -47,7 +47,7 @@
 - build.sh: `swiftc -O -target arm64-apple-macos13.0 Sources/*.swift Sources/Model/*.swift … -framework Cocoa -framework SwiftUI`, то же для x86_64, `lipo`. Маска — новые файлы подхватятся. Минимум macOS 13.0 — API новее 13 не использовать.
 - ci.yml `swift-6-0`: `swiftc -typecheck -target arm64-apple-macos13.0 Sources/*.swift Sources/Model/*.swift -framework Cocoa -framework SwiftUI` компилятором Swift 6.0 — мелкие подвьюхи, без длинных цепочек `+` и вложенных тернарников в `body`.
 - ci.yml `scripts-linux`: `grep -rnE '@State([^A-Za-z]|$)' Sources` — любое вхождение (даже в комментарии) красное. Состояние вьюхи: `private let _x = State<…>(initialValue:)` + computed (PanelView.swift:11–15).
-- Гвард идентичности: литерал bundle id в Sources/main.swift, Updates.swift запрещён; префикс `CLAUDE_STATUSBAR` запрещён.
+- Гвард идентичности: литерал bundle id в Sources/main.swift, Updates.swift запрещён; старый префикс переменных окружения запрещён (только `CONTROL_BAR_*`).
 - Локально: `./build.sh`; модельная проверка `swiftc -O Sources/Model/*.swift tests/model/main.swift -o /tmp/model -framework Cocoa && /tmp/model`; typecheck `swiftc -typecheck -target arm64-apple-macos13.0 Sources/*.swift Sources/Model/*.swift -framework Cocoa -framework SwiftUI`.
 
 ## 6. Дамп и переменные окружения

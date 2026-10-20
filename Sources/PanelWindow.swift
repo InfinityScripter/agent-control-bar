@@ -222,7 +222,6 @@ extension StatusController {
                 && snapshot.limitsLayout == .switcher
                 && group.provider != showing
             lines.append("  \(group.tip)"
-                + (group.resets.map { "  resets in \($0)" } ?? "")
                 + (hidden ? "  [behind the switcher]" : ""))
             for limit in group.limits {
                 lines.append("    \(limit.title)\(limit.badge.map { " [\($0)]" } ?? "") \(limit.used)%"
@@ -276,10 +275,10 @@ extension StatusController {
 
     private func describeResetOdds(_ odds: PanelResetOdds) -> [String] {
         guard odds.state == "ok" else {
-            return ["Reset odds — \(odds.state)" + (odds.note.isEmpty ? "" : ": \(odds.note)")]
+            return ["Reset chance · 24h — \(odds.state)" + (odds.note.isEmpty ? "" : ": \(odds.note)")]
         }
         let pct = { (value: Int?) in value.map { "\($0)%" } ?? "—" }
-        var lines = ["Reset odds — \(odds.note)" + (odds.stale ? "  [stale]" : "")]
+        var lines = ["Reset chance · 24h — \(odds.note)" + (odds.stale ? "  [stale]" : "")]
         for row in odds.rows {
             lines.append("  \(row.title)  24h \(pct(row.p24))  48h \(pct(row.p48))  7d \(pct(row.p7d))"
                 + (row.lastReset.map { "  · last reset \($0)" } ?? ""))

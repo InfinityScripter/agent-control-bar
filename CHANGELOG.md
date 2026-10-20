@@ -7,7 +7,7 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
-## [Unreleased]
+## [0.26.0] - 2026-10-20
 
 ### Added
 - **Odds of an early limit reset.** A card under the limits strip shows whenreset.app's estimate
@@ -17,6 +17,20 @@ from, and are kept so the history reads continuously.
   too. The app asks the site at most every 15 minutes and keeps the last answer, so the card shows
   at launch and says when the figures are old. **Limit reset odds** in Settings → General → Limits
   turns it off, which also stops the request.
+
+- **A popup for new public reset announcements.** When whenreset.app reports a new reset for
+  Claude or Codex, a popup near the menu bar shows confetti without taking keyboard focus.
+  The first usable history becomes the baseline; later polls and app restarts do not repeat
+  announcements already seen. These are public announcements, not confirmation that your own
+  account's limits have reset.
+
+### Changed
+- **The odds card says "Reset chance · 24h".** A dice icon and the tooltip explain that the
+  percentage estimates the chance of an early reset within 24 hours.
+- **Each limit window shows its own reset countdown.** The shared countdown has been removed
+  from the provider header.
+- **Claude and Codex headers use their product logos.** Both limits layouts keep the provider
+  names beside the marks.
 
 ## [0.25.1] - 2026-10-14
 

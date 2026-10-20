@@ -238,7 +238,7 @@ struct PanelLimitGroup: Equatable, Identifiable {
     /// PanelData, where the reset times are still numbers — at equal fullness the window that
     /// comes back sooner is the one that bites, and by here the resets are worded strings.
     let worst: PanelLimit?
-    /// "Early reset in 24h: 13% (whenreset.app)", while the odds are on and the site has a figure.
+    /// "Early reset chance in 24h: 13% (whenreset.app)", while the odds are on and the site has a figure.
     var earlyReset: String? = nil
 
     var id: String { provider }
