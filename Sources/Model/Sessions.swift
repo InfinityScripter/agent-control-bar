@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 // The per-session state model, separated from the UI so the model checks can hold it: every
 // serious bug of the 0.7.x review lived in logic main.swift kept untestable. Sources/main.swift
@@ -54,6 +55,18 @@ struct Session {
     // the two can be matched exactly — see effectiveState's turn-over net. "" for Claude, which has
     // no such id, and for a Codex build that stamps none.
     var turnID: String = ""
+
+    // The exact state-file version shown to the user; includes subsecond mtime so two
+    // otherwise identical hook events in one second remain distinct across app restarts.
+    var version: String = ""
+    var fileMtime: Date = .distantPast
+
+    static func version(json: [String: Any], mtime: Date) -> String {
+        guard var data = try? JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
+        else { return "" }
+        data.append(Data(String(mtime.timeIntervalSince1970).utf8))
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
 
     var eff: String = ""   // effective state, recomputed once per tick in evaluate()
     var asyncQuestion = false

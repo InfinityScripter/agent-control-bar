@@ -1484,9 +1484,10 @@ class UsageToken(unittest.TestCase):
             threading.Thread(target=server.serve_forever, daemon=True).start()
 
         self._dir = tempfile.TemporaryDirectory()
-        self.saved = {k: getattr(home(k), k) for k in ("USAGE_URL", "LIMITS", "oauth_token")}
+        self.saved = {k: getattr(home(k), k) for k in ("USAGE_URL", "LIMITS", "LIMITS_STATUS", "oauth_token")}
         mcpbar.USAGE_URL = "http://127.0.0.1:%d/" % self.bouncer.server_address[1]
         mcpbar.LIMITS = os.path.join(self._dir.name, "limits.json")
+        mcpbar.LIMITS_STATUS = os.path.join(self._dir.name, "limits-status.json")
         mcpbar.oauth_token = lambda: "SECRET"
 
     def tearDown(self):
@@ -1913,9 +1914,10 @@ class UsagePayloadDrift(unittest.TestCase):
         # data:-URL вместо третьего локального HTTP-сервера в файле: build_opener открывает
         # их штатно, тем же путём с NoRedirect — проверено живым запуском.
         tmp = tempfile.TemporaryDirectory()
-        saved = {k: getattr(home(k), k) for k in ("USAGE_URL", "LIMITS", "oauth_token")}
+        saved = {k: getattr(home(k), k) for k in ("USAGE_URL", "LIMITS", "LIMITS_STATUS", "oauth_token")}
         mcpbar.USAGE_URL = "data:application/json,[1,2,3]"
         mcpbar.LIMITS = os.path.join(tmp.name, "limits.json")
+        mcpbar.LIMITS_STATUS = os.path.join(tmp.name, "limits-status.json")
         mcpbar.oauth_token = lambda: "SECRET"
         try:
             result = mcpbar.fetch_limits()

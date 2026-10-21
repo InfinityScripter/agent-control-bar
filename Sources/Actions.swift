@@ -7,6 +7,23 @@ import Cocoa
 // not: the rules in openSession below are the product of a long line of "the click did nothing"
 // reports, and none of them had anything to do with how the row was drawn.
 extension StatusController {
+    func dismissSession(_ session: PanelSession) {
+        // Refresh first so a click on an older panel snapshot cannot hide the latest event.
+        reloadSessions()
+        do {
+            let removed = try board.dismiss(key: session.id, version: session.version) { [self] versions in
+                try SessionDismissals.save(versions, at: dismissalPath)
+            }
+            sessionDismissalError = removed ? nil : "This session changed. Review its latest activity and try again."
+        } catch {
+            sessionDismissalError = "Could not save Remove from list. The session is still shown. Try again."
+            NSLog("ClaudeControlBar: could not save session dismissal: \(error)")
+        }
+        evaluate()
+        refreshCounts()
+        panelStore.refresh()
+    }
+
 
     // Files & Folders — the pane holding the per-app network-volumes switch. Same undocumented
     // scheme as the notifications pane below; the bare Privacy pane is the fallback.

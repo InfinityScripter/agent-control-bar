@@ -138,6 +138,9 @@ Mac, and all of it is listed here rather than left to be discovered.
   the tool names from Codex's own app-server — which starts each configured server to ask it, the
   way Codex does itself. Nothing leaves the machine, and `~/.codex/config.toml` is never parsed
   by this app.
+- **Local process metadata** for Codex terminal sessions: this user's process names, controlling
+  terminal devices and process start times, through macOS's native process API. The app does not
+  read command-line arguments for this check, send this metadata anywhere, or stop those processes.
 - **The current directory and git branch** of each session, to label its row.
 
 ## Where it writes
@@ -146,8 +149,14 @@ Everything of its own lives under `~/.claude/control-bar/`. The complete list:
 
 - **Per session:** one small JSON file in `state.d/` (state, working directory, transcript path,
   pid, context figures), and the context percentage the session's status line reported in
-  `context.d/`. Both are deleted with the session. A Codex session's file is the same shape, in
-  `codex/state.d/`, plus which surface it runs on.
+  `context.d/`. The SessionEnd hook removes them. A Codex session's file is the same shape, in
+  `codex/state.d/`, plus which surface it runs on. If the client exits without a hook, the app
+  ignores the closed status but leaves its small JSON file in place so cleanup cannot delete a
+  concurrent hook event. Conversation history is never deleted by this cleanup.
+- **Removed session statuses:** `dismissed-sessions.json` stores provider/session ids and hashes
+  of the exact state-file versions removed automatically or with **Remove from list**. It is readable only by
+  your account and contains no conversation text. A new hook event is a different version and
+  becomes visible again. Removing a status never stops the agent process or deletes a chat.
 - **The MCP picture:** `mcp.json`, `codex/mcp.json` for Codex's servers, the per-server
   descriptions cache `descriptions.json`, and the model-to-context-window table
   `model-windows.json`.

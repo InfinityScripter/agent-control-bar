@@ -84,6 +84,10 @@ More on local files and permissions: [PRIVACY.md](PRIVACY.md).
 
 The yellow dot marks a session waiting for permission or an answer. Expand a row for model and context details. Codex keeps the complete model identifier, such as `gpt-6.1-sol`.
 
+**Remove from list** in the expanded row hides that status, including its attention signal and menu-bar influence. It keeps the chat and process open. The choice survives an app restart; the next hook event for that session brings it back. If saving fails, the row stays visible and the panel reports the error.
+
+Closed Codex CLI sessions disappear once a local process check confirms that their terminal client has exited, even if Codex's shared app-server is still running. A live client stays listed regardless of age. An incomplete check keeps the existing status until ownership can be confirmed. Desktop, IDE and non-interactive sessions keep their existing process checks. Automatically removed statuses stay removed after restart, even if their old PID is reused. New hook activity restores them. A failed cleanup save leaves the rows visible, reports the error and retries.
+
 | State | What you see |
 | --- | --- |
 | Idle | A resting icon or pet. |

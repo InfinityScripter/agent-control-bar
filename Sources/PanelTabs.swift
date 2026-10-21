@@ -14,6 +14,10 @@ struct PanelSessionsTab: View {
             // Above the list, not below it: it explains what the list is missing, and an empty tab
             // is short enough that a line under "No session running" reads as an afterthought.
             if let hooks = store.snapshot.hooks { hooksBlock(hooks) }
+            if let error = store.snapshot.sessionDismissalError {
+                PanelNotice(glyph: "exclamationmark.triangle", text: error)
+                    .padding(.bottom, 8)
+            }
             if store.snapshot.sessions.isEmpty {
                 emptyState
             } else {
@@ -217,8 +221,21 @@ struct PanelSessionRow: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
 
-            if open { PanelSessionDetailView(detail: session.detail, pct: session.pct,
-                                             assumed: session.assumed) }
+            if open {
+                PanelSessionDetailView(detail: session.detail, pct: session.pct, assumed: session.assumed)
+                VStack(alignment: .leading, spacing: 5) {
+                    Button("Remove from list") { store.dismissSession(session) }
+                        .buttonStyle(PanelButtonStyle())
+                        .accessibilityLabel("Remove \(session.name) from list")
+                    Text("Hides this status until new activity. The chat and process stay open.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 9)
+            }
         }
         .background(session.eff == "permission"
             ? Color(nsColor: StatusController.amber).opacity(0.16) : .clear)

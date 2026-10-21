@@ -101,7 +101,20 @@ final class StatusController: NSObject, NSWindowDelegate {
 
     // Every live session and the decisions about them live in SessionBoard (Sources/Model),
     // under the model check; this class only reads the files and acts on what it returns.
-    let board = SessionBoard(engine: SessionEngine())
+    var sessionDismissalError: String?
+    lazy var dismissalPath = (root as NSString).appendingPathComponent("dismissed-sessions.json")
+    lazy var board: SessionBoard = {
+        do {
+            return SessionBoard(engine: SessionEngine(), dismissals: try SessionDismissals.load(at: dismissalPath))
+        } catch {
+            sessionDismissalError = "Could not read removed sessions. Previously removed rows may reappear."
+            NSLog("ClaudeControlBar: could not read session dismissals: \(error)")
+            return SessionBoard(engine: SessionEngine())
+        }
+    }()
+    var sessionOwners: RunningProcesses.CodexSnapshot?
+    var sessionOwnerProbeRunning = false
+    var lastSessionOwnerProbe: Double = 0
     var engine: SessionEngine { board.engine }
     var sessions: [String: Session] { board.sessions }  // "<provider>:<id>" -> latest parsed state
     let git = GitBranches()  // cwd -> branch, read out of .git/HEAD (Sources/Model)

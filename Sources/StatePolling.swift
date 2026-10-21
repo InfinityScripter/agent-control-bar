@@ -134,12 +134,6 @@ extension StatusController {
         agentDisplay.limits(claude: limits?.set, codex: codexWindows, forBar: false)
     }
 
-    // Where a session's own file lives — see Provider.statePath, so the reap in evaluate()
-    // cannot delete out of the wrong agent's directory.
-    func statePath(of s: Session) -> String {
-        Provider.statePath(provider: s.provider, id: s.id, home: NSHomeDirectory())
-    }
-
     // Refresh `sessions` from the state directories; SessionBoard re-parses only the files whose
     // mtime changed.
     func reloadSessions() {
@@ -170,17 +164,45 @@ extension StatusController {
         needsYouPlayer?.play()
     }
 
+    func refreshSessionOwners(now: Double) {
+        guard !sessionOwnerProbeRunning, now - lastSessionOwnerProbe >= 2,
+              sessions.values.contains(where: { $0.provider == "codex" && $0.surface == "cli" && !$0.tty.isEmpty })
+        else { return }
+        lastSessionOwnerProbe = now
+        sessionOwnerProbeRunning = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let snapshot = RunningProcesses.codexSnapshot()
+            DispatchQueue.main.async {
+                self?.sessionOwners = snapshot
+                self?.sessionOwnerProbeRunning = false
+            }
+        }
+    }
+
     func evaluate() {
         let now = Date().timeIntervalSince1970
+        refreshSessionOwners(now: now)
         let agents = agentDisplay
         let rules = SessionBoard.Rules(soundThreshold: soundThreshold, stalePruneAge: stalePruneAge,
                                        thinkingWords: thinkingWords, needsYou: !needsYouSound.isEmpty,
                                        leads: agents.barProviders, cues: agents.panelProviders)
         let tick = board.tick(now: now, rules: rules, pidAlive: pidAlive,
-                              frontmost: { NSWorkspace.shared.frontmostApplication?.bundleIdentifier })
-        // The one write this app makes into a state directory: the file of a session whose
-        // process has died. The path comes from the session's provider — see statePath(of:).
-        for s in tick.reaped { try? FileManager.default.removeItem(atPath: statePath(of: s)) }
+                              frontmost: { NSWorkspace.shared.frontmostApplication?.bundleIdentifier },
+                              owner: { [self] session in
+            guard let snapshot = sessionOwners, now - snapshot.takenAt.timeIntervalSince1970 < 5
+            else { return .unknown }
+            return snapshot.presence(of: session)
+        }, persistReaped: { [self] versions in
+            try SessionDismissals.save(versions, at: dismissalPath)
+        })
+        if let error = tick.reapError {
+            sessionDismissalError = "Could not save closed sessions. They are still shown; cleanup will retry."
+            NSLog("ClaudeControlBar: could not save session cleanup: \(error)")
+        } else if !tick.reaped.isEmpty {
+            sessionDismissalError = nil
+        }
+        // Closed versions are persisted before being hidden, so PID reuse after a restart
+        // cannot restore them. A hook written during persistence has a different version.
         // Kept only for directories a live session still points at.
         git.keep(only: Set(sessions.values.map(\.cwd)))
         if tick.chime { completionSound?.play() }

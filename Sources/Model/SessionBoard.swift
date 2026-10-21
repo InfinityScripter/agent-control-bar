@@ -36,9 +36,10 @@ final class SessionBoard {
     }
 
     struct Tick {
-        /// Sessions whose process has died. Already gone from the board; the caller deletes their
-        /// files.
+        /// Sessions whose owner has exited. Their current versions are ignored until a new hook;
+        /// the app never unlinks a file that a concurrent hook may have just replaced.
         var reaped: [Session] = []
+        var reapError: Error?
         /// A turn longer than the threshold has just finished.
         var chime = false
         /// A session has just started waiting for the user, and its terminal is not in front.
@@ -52,13 +53,36 @@ final class SessionBoard {
     /// Keyed like `sessions`, "<provider>:<id>". Cleared together in `forget(_:)` and nowhere
     /// else, so a session cannot leave one of them behind.
     private var mtimes: [String: Date] = [:]
+    private var reapedMtimes: [String: Date] = [:]
+    private var retryReapAt: Double = 0
+    private(set) var dismissals: [String: String]
     private var prevState: [String: String] = [:]
     private var words: [String: String] = [:]
     private var turnStart: [String: Double] = [:]
 
-    init(engine: SessionEngine) { self.engine = engine }
+    init(engine: SessionEngine, dismissals: [String: String] = [:]) {
+        self.engine = engine
+        self.dismissals = dismissals
+    }
 
-    /// How many session files are on disk — also counts a file whose JSON did not parse.
+    /// Persist first: a failed write leaves the row and its attention state intact. A stale
+    /// click carries the old version, so it cannot dismiss a newer event under the same id.
+    @discardableResult
+    func dismiss(key: String, version: String, persist: ([String: String]) throws -> Void) throws -> Bool {
+        guard !version.isEmpty, sessions[key]?.version == version else { return false }
+        var next = dismissals
+        next[key] = version
+        try persist(next)
+        dismissals = next
+        // The persistence seam may deliver a newer hook before it returns.
+        guard sessions[key]?.version == version else { return false }
+        reapedMtimes[key] = mtimes[key]
+        forget(key)
+        nameClones()
+        return true
+    }
+
+    /// How many unsuppressed files are on disk — also counts a file whose JSON did not parse.
     var fileCount: Int { mtimes.count }
 
     /// The thinking word picked for this session's current turn, if it is thinking.
@@ -70,11 +94,21 @@ final class SessionBoard {
     func reload(_ files: [File], read: (String) -> [String: Any]?, branch: (String) -> String) {
         let present = Set(files.map(\.key))
         for key in Array(mtimes.keys) where !present.contains(key) { forget(key) }
+        reapedMtimes = reapedMtimes.filter { present.contains($0.key) }
         for f in files {
+            if reapedMtimes[f.key] == f.mtime { continue }
+            reapedMtimes[f.key] = nil
             if mtimes[f.key] == f.mtime { continue }
             mtimes[f.key] = f.mtime
             guard let json = read(f.path) else { continue }
             var s = Session(json: json, id: f.id)
+            s.fileMtime = f.mtime
+            s.version = Session.version(json: json, mtime: f.mtime)
+            if dismissals[f.key] == s.version {
+                reapedMtimes[f.key] = f.mtime
+                forget(f.key)
+                continue
+            }
             s.eff = sessions[f.key]?.eff ?? ""
             s.asyncQuestion = sessions[f.key]?.asyncQuestion ?? false
             // The directory a file was found in settles the provider, whatever the file says: a
@@ -93,7 +127,8 @@ final class SessionBoard {
     }
 
     func tick(now: Double, rules: Rules, pidAlive: (Int32) -> Bool,
-              frontmost: () -> String?) -> Tick {
+              frontmost: () -> String?, owner: (Session) -> RunningProcesses.Presence = { _ in .unknown },
+              persistReaped: ([String: String]) throws -> Void = { _ in }) -> Tick {
         var out = Tick()
         for key in sessions.keys.sorted() {
             guard var s = sessions[key] else { continue }
@@ -103,13 +138,15 @@ final class SessionBoard {
             // Reap on PROCESS death, not idle time: a session leaves only when its process is gone
             // (closed or crashed terminal, quit app), so an idle-but-open session stays and the
             // icon holds. Pre-upgrade files have no pid (0) — fall back to the idle+age prune so
-            // they cannot linger forever. This is also what keeps state.d self-cleaning.
-            let dead = s.pid > 0 ? !pidAlive(s.pid)
+            // they cannot linger forever. Codex CLI owners override the shared daemon PID when the probe has an answer.
+            let ownership = s.provider == "codex" && s.surface == "cli" && !s.tty.isEmpty
+                ? owner(s) : .unknown
+            let dead = ownership == .dead || (ownership != .alive && (s.pid > 0 ? !pidAlive(s.pid)
                                  : (s.eff == "idle" && rules.stalePruneAge > 0
-                                    && now - s.ts > rules.stalePruneAge)
+                                    && now - s.ts > rules.stalePruneAge)))
             if dead {
                 out.reaped.append(s)
-                forget(key)
+                sessions[key] = s
                 continue
             }
             sessions[key] = s
@@ -125,6 +162,29 @@ final class SessionBoard {
                 out.needsYou = true
             }
             prevState[key] = s.state
+        }
+        if !out.reaped.isEmpty {
+            let closed = out.reaped
+            out.reaped = []
+            // One durable batch per cleanup, never an unlink. A write failure leaves the rows
+            // visible and retries after five seconds rather than writing on every render tick.
+            if now >= retryReapAt {
+                var next = dismissals
+                for session in closed { next[session.key] = session.version }
+                do {
+                    try persistReaped(next)
+                    dismissals = next
+                    retryReapAt = 0
+                    for session in closed where sessions[session.key]?.version == session.version {
+                        reapedMtimes[session.key] = mtimes[session.key]
+                        forget(session.key)
+                        out.reaped.append(session)
+                    }
+                } catch {
+                    out.reapError = error
+                    retryReapAt = now + 5
+                }
+            }
         }
         nameClones()
         out.lead = lead(for: rules.leads)

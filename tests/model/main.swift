@@ -8,6 +8,8 @@ import Cocoa
 // Top-level code runs in order: a check that names a global declared further down reads memory
 // that is not initialised yet and dies with a bare segfault, no message. Declare before use.
 
+if CommandLine.arguments.contains("--owner-fixture") { sleep(2); exit(0) }
+
 var failures = 0
 func check(_ passed: Bool, _ what: String) {
     print((passed ? "ok   " : "FAIL ") + what)
@@ -3057,6 +3059,222 @@ check(PetIconFrames(Pet.load(directory: blankDir)!, height: 18) == nil,
 
 try? FileManager.default.removeItem(atPath: iconPetDir)
 
+// A Codex CLI hook may name its shared daemon, which outlives the terminal client.
+do {
+    let board = SessionBoard(engine: SessionEngine())
+    let now = 1_800_000_000.0
+    let file = SessionBoard.File(key: "codex:orphan", path: "/codex/orphan.json",
+        provider: "codex", id: "orphan", mtime: Date(timeIntervalSince1970: now))
+    board.reload([file], read: { _ in ["pid": 42, "provider": "codex", "surface": "cli",
+        "tty": "/dev/ttys002", "state": "permission", "ts": now] }, branch: { _ in "" })
+    let tick = board.tick(now: now, rules: .init(soundThreshold: 0, stalePruneAge: 900,
+        thinkingWords: [], needsYou: true), pidAlive: { _ in true }, frontmost: { nil },
+        owner: { _ in .dead })
+    check(tick.reaped.map(\.key) == ["codex:orphan"] && board.sessions.isEmpty,
+          "a closed CLI is reaped even while the shared daemon PID is alive")
+    check(tick.lead == nil && !tick.needsYou, "the closed CLI cannot lead or cue Needs you")
+}
+
+// Automatic cleanup must survive restart even when a former PID belongs to a new process.
+do {
+    let folder = NSTemporaryDirectory() + "ccb-auto-reap-" + UUID().uuidString
+    let marker = folder + "/dismissed.json"
+    defer { try? FileManager.default.removeItem(atPath: folder) }
+    let files = ["claude", "codex"].map { provider in
+        SessionBoard.File(key: provider + ":closed", path: "/" + provider, provider: provider,
+            id: "closed", mtime: Date(timeIntervalSince1970: 100))
+    }
+    let json: [String: Any] = ["pid": 42, "state": "permission", "ts": 100,
+                               "surface": "cli", "tty": "/dev/ttys002"]
+    let rules = SessionBoard.Rules(soundThreshold: 0, stalePruneAge: 900,
+                                  thinkingWords: [], needsYou: true)
+    let board = SessionBoard(engine: SessionEngine())
+    board.reload(files, read: { _ in json }, branch: { _ in "" })
+    var saves = 0
+    let closed = board.tick(now: 101, rules: rules, pidAlive: { _ in false }, frontmost: { nil },
+        persistReaped: { saves += 1; try SessionDismissals.save($0, at: marker) })
+    check(closed.reaped.count == 2 && saves == 1, "automatic cleanup persists all closed versions in one batch")
+    let restarted = SessionBoard(engine: SessionEngine(), dismissals: try! SessionDismissals.load(at: marker))
+    restarted.reload(files, read: { _ in json }, branch: { _ in "" })
+    let reused = restarted.tick(now: 102, rules: rules, pidAlive: { _ in true }, frontmost: { nil },
+        persistReaped: { _ in saves += 1 })
+    check(restarted.sessions.isEmpty && restarted.fileCount == 0 && reused.lead == nil && !reused.needsYou,
+          "previously reaped Claude and Codex stay absent and silent after restart with a reused PID")
+    check(saves == 1, "an unchanged closed version causes no extra persistence")
+    let fresh = SessionBoard.File(key: files[0].key, path: files[0].path, provider: "claude",
+        id: "closed", mtime: Date(timeIntervalSince1970: 100.25))
+    restarted.reload([fresh, files[1]], read: { _ in json }, branch: { _ in "" })
+    check(restarted.sessions.keys.sorted() == [fresh.key], "a new hook restores only the updated automatically reaped session")
+
+    var attempts = 0
+    let failed = restarted.tick(now: 103, rules: rules, pidAlive: { _ in false }, frontmost: { nil },
+        persistReaped: { _ in attempts += 1; throw CocoaError(.fileWriteNoPermission) })
+    check(failed.reapError != nil && failed.reaped.isEmpty && restarted.sessions.count == 1,
+          "automatic persistence failure is reported and leaves the row until saved")
+    _ = restarted.tick(now: 104, rules: rules, pidAlive: { _ in false }, frontmost: { nil },
+        persistReaped: { _ in attempts += 1 })
+    check(attempts == 1, "failed automatic persistence is not retried every timer tick")
+    let newest = SessionBoard.File(key: fresh.key, path: fresh.path, provider: "claude",
+        id: "closed", mtime: Date(timeIntervalSince1970: 100.5))
+    let raced = restarted.tick(now: 109, rules: rules, pidAlive: { _ in false }, frontmost: { nil },
+        persistReaped: { versions in
+            attempts += 1
+            try SessionDismissals.save(versions, at: marker)
+            restarted.reload([newest, files[1]], read: { _ in json }, branch: { _ in "" })
+        })
+    check(attempts == 2 && raced.reapError == nil && raced.reaped.isEmpty && restarted.sessions.count == 1,
+          "a new hook delivered during automatic persistence survives the cleanup")
+    let again = SessionBoard(engine: SessionEngine(), dismissals: try! SessionDismissals.load(at: marker))
+    again.reload([newest, files[1]], read: { _ in json }, branch: { _ in "" })
+    check(again.sessions.keys.sorted() == [newest.key], "the concurrent new hook also survives a restart")
+}
+
+// The native probe's decision distinguishes an old owner from a reused tty and unknown data.
+do {
+    let stamp = Date(timeIntervalSince1970: 100)
+    let live = RunningProcesses.CodexSnapshot(takenAt: stamp,
+        owners: [.init(terminal: 7, startedAt: 20)], complete: true)
+    let reused = RunningProcesses.CodexSnapshot(takenAt: stamp,
+        owners: [.init(terminal: 7, startedAt: 51)], complete: true)
+    check(live.presence(on: 7, eventAt: 50) == .alive, "a long-lived CLI owner stays alive")
+    check(reused.presence(on: 7, eventAt: 50) == .dead, "a reused tty cannot keep the previous session alive")
+    check(live.presence(on: 8, eventAt: 50) == .dead, "a complete scan without the tty owner proves exit")
+    check(RunningProcesses.CodexSnapshot(takenAt: stamp, owners: [], complete: false)
+        .presence(on: 7, eventAt: 50) == .unknown, "an incomplete scan does not prove exit")
+}
+
+// A dismissal targets only the exact version the user saw, and must persist before hiding.
+do {
+    let board = SessionBoard(engine: SessionEngine())
+    let stamp = Date(timeIntervalSince1970: 100)
+    let file = SessionBoard.File(key: "codex:dismiss", path: "/codex/dismiss.json",
+        provider: "codex", id: "dismiss", mtime: stamp)
+    let json: [String: Any] = ["pid": 42, "state": "permission", "ts": 100]
+    board.reload([file], read: { _ in json }, branch: { _ in "" })
+    let version = board.sessions[file.key]!.version
+    var saved: [String: String] = [:]
+    let removed = try! board.dismiss(key: file.key, version: version) { saved = $0 }
+    check(removed && board.sessions.isEmpty && saved[file.key] == version,
+          "Remove from list persists the observed version and removes its row")
+    check(board.lead() == nil, "a dismissed session cannot lead the menu bar")
+}
+
+// Dismissals survive a new board, separate providers, and do not swallow newer events or errors.
+do {
+    let folder = NSTemporaryDirectory() + "ccb-dismiss-" + UUID().uuidString
+    let path = folder + "/dismissed.json"
+    defer { try? FileManager.default.removeItem(atPath: folder) }
+    check(try! SessionDismissals.load(at: path).isEmpty, "a new install has no dismissals")
+    let json: [String: Any] = ["pid": 42, "state": "permission", "ts": 100]
+    let file = SessionBoard.File(key: "codex:same", path: "/codex/same.json",
+        provider: "codex", id: "same", mtime: Date(timeIntervalSince1970: 100))
+    let other = SessionBoard.File(key: "claude:same", path: "/claude/same.json",
+        provider: "claude", id: "same", mtime: file.mtime)
+    let newer = SessionBoard.File(key: file.key, path: file.path, provider: file.provider,
+        id: file.id, mtime: Date(timeIntervalSince1970: 100.25))
+    let board = SessionBoard(engine: SessionEngine())
+    board.reload([file, other], read: { _ in json }, branch: { _ in "" })
+    let oldVersion = board.sessions[file.key]!.version
+    try! board.dismiss(key: file.key, version: oldVersion) { try SessionDismissals.save($0, at: path) }
+    check(board.sessions.keys.sorted() == [other.key] && board.fileCount == 1,
+          "Remove from list affects only provider:id and removes its count")
+    let attributes = try! FileManager.default.attributesOfItem(atPath: path)
+    check((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600,
+          "dismissal fingerprints are readable only by their owner")
+    let restarted = SessionBoard(engine: SessionEngine(), dismissals: try! SessionDismissals.load(at: path))
+    restarted.reload([file, other], read: { _ in json }, branch: { _ in "" })
+    check(restarted.sessions.keys.sorted() == [other.key] && restarted.fileCount == 1,
+          "the removed version stays hidden after restart")
+    restarted.reload([newer, other], read: { _ in json }, branch: { _ in "" })
+    check(restarted.sessions.count == 2 && restarted.sessions[file.key]?.version != oldVersion,
+          "an identical hook in the same second returns the session")
+    var wroteStale = false
+    check(try! !restarted.dismiss(key: file.key, version: oldVersion) { _ in wroteStale = true },
+          "an old panel click refuses to dismiss newer activity")
+    check(!wroteStale && restarted.sessions.count == 2, "a stale click does not persist a marker")
+    let currentVersion = restarted.sessions[file.key]!.version
+    var failed = false
+    do {
+        try restarted.dismiss(key: file.key, version: currentVersion) {
+            try SessionDismissals.save($0, at: path + "/impossible.json")
+        }
+    } catch { failed = true }
+    check(failed && restarted.sessions[file.key]?.version == currentVersion,
+          "a real persistence failure propagates and keeps the row visible")
+    check(restarted.dismissals[file.key] == oldVersion, "a failed save leaves the old marker intact")
+    let newest = SessionBoard.File(key: file.key, path: file.path, provider: file.provider,
+        id: file.id, mtime: Date(timeIntervalSince1970: 100.5))
+    let raced = try! restarted.dismiss(key: file.key, version: currentVersion) { markers in
+        try SessionDismissals.save(markers, at: path)
+        restarted.reload([newest, other], read: { _ in json }, branch: { _ in "" })
+    }
+    check(!raced && restarted.sessions[file.key]?.version != currentVersion,
+          "an event delivered while saving cannot be hidden by the old click")
+    let again = SessionBoard(engine: SessionEngine(), dismissals: try! SessionDismissals.load(at: path))
+    again.reload([newest, other], read: { _ in json }, branch: { _ in "" })
+    check(again.sessions.count == 2, "a concurrent new event also survives restart")
+}
+
+// Scope of owner checks: uncertainty keeps existing PID behavior; only terminal Codex uses them.
+for (provider, surface, tty) in [("codex", "cli", "/dev/ttys002"), ("codex", "app", ""),
+    ("codex", "ide", "/dev/ttys002"), ("codex", "exec", "/dev/ttys002"),
+    ("codex", "cli", ""), ("claude", "cli", "/dev/ttys002")] {
+    for presence: RunningProcesses.Presence in [.alive, .dead, .unknown] {
+        let board = SessionBoard(engine: SessionEngine())
+        let file = SessionBoard.File(key: provider + ":scope", path: "/scope", provider: provider,
+            id: "scope", mtime: Date(timeIntervalSince1970: 100))
+        let json: [String: Any] = ["pid": 42, "state": "permission", "ts": 100,
+                                  "surface": surface, "tty": tty]
+        board.reload([file], read: { _ in json }, branch: { _ in "" })
+        var asked = 0
+        let tick = board.tick(now: 101, rules: .init(soundThreshold: 0, stalePruneAge: 1,
+            thinkingWords: [], needsYou: true), pidAlive: { _ in true }, frontmost: { nil },
+            owner: { _ in asked += 1; return presence })
+        let applicable = provider == "codex" && surface == "cli" && !tty.isEmpty
+        check(board.sessions.isEmpty == (applicable && presence == .dead),
+              "owner \(presence) preserves liveness scope for \(provider)/\(surface)/\(tty.isEmpty ? "no tty" : "tty")")
+        check(asked == (applicable ? 1 : 0), "only a known Codex CLI tty asks for ownership")
+        if !tick.reaped.isEmpty {
+            board.reload([file], read: { _ in json }, branch: { _ in "" })
+            check(board.sessions.isEmpty && board.fileCount == 0, "a reaped version stays absent without deleting its file")
+            let next = SessionBoard.File(key: file.key, path: file.path, provider: provider,
+                id: file.id, mtime: Date(timeIntervalSince1970: 101))
+            board.reload([next], read: { _ in json }, branch: { _ in "" })
+            check(board.sessions.count == 1, "a new hook after owner reaping returns the row")
+        }
+    }
+}
+
+// Real libproc positive control: an owned fixture executable named codex on its own PTY.
+// It exits by itself; neither the app nor this check signals a real agent process.
+do {
+    let folder = NSTemporaryDirectory() + "ccb-owner-" + UUID().uuidString
+    try! FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(atPath: folder) }
+    let executable = folder + "/codex"
+    let terminalFile = folder + "/tty"
+    try! FileManager.default.copyItem(atPath: CommandLine.arguments[0], toPath: executable)
+    let child = Process()
+    child.executableURL = URL(fileURLWithPath: "/usr/bin/script")
+    child.arguments = ["-q", "/dev/null", "/bin/sh", "-c", "tty > \"$1\"; exec \"$2\" --owner-fixture",
+                       "fixture", terminalFile, executable]
+    child.standardOutput = Pipe(); child.standardError = Pipe(); child.standardInput = FileHandle.nullDevice
+    try! child.run()
+    let deadline = Date().addingTimeInterval(1)
+    while !FileManager.default.fileExists(atPath: terminalFile), Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
+    Thread.sleep(forTimeInterval: 0.05)
+    let tty = (try? String(contentsOfFile: terminalFile, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let live = RunningProcesses.codexSnapshot()
+    var session = Session(json: ["provider": "codex", "surface": "cli", "tty": tty,
+                                "ts": Date().timeIntervalSince1970], id: "native-fixture")
+    check(!tty.isEmpty && live.presence(of: session) == .alive,
+          "the real native snapshot finds a Codex-named owner on its controlling tty")
+    session.fileMtime = live.takenAt.addingTimeInterval(1)
+    check(live.presence(of: session) == .unknown, "a snapshot older than a new hook cannot reap it")
+    child.waitUntilExit()
+    check(child.terminationStatus == 0, "the native fixture exits normally: \(child.terminationStatus)")
+}
+
 // The session lifecycle around SessionEngine: reading files, reaping, the chime and "needs you"
 // edges, same-named projects, the lead session. It used to live in StatusController, tangled
 // with the disk, timers and NSWorkspace, and the per-session side tables were cleared in three
@@ -3140,7 +3358,7 @@ do {
     let before = reads
     board.reload([file("claude", "a", at: later), file("claude", "b"),
                   file("claude", "c", at: Date(timeIntervalSince1970: 3))], read: read) { _ in "" }
-    check(reads == before + 1, "a reaped file that is still there is read again, not trusted")
+    check(reads == before, "a reaped version still on disk stays ignored until a new hook")
     _ = board.tick(now: now + 6, rules: rules, pidAlive: { alive.contains($0) }, frontmost: { nil })
 
     // A file gone from disk takes its session with it.

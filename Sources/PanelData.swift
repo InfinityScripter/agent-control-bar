@@ -39,6 +39,7 @@ extension StatusController {
         return PanelSession(
             id: s.key,
             sessionID: s.id,
+            version: s.version,
             provider: s.provider,
             name: sessionName(s),
             branch: s.branch,
