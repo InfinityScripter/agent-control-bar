@@ -278,20 +278,12 @@ extension StatusController {
         refreshCounts()
     }
 
-    /// Off drops the figures rather than freezing them, exactly as the Anthropic switch does.
-    /// Nothing is spent either way: Codex's numbers are read out of a file it wrote itself, so
-    /// what this switches off is the reading, not a request.
+    /// Off drops the figures and stops account requests.
     func applyCodexLimits(_ on: Bool) {
         codexLimits = on
         UserDefaults.standard.set(on, forKey: "codexLimits")
-        // The mtime gate would otherwise hold the pre-toggle figures until the file's next
-        // rewrite, which for a quiet Codex install could be days.
         codexLimitsMTime = nil
-        // The same gate pollLimits applies: switching this on where Codex has never run should
-        // not spawn a process to be told there is nothing to read.
-        if on, codexHasRun {
-            runQuietCommand(.limits(provider: "codex"))
-        }
+        if on { pollCodexLimits(now: Date().timeIntervalSince1970) }
         loadCodexLimits()
         renderMenuBar(now: Date().timeIntervalSince1970)
         refreshCounts()

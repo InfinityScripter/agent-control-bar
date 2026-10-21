@@ -1,6 +1,6 @@
 import Foundation
 
-/// How the last Claude limits poll ended, as scripts/mcpbar.py wrote it to limits-status.json.
+/// How the last provider limits poll ended, as scripts/mcpbar.py wrote it to limits-status.json.
 /// Written on every poll, including the ones that leave limits.json alone — so the figures on
 /// screen can be old while this says why they stopped moving.
 struct LimitsStatus: Equatable {
@@ -37,7 +37,24 @@ extension LimitsStatus {
     /// Also nil when the figures are newer than the poll: limits.json has a second writer, the
     /// statusLine capture, and while it keeps the figures moving a block saying they stopped
     /// would sit over live numbers.
-    static func notice(_ status: LimitsStatus?, oauthLimits: Bool, figuresTs: Double?, now: Double) -> LimitsNotice? {
+    static func notice(_ status: LimitsStatus?, oauthLimits: Bool, figuresTs: Double?, now: Double,
+                       provider: String = "claude") -> LimitsNotice? {
+        if provider == "codex" {
+            guard oauthLimits, let status, status.state != "ok" else { return nil }
+            let reason: String
+            switch status.detail {
+            case "timeout": reason = "request timed out"
+            case "not_installed": reason = "Codex could not be found"
+            case "connection_unavailable", "connection_closed": reason = "Codex could not be reached"
+            case "invalid_reply": reason = "unexpected response"
+            default: reason = "Codex could not read account limits"
+            }
+            let title = status.state == "empty" ? "Codex returned no limit windows"
+                : "Codex limits update failed: " + reason
+            let hint = (figuresTs.map { "Showing figures from \(LimitsNote.age(of: $0, now: now))." } ?? "No figures yet.")
+                + " Check your connection and sign-in in Codex. Retrying in a few minutes."
+            return LimitsNotice(title: title, hint: hint, offerSignIn: false)
+        }
         guard let status = explainable(status, oauthLimits: oauthLimits, figuresTs: figuresTs) else { return nil }
         let figuresAge = figuresTs.map { LimitsNote.age(of: $0, now: now) }
         if signedOutShown(status, oauthLimits: oauthLimits, figuresTs: figuresTs) {
@@ -106,4 +123,18 @@ extension LimitsStatus {
     private static func figuresSuffix(_ figuresAge: String?) -> String {
         figuresAge.map { " · figures from \($0)" } ?? ""
     }
+}
+
+struct CodexLimitsPoll {
+    private var startedAt = -Double.infinity
+    private var running = false
+
+    mutating func begin(now: Double) -> Bool {
+        guard !running, now - startedAt >= 60 else { return false }
+        startedAt = now
+        running = true
+        return true
+    }
+
+    mutating func finish() { running = false }
 }

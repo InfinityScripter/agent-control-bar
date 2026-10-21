@@ -72,28 +72,21 @@ extension StatusController {
         }
     }
 
-    /// One round of limit figures, one provider at a time. For Claude, mcpbar.py asks Anthropic's
-    /// usage endpoint — the same one /usage in Claude Code asks — and rewrites limits.json; for
-    /// Codex it reads the newest session file Codex left on disk and writes codex/limits.json.
-    /// Either way the 0.4s tick picks the file up.
-    ///
-    /// Each has its own off switch, for different reasons: the Anthropic poll spends the user's
-    /// own OAuth token, and the Codex read opens files that belong to another program.
-    ///
-    /// Opening the panel calls this every time, so Claude is asked only when the last question is
-    /// a minute old: a burst of opens costs one request, not one each.
+    /// Current account limits, with each provider's own switch and debounce.
     func pollLimits() {
         let now = Date().timeIntervalSince1970
-        if oauthLimits, now - lastLimitsPoll >= 60 { pollClaudeLimits(now: now) }
-        // Not gated on the switch above, and deliberately: reading Codex's figures costs no token
-        // and no request at all. Codex writes them into its own session file as it goes, and the
-        // command only reads the newest one — so the only thing to opt out of is the reading.
-        //
-        // The stat is worth it: without it a Mac that has never run Codex — most of them — would
-        // spawn a process every five minutes to be told there is nothing to read. Asked afresh
-        // each poll, so installing Codex later is picked up without a restart.
-        if codexLimits, codexHasRun {
-            runQuietCommand(.limits(provider: "codex"))
+        pollClaudeLimits(now: now)
+        pollCodexLimits(now: now)
+    }
+
+    func pollCodexLimits(now: Double) {
+        guard codexLimits, codexInstalled, codexLimitsPoll.begin(now: now) else { return }
+        codexLimitsTimer?.fireDate = Date(timeIntervalSince1970: now + 300)
+        runQuietCommand(.limits(provider: "codex")) { [weak self] in
+            self?.codexLimitsPoll.finish()
+            self?.loadCodexLimits()
+            self?.loadCodexLimitsStatus()
+            self?.refreshCounts()
         }
     }
 
@@ -105,8 +98,7 @@ extension StatusController {
     /// "empty" — the largest error this app can make, made at every single reset. The panel draws
     /// such a window empty meanwhile; this is what keeps "meanwhile" down to a couple of seconds.
     ///
-    /// Claude only. Codex's figures are lifted out of its session transcript, so asking again
-    /// rereads the same file for the same answer — they move when its owner runs Codex, not before.
+    /// Claude's rollover check; Codex refreshes on its own five-minute timer and panel opens.
     /// Which rollovers count at all is decided in the model, where the check covers it — see
     /// LimitsSet.rolledOver(since:at:), which already makes one rollover ask for one reading
     /// rather than one per tick.
@@ -128,6 +120,7 @@ extension StatusController {
     /// Ask Anthropic now and push the five-minute timer back to count from this question, so a
     /// poll made on opening the panel is not followed seconds later by the timer's own.
     func pollClaudeLimits(now: Double) {
+        guard oauthLimits, now - lastLimitsPoll >= 60 else { return }
         lastLimitsPoll = now
         limitsTimer?.fireDate = Date(timeIntervalSince1970: now + 300)
         runQuietCommand(.limits(provider: "claude"))

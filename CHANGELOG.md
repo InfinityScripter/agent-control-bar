@@ -7,6 +7,34 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.27.2] - 2026-10-21
+
+### Fixed
+- Codex limits refresh from the account every five minutes and when the panel opens. Failed
+  polls keep the age of available figures and show an error; an unreported reserve stays absent.
+- Closed Codex CLI sessions no longer stay in **Needs you** because their shared app-server
+  is still running. A native terminal-owner check keeps live clients and treats failed or
+  incomplete checks as unknown. Reused terminals cannot keep an older session alive.
+- Session cleanup leaves hook files in place so a concurrent new event cannot be deleted.
+  Closed statuses remain removed after restart even if their old PID is reused.
+
+### Added
+- **Remove from list** in each expanded session row hides its status and attention signal
+  without stopping the process or deleting the chat. The choice survives restarts, and new
+  activity returns the session. Stale clicks and failed saves leave newer activity visible.
+
+## [0.27.1] - 2026-10-21
+
+### Fixed
+- **Codex limits refresh from the account.** The app reads current usage through Codex's
+  app-server every five minutes and when the panel opens, with at least a minute between
+  requests. Limits no longer depend only on the last session snapshot.
+- **Failed Codex polls show an error and keep the age of the available figures.** The fallback
+  uses the newest usable measurement from local session history without replacing newer
+  account data. Empty or older snapshots no longer hide fresher limits.
+- **An unreported Codex reserve stays absent.** Missing reserve figures are no longer shown
+  as zero usage, and an old reserve snapshot cannot reappear over newer account data.
+
 ## [0.27.0] - 2026-10-20
 
 ### Added

@@ -14,6 +14,11 @@ the switch that stops it.
   the endpoint, a proxy or a future move of the API cannot carry the token to another origin —
   it is reported as a failed poll instead. Switch **Limits via Anthropic API** off in Settings → General and
   this request never happens.
+- **Current Codex limits every five minutes and on panel opens**, with at least a minute between
+  requests: the app calls `account/rateLimits/read` through a read-only `codex app-server` process.
+  Codex handles the request to OpenAI and its own authentication. The app does not read Codex's
+  credentials itself or refresh its tokens. Switch **Codex limits** off in Settings → General to
+  stop these requests and the session-snapshot fallback.
 - **One update check a day**: a request to GitHub's public releases API for the latest tag, and
   one to Homebrew's public formulae API for the current cask version. Both only decide whether
   the panel shows an update banner.
@@ -28,7 +33,7 @@ the switch that stops it.
   own preferences so the panel can show it at launch. Switch **Limit reset odds** off in
   Settings → General and this request never happens, and the kept answer is deleted.
 
-GitHub, Homebrew, Anthropic and whenreset.app see that a request arrived; the developer never
+GitHub, Homebrew, Anthropic, OpenAI and whenreset.app see that a request arrived; the developer never
 does. Those, and the ping in the next section, are the only requests the app makes for itself. There is no crash
 reporting and no analytics kit of any kind in the binary.
 
@@ -115,13 +120,12 @@ Mac, and all of it is listed here rather than left to be discovered.
   where there is no Keychain. It is sent to `api.anthropic.com` and nowhere else, is never
   written to disk by this app, and never appears in a log. Switch the option off and it is not
   read at all.
-- **Codex's own session files** (`~/.codex/sessions/**/rollout-*.jsonl`), if the Codex limits
-  option is on (Settings → General → "Codex limits"). Codex records a snapshot of how much of
-  your OpenAI limits is gone every time the model answers, and the newest file is read from its
-  end for exactly that: two percentages, how long each window is, and when each resets. The
-  conversation itself is not parsed, nothing is copied, and no request is made — the figures are
-  already on disk. Switch the option off and the directory is not opened at all. Your
-  `~/.codex/auth.json` is **not** read: this app never asks OpenAI anything on your behalf.
+- **Codex's own session files** (`~/.codex/sessions/**/rollout-*.jsonl`), as a fallback when
+  **Codex limits** is on and the live request fails or returns no usable windows. The app reads
+  the tails of at most twelve recent files and selects the newest measurement for each pool by
+  its recorded timestamp. It keeps percentages, window lengths, reset times, plan and measurement
+  times; it does not copy conversations. Switching **Codex limits** off stops this fallback read.
+  Codex manages its own authentication; this app does not open `~/.codex/auth.json` itself.
 - **Codex's hook payloads and the head of its session file**, once you have trusted the hooks
   Codex finds in `~/.codex/hooks.json`. A Codex hook hands over the same shape Claude Code's
   does — session id, working directory, the tool about to run, the path of its session file —
@@ -134,6 +138,9 @@ Mac, and all of it is listed here rather than left to be discovered.
   the tool names from Codex's own app-server — which starts each configured server to ask it, the
   way Codex does itself. Nothing leaves the machine, and `~/.codex/config.toml` is never parsed
   by this app.
+- **Local process metadata** for Codex terminal sessions: this user's process names, controlling
+  terminal devices and process start times, through macOS's native process API. The app does not
+  read command-line arguments for this check, send this metadata anywhere, or stop those processes.
 - **The current directory and git branch** of each session, to label its row.
 
 ## Where it writes
@@ -142,17 +149,22 @@ Everything of its own lives under `~/.claude/control-bar/`. The complete list:
 
 - **Per session:** one small JSON file in `state.d/` (state, working directory, transcript path,
   pid, context figures), and the context percentage the session's status line reported in
-  `context.d/`. Both are deleted with the session. A Codex session's file is the same shape, in
-  `codex/state.d/`, plus which surface it runs on.
+  `context.d/`. The SessionEnd hook removes them. A Codex session's file is the same shape, in
+  `codex/state.d/`, plus which surface it runs on. If the client exits without a hook, the app
+  ignores the closed status but leaves its small JSON file in place so cleanup cannot delete a
+  concurrent hook event. Conversation history is never deleted by this cleanup.
+- **Removed session statuses:** `dismissed-sessions.json` stores provider/session ids and hashes
+  of the exact state-file versions removed automatically or with **Remove from list**. It is readable only by
+  your account and contains no conversation text. A new hook event is a different version and
+  becomes visible again. Removing a status never stops the agent process or deletes a chat.
 - **The MCP picture:** `mcp.json`, `codex/mcp.json` for Codex's servers, the per-server
   descriptions cache `descriptions.json`, and the model-to-context-window table
   `model-windows.json`.
-- **The limits:** `limits.json`, and `codex/limits.json` for the Codex windows — percentages,
-  window lengths, reset stamps and the plan name, and nothing else out of the Codex session.
-  Beside them `limits-status.json`, written by the backend script after every Claude poll: how
-  it ended (`ok`, `no-login`, `failed`, `empty`), when, and a short reason — the name of the
-  Python exception, or "no token". It never contains the token, the response, or anything from
-  your account; it is what the panel reads to say why the figures stopped moving.
+- **The limits:** `limits.json`, and `codex/limits.json` for Codex's windows — percentages,
+  window lengths, reset stamps, plan, source and measurement times. Beside them, `limits-status.json`
+  and `codex/limits-status.json` record how each provider's latest poll ended, when, and a short
+  reason. The Codex reason is a fixed error category. These status files never contain tokens
+  or raw responses; the panel reads them to explain why figures stopped updating.
 - **Install bookkeeping:** `owner.json` (which channel owns the hooks), `paths.json` (where the
   backend script and interpreter are), a copy of the hook scripts and the build script, and
   `releases/` with the source archives a plugin-channel update downloaded.

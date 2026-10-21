@@ -128,6 +128,11 @@ final class PanelStore: ObservableObject {
         refresh()
     }
 
+    func dismissSession(_ session: PanelSession) {
+        controller?.dismissSession(session)
+        if !snapshot.sessions.contains(where: { $0.id == session.id }) { expanded.remove(session.id) }
+    }
+
     func openSession(_ session: PanelSession) {
         controller?.closePanel()
         controller?.openSession(session.sessionID, threadURL: session.threadURL,
@@ -230,17 +235,16 @@ struct PanelLimitGroup: Equatable, Identifiable {
     /// PanelData, where the reset times are still numbers — at equal fullness the window that
     /// comes back sooner is the one that bites, and by here the resets are worded strings.
     let worst: PanelLimit?
+    var source: String? = nil
     /// "Early reset chance in 24h: 13% (whenreset.app)", while the odds are on and the site has a figure.
     var earlyReset: String? = nil
 
     var id: String { provider }
 
-    /// What the group's tooltip says: who, on what plan, measured when — and, for Codex, where the
-    /// figures come from: they are the last snapshot a Codex session wrote, so they stand still
-    /// while no session is running and "measured 3d ago" is not a polling fault.
     var tip: String {
-        let source = provider == Provider.codex.id ? "from the last Codex session" : nil
-        return [title, plan, "measured " + age, source, earlyReset].compactMap { $0 }.joined(separator: " · ")
+        let origin = provider == Provider.codex.id
+            ? (source == "app-server" ? "from Codex account limits" : "from a Codex session snapshot") : nil
+        return [title, plan, "measured " + age, origin, earlyReset].compactMap { $0 }.joined(separator: " · ")
     }
 }
 
@@ -252,6 +256,7 @@ struct PanelSnapshot: Equatable {
     /// How tall the scrolling half may get on the screen this panel opens on.
     var contentCap: CGFloat = PanelTheme.minContentHeight
     var sessions: [PanelSession] = []
+    var sessionDismissalError: String?
     /// True when there is no live session but the desktop app is up — the panel offers a way back
     /// in rather than showing an empty tab.
     var offerOpenClaude = false
@@ -283,6 +288,7 @@ struct PanelSnapshot: Equatable {
     /// old figures left in place under it. Nil while the poll succeeds, the API poll is off, or
     /// the backend is too old to say.
     var limitsNotice: PanelLimitsNotice?
+    var codexLimitsNotice: PanelLimitsNotice?
     /// How the strip stacks the groups, and which one the switcher is showing — the remembered
     /// pick already resolved against the groups there are, see LimitsBoard.showing.
     var limitsLayout: PanelLimitsLayout = .rows
@@ -328,6 +334,7 @@ struct PanelSession: Equatable, Identifiable {
     let id: String
     /// The agent's own session id, which is what its own app answers to on a click.
     let sessionID: String
+    let version: String
     /// "claude" or "codex". Only the rows of a second agent carry a visible pill: with Codex
     /// absent there is nothing to tell apart, and a "CLAUDE" pill on every row of a
     /// Claude-only panel is noise that pushes the branch name out of the line.
@@ -499,6 +506,7 @@ extension PanelSnapshot {
         width = c.boxWidth
         contentCap = c.panelContentCap
         sessions = c.panelSessions(now: now)
+        sessionDismissalError = c.sessionDismissalError
         offerOpenClaude = sessions.isEmpty && c.desktopRunning && c.agentDisplay.inPanel(Provider.claude.id)
         // Asked of every session this app knows about, not of the rows above: a Codex session that
         // has simply been resting longer than the hide-idle age is missing from the list too, and
@@ -511,6 +519,7 @@ extension PanelSnapshot {
         hooks = c.panelHooks()
         (limitGroups, limitsNote) = c.panelLimitGroups(now: now)
         limitsNotice = c.panelLimitsNotice(now: now)
+        codexLimitsNotice = c.panelLimitsNotice(now: now, provider: "codex")
         limitsLayout = c.limitsLayout
         limitsProvider = LimitsBoard.showing(c.limitsProvider, among: limitGroups.map(\.provider))
             ?? c.limitsProvider

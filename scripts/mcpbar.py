@@ -15,7 +15,7 @@ MCP-картину ведёт этот скрипт (mcp.json), рисует в�
     statusline       перехват лимитов: --install / --uninstall / --heal (перенацелить мёртвую обёртку) / без флага — статус
     limits           спросить лимиты аккаунта у эндпоинта и переписать limits.json
     claude-login     открыть Terminal с `claude auth login` — кнопка «Sign in» в панели
-    codex-limits     снять лимиты Codex со свежего rollout и переписать codex/limits.json
+    codex-limits     получить текущую квоту Codex; rollout — запасной источник
     codex-attention  снять живое ожидание разрешения Codex и переписать codex/attention.json
     codex-mcp        серверы MCP Codex: refresh | toggle-server | toggle-tool
     codex-hooks      спросить Codex, каким нашим хукам он не доверяет; approve — одобрить их
@@ -1472,8 +1472,11 @@ def oauth_token():
 
 def parse_reset(value):
     """resets_at приходит ISO-строкой с таймзоной; statusLine шлёт epoch. Наружу — epoch int."""
-    if isinstance(value, (int, float)):
-        return int(value)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return int(value)
+        except (ValueError, OverflowError):
+            return None
     if isinstance(value, str):
         from datetime import datetime
 

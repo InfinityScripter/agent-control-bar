@@ -121,12 +121,9 @@ private struct GeneralSettings: View {
         + "keeps only the icon in the menu bar — no status, timer or limit bars — and the panel "
         + "still lists both agents when you click it."
 
-    // Worth spelling out, because "reads your Codex sessions" sounds like more than it is: the
-    // numbers are already on disk, and nothing but them is looked at.
-    private static let codexFooter: String = "Codex records how much of your OpenAI limits is gone "
-        + "into its own session file as it works. This reads the newest one for those two figures — "
-        + "no token, no request, nothing sent anywhere. A figure older than the window it measures "
-        + "is dropped rather than shown, so the row disappears until Codex runs again.\n\n"
+    private static let codexFooter: String = "Current account limits are requested through Codex every five minutes "
+        + "and when the menu-bar panel opens, using Codex's own sign-in. If Codex cannot answer, "
+        + "the latest usable session snapshot is shown with its original measurement time.\n\n"
         + "The second switch lists Codex's own MCP servers in the MCP tab, with the same switches. "
         + "Asking Codex for the tool names starts each configured server, the way Codex itself "
         + "does — so with a slow server, turn this off and the servers stop being asked."

@@ -39,6 +39,7 @@ extension StatusController {
         return PanelSession(
             id: s.key,
             sessionID: s.id,
+            version: s.version,
             provider: s.provider,
             name: sessionName(s),
             branch: s.branch,
@@ -104,6 +105,9 @@ extension StatusController {
             // is not signed in through the browser OAuth flow (a `setup-token` login lacks the
             // profile scope the endpoint wants). Saying so beats an empty strip, and beats
             // inventing a number.
+            if !agentDisplay.inPanel("claude") {
+                return ([], codexLimits ? "No Codex limit data yet" : "Codex limits are switched off in Settings")
+            }
             return ([], LimitsStatus.emptyStripText(limitsStatus, oauthLimits: oauthLimits))
         }
         let odds = resetOddsOn ? resetOdds : nil
@@ -127,7 +131,7 @@ extension StatusController {
                                    limits: rows,
                                    resets: soonest.map { Self.until($0) },
                                    age: LimitsNote.age(of: entry.set.ts, now: now),
-                                   plan: entry.set.plan, worst: worst,
+                                   plan: entry.set.plan, worst: worst, source: entry.set.source,
                                    earlyReset: odds?.product(agent.id)?.p24
                                        .map { "Early reset chance in 24h: \($0)% (whenreset.app)" })
         }
@@ -136,8 +140,12 @@ extension StatusController {
 
     /// The block over the strip when the last poll brought no figures, or nil while there is
     /// nothing to explain.
-    func panelLimitsNotice(now: Double) -> PanelLimitsNotice? {
-        LimitsStatus.notice(limitsStatus, oauthLimits: oauthLimits, figuresTs: limits?.ts, now: now)
+    func panelLimitsNotice(now: Double, provider: String = "claude") -> PanelLimitsNotice? {
+        guard agentDisplay.inPanel(provider) else { return nil }
+        let codex = provider == "codex"
+        return LimitsStatus.notice(codex ? codexLimitsStatus : limitsStatus,
+                                   oauthLimits: codex ? codexLimits : oauthLimits,
+                                   figuresTs: codex ? codexWindows?.ts : limits?.ts, now: now, provider: provider)
             .map { PanelLimitsNotice(title: $0.title, hint: $0.hint, offerSignIn: $0.offerSignIn) }
     }
 
