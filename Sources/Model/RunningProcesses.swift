@@ -40,7 +40,16 @@ enum RunningProcesses {
                   session.tty.hasPrefix("/dev/tty"), session.ts > 0,
                   session.fileMtime <= takenAt else { return .unknown }
             var info = stat()
-            guard stat(session.tty, &info) == 0, (info.st_mode & S_IFMT) == S_IFCHR else { return .unknown }
+            guard stat(session.tty, &info) == 0 else {
+                let error = errno
+                let number = session.tty.dropFirst("/dev/ttys".count)
+                // macOS removes dynamic PTY nodes when the terminal closes. Only a canonical
+                // missing PTY is exit evidence; access errors and malformed paths stay unknown.
+                let missingPTY = error == ENOENT && session.tty.hasPrefix("/dev/ttys")
+                    && number.count >= 3 && number.allSatisfy { $0.isASCII && $0.isNumber }
+                return complete && missingPTY ? .dead : .unknown
+            }
+            guard (info.st_mode & S_IFMT) == S_IFCHR else { return .unknown }
             return presence(on: UInt32(bitPattern: info.st_rdev), eventAt: session.ts)
         }
     }

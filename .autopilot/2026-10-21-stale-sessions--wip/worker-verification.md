@@ -46,3 +46,7 @@ Independent review, universal app/DMG build, actual app button and real orphan v
 ## Ремонт D02
 
 До исправления: exit 1, восемь ожидаемых regression failures. После: Swift model 1200 checks passed, exit 0; whole-app arm64 typecheck exit 0; diff --check exit 0. Логи: /private/tmp/stale-repair-{red,green,typecheck}.log. Закрытые версии сохраняются одной пачкой перед forget; ошибка оставляет строку и показывается в панели, повтор через 5 секунд.
+
+## Ремонт D03
+
+RED exit 1 на исчезнувшем tty, GREEN exit 0: 1207 model checks. Native synthetic terminal: alive→rows1; closed client→rows0; closed terminal(device missing)→rows0. Старый/неполный snapshot, malformed tty и прочие ошибки не доказывают закрытие. Логи /private/tmp/stale-tty-{red,green}.log и /private/tmp/acb-g4-native-worker/result.log.

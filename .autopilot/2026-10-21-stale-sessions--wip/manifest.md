@@ -12,3 +12,4 @@
 | R06 | «можно пушить и мёржить до готового результата новой версии» | in-ticket | Разрешены необходимые ветка, коммиты, PR, push, merge и выпуск | spec §Выпуск → T01 |
 | D01 | Build: app-side unlink races a concurrent hook | in-spec | Не удалять state JSON при auto-reap; забыть наблюдённую версию, новый hook возвращает запись | spec §Очистка |
 | D02 | Review: auto-reap memory is lost on restart | in-spec | Сохранить fingerprint автоматически снятой версии; новый hook восстанавливает запись | spec §D02 |
+| D03 | Blind acceptance: closed terminal device disappears | in-spec | Отсутствующее tty при надёжной проверке означает закрытие CLI; ошибки доступа и неполный/старый снимок остаются unknown | spec §D03 |

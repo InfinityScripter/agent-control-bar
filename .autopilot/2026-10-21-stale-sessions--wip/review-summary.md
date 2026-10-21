@@ -10,3 +10,11 @@
 
 Свежий независимый reviewer: PASS, BLOCKING нет. Независимый полный model suite exit 0. Условия batch save-before-forget, restart+PID reuse, visible failure/retry и concurrent hook подтверждены.
 Неблокирующее замечание подтверждено root по StatePolling.evaluate: после ошибки записи notice очищается только при следующем успешном reap; если все записи обновятся или исчезнут, старое сообщение может оставаться до следующего успешного reap/перезапуска. Вне основной ошибки, без скрытой потери данных.
+
+## G4 — найден D03
+
+Native clean-clone проверка: после закрытия клиента при открытом tty owner=dead/rows=0; после закрытия terminal master tty отсутствует, owner=unknown/rows=1. Root подтвердила guard stat в RunningProcesses.presence(of:). Отправлен минимальный repair, выпуск задержан до повторной проверки.
+
+## Повторное ревью D03
+
+Свежий независимый reviewer: PASS, BLOCKING нет. Подтверждены ENOENT-only, canonical dynamic PTY, полный/свежий snapshot и сохранение unknown для прочих ошибок. Спецроль code-reviewer недоступна; функцию выполнил fresh default reviewer.

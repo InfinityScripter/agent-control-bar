@@ -3273,6 +3273,22 @@ do {
     check(live.presence(of: session) == .unknown, "a snapshot older than a new hook cannot reap it")
     child.waitUntilExit()
     check(child.terminationStatus == 0, "the native fixture exits normally: \(child.terminationStatus)")
+    var terminalInfo = stat()
+    let terminalGone = stat(tty, &terminalInfo) != 0 && errno == ENOENT
+    check(terminalGone, "closing the fixture PTY removes its terminal device")
+    let closed = RunningProcesses.codexSnapshot()
+    session.fileMtime = .distantPast
+    check(closed.complete && closed.presence(of: session) == .dead,
+          "a complete native snapshot reaps a CLI after its terminal device disappears")
+    let incomplete = RunningProcesses.CodexSnapshot(takenAt: closed.takenAt, owners: [], complete: false)
+    check(incomplete.presence(of: session) == .unknown, "missing tty with an incomplete snapshot remains unknown")
+    session.fileMtime = closed.takenAt.addingTimeInterval(1)
+    check(closed.presence(of: session) == .unknown, "missing tty with a snapshot older than the hook remains unknown")
+    session.fileMtime = .distantPast
+    for invalid in [tty + "/../missing", "/dev/tty-not-a-terminal", "/dev/tty/not-a-terminal"] {
+        session.tty = invalid
+        check(closed.presence(of: session) == .unknown, "malformed tty paths and non-ENOENT errors remain unknown: \(invalid)")
+    }
 }
 
 // The session lifecycle around SessionEngine: reading files, reaping, the chime and "needs you"
