@@ -2272,7 +2272,7 @@ class SeamContract(unittest.TestCase):
 
 
 class CodexLimits(unittest.TestCase):
-    """Лимиты Codex снимаются с rollout-файла — чужого формата, который пишет не наш код.
+    """Лимиты Codex приходят из app-server; журналы сохраняют запасные измерения.
 
     Каждый случай здесь — форма, на которой наивный разбор либо врал числом, либо падал.
     """
@@ -2288,6 +2288,9 @@ class CodexLimits(unittest.TestCase):
         mcpbar_codex.CODEX_LIMITS = os.path.join(self.root, "codex", "limits.json")
         self.saved["ROOT"] = mcpbar.ROOT
         mcpbar.ROOT = self.root
+        self.rpc = mock.patch.object(mcpbar_codex, "codex_rpc", return_value=(None, "timeout"))
+        self.rpc_mock = self.rpc.start()
+        self.addCleanup(self.rpc.stop)
 
     def tearDown(self):
         for key, value in self.saved.items():
@@ -2312,6 +2315,108 @@ class CodexLimits(unittest.TestCase):
         return {"timestamp": stamp, "type": "event_msg",
                 "payload": {"type": "token_count", "rate_limits": limits,
                             "info": {"total_token_usage": {"input_tokens": 10}}}}
+
+    def test_live_api_replaces_cached_pools_with_authoritative_windows(self):
+        os.makedirs(mcpbar_codex.CODEX)
+        mcpbar_codex.secure_codex_root()
+        mcpbar.write_json(mcpbar_codex.CODEX_LIMITS, {
+            "ts": 1_789_000_000, "source": "rollout", "windows": [
+                {"kind": "primary", "pool": "reserve", "ts": 1_789_000_000, "used_percentage": 96}]})
+        self.rpc_mock.return_value = ({
+            "rateLimits": {"primary": {"usedPercent": 99}},
+            "rateLimitsByLimitId": {
+                "codex": {"limitId": "codex", "planType": "pro", "primary": {
+                    "usedPercent": 24, "windowDurationMins": 10080, "resetsAt": 1_793_132_700},
+                    "secondary": None},
+                "unrelated": {"primary": {"usedPercent": 77}},
+            }}, None)
+        with mock.patch.object(mcpbar_codex.time, "time", return_value=1_792_575_900):
+            mcpbar_codex.fetch_codex_limits()
+        self.rpc_mock.assert_called_once_with("account/rateLimits/read", read_only=True)
+        written = mcpbar.read_json(mcpbar_codex.CODEX_LIMITS)
+        self.assertEqual(written, {"ts": 1_792_575_900, "source": "app-server", "plan": "pro", "windows": [
+            {"kind": "primary", "pool": "codex", "ts": 1_792_575_900, "used_percentage": 24,
+             "window_minutes": 10080, "resets_at": 1_793_132_700}]})
+        status_path = os.path.join(mcpbar_codex.CODEX_ROOT, "limits-status.json")
+        self.assertEqual(mcpbar.read_json(status_path), {"ts": 1_792_575_900, "state": "ok", "detail": ""})
+        self.assertEqual(stat.S_IMODE(os.stat(status_path).st_mode), 0o600)
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        os.makedirs(os.path.join(repo, "build", "seam"), exist_ok=True)
+        shutil.copyfile(mcpbar_codex.CODEX_LIMITS, os.path.join(repo, "build", "seam", "codex-limits-api.json"))
+
+    def test_api_legacy_and_known_reserve_keep_their_real_windows(self):
+        ordinary = {"limitId": "codex", "planType": "plus", "primary": {
+            "usedPercent": 12.4, "windowDurationMins": 300, "resetsAt": 1_800_000_000}}
+        reserve = {"limitId": "base_model_inference", "limitName": "gpt-reserve", "primary": {
+            "usedPercent": 8, "windowDurationMins": 1440, "resetsAt": 1_800_100_000}}
+        for reply, expected in (({"rateLimits": ordinary}, [("codex", 12, 300)]),
+                                ({"rateLimits": reserve}, [("reserve", 8, 1440)]),
+                                ({"rateLimitsByLimitId": {"codex": ordinary, "base_model_inference": reserve}},
+                                 [("codex", 12, 300), ("reserve", 8, 1440)])):
+            with self.subTest(reply=reply):
+                record = mcpbar_codex.codex_limits_record(reply, now=1_789_000_000, source="app-server")
+                self.assertIsNotNone(record)
+                self.assertEqual([(w["pool"], w["used_percentage"], w["window_minutes"])
+                                  for w in record["windows"]], expected)
+                self.assertTrue(all(w["resets_at"] >= 1_800_000_000 for w in record["windows"]))
+
+    def test_failed_api_keeps_newer_authoritative_cache_and_safe_status(self):
+        self.rollout("rollout-older.jsonl", [self.token_count({"used_percent": 96})])
+        mcpbar_codex.secure_codex_root()
+        previous = {"ts": 1_792_575_900, "source": "app-server", "plan": "pro", "windows": [
+            {"kind": "primary", "pool": "codex", "ts": 1_792_575_900, "used_percentage": 24}]}
+        mcpbar.write_json(mcpbar_codex.CODEX_LIMITS, previous)
+        for result, error, state in ((None, "raw sensitive server text", "failed"),
+                                     ({"rateLimitsByLimitId": {}}, None, "empty")):
+            with self.subTest(state=state):
+                self.rpc_mock.return_value = result, error
+                with mock.patch.object(mcpbar_codex.time, "time", return_value=1_792_576_000):
+                    mcpbar_codex.fetch_codex_limits()
+                self.assertEqual(mcpbar.read_json(mcpbar_codex.CODEX_LIMITS), previous)
+                status = mcpbar.read_json(os.path.join(mcpbar_codex.CODEX_ROOT, "limits-status.json"))
+                self.assertEqual(status, {"ts": 1_792_576_000, "state": state,
+                                          "detail": "rpc_error" if error else "no_windows"})
+
+    def test_api_invalid_or_unrelated_windows_are_not_zero_usage(self):
+        for limit in ({"primary": {"usedPercent": True}},
+                      {"primary": {"usedPercent": float("nan")}},
+                      {"primary": None, "secondary": None}):
+            with self.subTest(limit=limit):
+                self.assertIsNone(mcpbar_codex.codex_limits_record(
+                    {"rateLimitsByLimitId": {"codex": limit}}, now=10, source="app-server"))
+        record = mcpbar_codex.codex_limits_record({"rateLimitsByLimitId": {
+            "codex": {"primary": {"usedPercent": 0, "windowDurationMins": float("inf")}},
+            "base_model_inference": {"limitName": "another-model", "primary": {"usedPercent": 42}},
+        }}, now=10, source="app-server")
+        self.assertEqual(record["windows"], [{"kind": "primary", "pool": "codex", "ts": 10,
+                                              "used_percentage": 0, "resets_at": None}])
+
+    def test_bad_timestamps_do_not_crash_or_make_rollouts_fresh(self):
+        for stamp in (None, float("inf"), "not-a-date"):
+            with self.subTest(stamp=stamp):
+                self.rollout("rollout-undated.jsonl", [self.token_count({"used_percent": 96}, stamp=stamp)])
+                mcpbar_codex.fetch_codex_limits()
+                self.assertIsNone(mcpbar.read_json(mcpbar_codex.CODEX_LIMITS))
+        record = mcpbar_codex.codex_limits_record({"rateLimits": {"primary": {
+            "usedPercent": 24, "resetsAt": float("inf")}}}, now=10, source="app-server")
+        self.assertEqual(record["windows"][0]["resets_at"], None)
+
+    def test_repeated_fallback_does_not_restore_an_older_removed_reserve(self):
+        self.rollout("rollout-fallback.jsonl", [self.token_count({"used_percent": 25})])
+        mcpbar_codex.secure_codex_root()
+        mcpbar.write_json(mcpbar_codex.CODEX_LIMITS, {
+            "ts": 1_789_120_000, "source": "app-server", "windows": [
+                self.window(ts=1_789_120_000, used=24)]})
+        steps = {
+            "codex": mcpbar_codex.codex_limits_record({"primary": {"used_percent": 25}}, ts=1_789_120_800),
+            "reserve": mcpbar_codex.codex_limits_record({"primary": {"used_percent": 96}},
+                                                        ts=1_789_000_000, model="gpt-reserve"),
+        }
+        with mock.patch.object(mcpbar_codex, "codex_snapshots", return_value=(steps, True)):
+            for _ in range(2):
+                mcpbar_codex.fetch_codex_limits()
+                written = mcpbar.read_json(mcpbar_codex.CODEX_LIMITS)
+                self.assertEqual([(w["pool"], w["used_percentage"]) for w in written["windows"]], [("codex", 25)])
 
     def test_окна_снимка_становятся_фактами(self):
         record = mcpbar_codex.codex_limits_record({
@@ -2372,6 +2477,19 @@ class CodexLimits(unittest.TestCase):
         # Момент записи, а не время файла: панель показывает возраст цифр, и возраст
         # недельного снимка должен читаться неделей, а не «только что».
         self.assertEqual(ts, 1_789_124_400)   # 2026-09-11T11:00:00Z
+
+    def test_empty_latest_snapshot_keeps_previous_measurement(self):
+        for context in ([], [{"type": "turn_context", "payload": {"model": "gpt-6-sol"}}]):
+            with self.subTest(context=context):
+                path = self.rollout("rollout-empty-last.jsonl", context + [
+                    self.token_count({"used_percent": 21, "window_minutes": 10080}),
+                    self.token_count(None, stamp="2026-09-11T11:00:00Z"),
+                ])
+                snapshot, ts, model = mcpbar_codex.codex_file_snapshots(path)["codex"]
+                record = mcpbar_codex.codex_limits_record(snapshot, ts=ts, model=model)
+                self.assertIsNotNone(record)
+                self.assertEqual(record["windows"][0]["used_percentage"], 21)
+                self.assertEqual(record["ts"], 1_789_120_800)
 
     def test_резервная_модель_помечает_запись(self):
         """Кончился обычный лимит — Codex уводит сессию на резервную модель, и снимок в файле
@@ -2655,6 +2773,20 @@ class CodexLimits(unittest.TestCase):
         self.assertEqual(list(found), ["codex"])
         self.assertEqual(found["codex"][0]["primary"]["used_percent"], 12)
 
+    def test_cached_pool_does_not_hide_newer_rollout(self):
+        old = self.rollout("rollout-previous.jsonl", [self.token_count({"used_percent": 21})])
+        latest = self.rollout("rollout-latest.jsonl", [self.token_count(None)])
+        os.utime(old, (1_000_000, 1_000_000))
+        os.utime(latest, (2_000_000, 2_000_000))
+        mcpbar_codex.secure_codex_root()
+        mcpbar.write_json(mcpbar_codex.CODEX_LIMITS, {
+            "ts": 1, "source": "rollout", "windows": [
+                {"kind": "primary", "pool": "codex", "ts": 1, "used_percentage": 96}]})
+        mcpbar_codex.fetch_codex_limits()
+        found = mcpbar.read_json(mcpbar_codex.CODEX_LIMITS)
+        self.assertEqual(found["windows"][0]["used_percentage"], 21)
+        self.assertEqual(found["ts"], 1_789_120_800)
+
     def test_пустой_снимок_не_останавливает_поиск(self):
         """Codex пишет снимок и на ходах, где мерить нечего: `primary` и `secondary` приходят
         пустыми. Такой снимок принимали за найденный обычный пул, и поиск замирал на первом же
@@ -2682,10 +2814,29 @@ class CodexLimits(unittest.TestCase):
         self.assertEqual([(w["pool"], w["used_percentage"]) for w in written["windows"]],
                          [("codex", 97), ("reserve", 29)])
 
-    def test_за_резервным_окном_в_прошлое_не_ходим(self):
-        """Аккаунт, который ни разу не упирался в лимит, резервного окна не имеет вовсе —
-        и поиск его в прошлых сессиях повторялся бы на каждом опросе без всякого шанса.
-        Назад идём ровно за обычными окнами и только когда их нет."""
+    def test_newest_measurement_wins_over_file_modification_time(self):
+        recently_touched = self.rollout("rollout-touched.jsonl", [
+            {"type": "turn_context", "payload": {"model": "gpt-6-sol"}},
+            self.token_count({"used_percent": 96}, stamp="2026-09-11T10:00:00Z"),
+            {"type": "turn_context", "payload": {"model": "gpt-reserve"}},
+            self.token_count({"used_percent": 8}, stamp="2026-09-11T12:00:00Z"),
+        ])
+        newer_measurement = self.rollout("rollout-measured.jsonl", [
+            {"type": "turn_context", "payload": {"model": "gpt-6-sol"}},
+            self.token_count({"used_percent": 24}, stamp="2026-09-11T11:00:00Z"),
+            {"type": "turn_context", "payload": {"model": "gpt-reserve"}},
+            self.token_count({"used_percent": 7}, stamp="2026-09-11T11:30:00Z"),
+        ])
+        os.utime(recently_touched, (2_000_000, 2_000_000))
+        os.utime(newer_measurement, (1_000_000, 1_000_000))
+        found, _ = mcpbar_codex.codex_snapshots()
+        self.assertEqual(found["codex"]["windows"][0]["used_percentage"], 24)
+        self.assertEqual(found["codex"]["ts"], 1_789_124_400)
+        self.assertEqual(found["reserve"]["windows"][0]["used_percentage"], 8)
+        self.assertEqual(found["reserve"]["ts"], 1_789_128_000)
+
+    def test_rollout_scan_is_bounded_to_twelve_files(self):
+        """При недоступном API поиск свежего измерения ограничен двенадцатью файлами."""
         seen = []
         real = mcpbar_codex.codex_file_snapshots
 
@@ -2693,19 +2844,19 @@ class CodexLimits(unittest.TestCase):
             seen.append(path)
             return real(path)
 
-        for name in ("a", "b", "c"):
+        for name in range(14):
             path = self.rollout(f"rollout-2026-09-11T10-00-00-{name}.jsonl", [
                 {"timestamp": "2026-09-11T10:00:00Z", "type": "turn_context",
                  "payload": {"turn_id": "1", "model": "gpt-5.6-terra"}},
                 self.token_count({"used_percent": 10, "window_minutes": 300}),
             ])
-            os.utime(path, (1_000_000 + ord(name), 1_000_000 + ord(name)))
+            os.utime(path, (1_000_000 + name, 1_000_000 + name))
         mcpbar_codex.codex_file_snapshots = counting
         try:
             mcpbar_codex.fetch_codex_limits()
         finally:
             mcpbar_codex.codex_file_snapshots = real
-        self.assertEqual(len(seen), 1, seen)
+        self.assertEqual(len(seen), 12, seen)
 
     def test_память_доезжает_до_файла(self):
         """Сквозь весь путь: обычный ход, потом резервный — в файле остаются оба пула."""
@@ -2738,6 +2889,104 @@ class CodexLimits(unittest.TestCase):
         os.makedirs(seam_dir, exist_ok=True)
         shutil.copyfile(mcpbar_codex.CODEX_LIMITS,
                         os.path.join(seam_dir, "codex-limits-pools.json"))
+
+
+class CodexRPC(unittest.TestCase):
+    def run_server(self, body, method="account/rateLimits/read", **options):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = os.path.join(directory, "codex")
+            with open(binary, "w") as fh:
+                fh.write("#!/usr/bin/python3\nimport json, os, select, sys, time\n" + body)
+            os.chmod(binary, 0o700)
+            with mock.patch.object(mcpbar_codex, "find_codex", return_value=binary):
+                return mcpbar_codex.codex_rpc(method, **options)
+
+    def test_limits_launch_is_read_only_but_configuration_remains_writable(self):
+        body = '''
+json.loads(sys.stdin.readline())
+print(json.dumps({"id": 1, "result": {}}), flush=True)
+json.loads(sys.stdin.readline())
+request = json.loads(sys.stdin.readline())
+print(json.dumps({"id": 2, "result": {"args": sys.argv[1:]}}), flush=True)
+'''
+        for read_only, method in ((True, "account/rateLimits/read"), (False, "config/batchWrite")):
+            with self.subTest(method=method):
+                result, error = self.run_server(body, method, timeout=1, read_only=read_only)
+                self.assertIsNone(error)
+                self.assertEqual(result["args"], ["-c", 'approval_policy="never"', "-c",
+                                                  "features.plugins=false", "-s", "read-only",
+                                                  "-a", "never", "app-server"] if read_only else ["app-server"])
+
+    def test_timeout_does_not_wait_for_descendant_holding_stdout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pid_file = os.path.join(directory, "child.pid")
+            body = f'''
+child = os.fork()
+if child == 0:
+    time.sleep(5)
+    os._exit(0)
+with open({pid_file!r}, "w") as fh:
+    fh.write(str(child))
+time.sleep(10)
+'''
+            started = time.monotonic()
+            try:
+                result, error = self.run_server(body, timeout=1.5, read_only=True)
+                elapsed = time.monotonic() - started
+                self.assertEqual((result, error), (None, "timeout"))
+                self.assertLess(elapsed, 3.5)
+            finally:
+                if os.path.exists(pid_file):
+                    with open(pid_file) as fh:
+                        child = int(fh.read())
+                    try:
+                        os.kill(child, 9)
+                    except ProcessLookupError:
+                        pass
+
+    def test_transport_errors_are_bounded_and_safe(self):
+        cases = [
+            ("sys.exit(0)\n", "connection_closed"),
+            ("time.sleep(5)\n", "timeout"),
+            ('print(json.dumps({"id": 1, "error": {"message": "sensitive response"}}), flush=True)\n', "rpc_error"),
+            ('print(json.dumps({"id": 1, "result": []}), flush=True)\n', "invalid_reply"),
+        ]
+        real_popen, processes = subprocess.Popen, []
+
+        def start(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            processes.append(process)
+            return process
+
+        for body, expected in cases:
+            with self.subTest(expected=expected), mock.patch.object(subprocess, "Popen", side_effect=start):
+                started = time.monotonic()
+                result, error = self.run_server(body, timeout=1, read_only=True)
+                self.assertIsNone(result)
+                self.assertEqual(error, expected)
+                self.assertLess(time.monotonic() - started, 3)
+                self.assertIsNotNone(processes[-1].poll())
+        with mock.patch.object(mcpbar_codex, "find_codex", return_value=""):
+            self.assertEqual(mcpbar_codex.codex_rpc("account/rateLimits/read", read_only=True),
+                             (None, "not_installed"))
+
+    def test_handshake_waits_for_initialize_and_sends_initialized(self):
+        result, error = self.run_server('''
+first = json.loads(sys.stdin.readline())
+if first["method"] != "initialize" or select.select([sys.stdin], [], [], 0.1)[0]:
+    print(json.dumps({"id": 2, "error": {"message": "request before initialize response"}}), flush=True)
+    sys.exit(0)
+print(json.dumps({"id": 1, "result": {}}), flush=True)
+notification = json.loads(sys.stdin.readline())
+request = json.loads(sys.stdin.readline())
+if notification.get("method") != "initialized" or "id" in notification:
+    print(json.dumps({"id": 2, "error": {"message": "missing initialized"}}), flush=True)
+else:
+    print(json.dumps({"method": "notice", "params": {}}), flush=True)
+    print(json.dumps({"id": 2, "result": {"method": request["method"], "args": sys.argv[1:]}}), flush=True)
+''', timeout=1)
+        self.assertIsNone(error)
+        self.assertEqual(result, {"method": "account/rateLimits/read", "args": ["app-server"]})
 
 
 class CodexAttention(unittest.TestCase):

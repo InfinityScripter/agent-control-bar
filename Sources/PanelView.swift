@@ -107,6 +107,7 @@ struct PanelView: View {
         // Over the strip, not in place of it: the figures under it are still the last true
         // reading, and the block is what says how far from the truth they have drifted.
         if let notice = store.snapshot.limitsNotice { limitsNoticeBlock(notice) }
+        if let notice = store.snapshot.codexLimitsNotice { limitsNoticeBlock(notice) }
         let groups = store.snapshot.limitGroups
         if groups.isEmpty {
             Text(store.snapshot.limitsNote)

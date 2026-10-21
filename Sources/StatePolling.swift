@@ -64,6 +64,14 @@ extension StatusController {
         }
     }
 
+    func loadCodexLimitsStatus() {
+        switch codexStateFile(at: "codex/limits-status.json", gate: &codexLimitsStatusMTime) {
+        case .missing: codexLimitsStatus = nil
+        case .unchanged: break
+        case .changed(let object): codexLimitsStatus = LimitsStatus(json: object)
+        }
+    }
+
     /// codex/hooks.json — how many of our hooks Codex is skipping for want of trust.
     ///
     /// No file means no answer rather than "all approved": the count is only ever written after
@@ -110,6 +118,7 @@ extension StatusController {
         notifyLimitsSignedOut()
         pollLimitsIfRolledOver(now: now)
         loadCodexLimits()
+        loadCodexLimitsStatus()
         loadCodexHooks()
         loadCodexAttention()
         pollCodexAttention(now: now)

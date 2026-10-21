@@ -106,7 +106,7 @@ In **Settings → Appearance → Limits strip**, **Two rows** shows both provide
 
 Under the strip, a **Reset odds** card shows whenreset.app's estimate that Claude or Codex limits get reset early within 24 hours. Its chevron unfolds the 48-hour and 7-day odds, the last reset and how many resets have been tracked for each provider. It is an estimate from past vendor announcements, not an official forecast. The app asks the site at most every 15 minutes; turn **Limit reset odds** off in General to remove the card and stop the request.
 
-Claude figures come from Anthropic's usage API using the OAuth token Claude Code stores locally. Turn **Limits via Anthropic API** off in General to stop the poll. Codex figures are read from local rollout files in `~/.codex/sessions`; **Codex limits** stops that read. No OpenAI token or API request is needed for them.
+Claude figures come from Anthropic's usage API using the OAuth token Claude Code stores locally. Turn **Limits via Anthropic API** off in General to stop the poll. Codex figures come from `account/rateLimits/read` through Codex's own app-server and sign-in. They refresh every five minutes and when the panel opens, with at least a minute between requests. If Codex cannot answer, the app uses the latest usable measurement from local rollout files in `~/.codex/sessions`, preserves its original age, and shows a separate Codex error above the strip. **Codex limits** stops both the request and the fallback read.
 
 When a Claude poll brings no figures, the panel says why instead of leaving old numbers to look fresh: a block above the limits strip reads **Claude Code is not signed in** or **Limits poll failed: HTTPError**, with how old the figures below it are. The figures stay; the block goes away on the next successful poll. The first signed-out poll after the app starts also sends one macOS notification, and **Settings → General → Limits** shows a **Last poll** line under the switch. When the cause is a sign-out, the block carries a **Sign in to Claude Code** button: it opens Terminal on `claude auth login` (through a small `claude-login.command` file in `~/.claude/control-bar/`), and once you have signed in there the figures come back on the next poll. The menu bar shows the same sign-out without opening the panel: the Claude bars are dimmed with a small mark in their corner, and the tooltip reads **Claude Code is not signed in — open the panel to sign in**.
 
@@ -189,9 +189,9 @@ Sounds follow the **Show** selection. Both and Hidden cover both agents.
 
 ## Privacy
 
-Session state, context figures and Codex limits are read locally. The app does not send your conversations or project paths to the developer. The hooks make no network requests.
+Session state and context figures are read locally. Current Codex limits are requested through Codex using its own authentication; local session snapshots are the fallback. The app does not send your conversations or project paths to the developer. The hooks make no network requests.
 
-The app itself checks for updates, can poll Anthropic for Claude usage, can ask whenreset.app for limit reset odds, and can connect to your configured MCP servers. Its anonymous usage ping is on by default: at most once a day, starting 24 hours after the first launch. It contains the app version, macOS major version, CPU architecture and install channel, with no device identifier. Turn **Anonymous usage ping** off in General, or set `CONTROL_BAR_NO_ANALYTICS` in the app's environment to any value.
+The app itself checks for updates, can poll Anthropic for Claude usage and Codex for OpenAI usage, can ask whenreset.app for limit reset odds, and can connect to your configured MCP servers. Its anonymous usage ping is on by default: at most once a day, starting 24 hours after the first launch. It contains the app version, macOS major version, CPU architecture and install channel, with no device identifier. Turn **Anonymous usage ping** off in General, or set `CONTROL_BAR_NO_ANALYTICS` in the app's environment to any value.
 
 [PRIVACY.md](PRIVACY.md) lists the network requests, local files, permissions and debug-log behavior.
 

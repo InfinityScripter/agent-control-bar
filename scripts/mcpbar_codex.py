@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Codex-половина mcpbar.py: лимиты из rollout-файлов, MCP-серверы Codex и доверие к нашим хукам.
+"""Codex-половина mcpbar.py: лимиты аккаунта и запасные rollout-снимки, MCP-серверы Codex и доверие к нашим хукам.
 
 Отдельный модуль, а не отдельный скрипт: команды по-прежнему приходят через `mcpbar.py`
 (codex-limits, codex-mcp, codex-hooks), общие помощники — запись файлов, строки, разбор
@@ -13,6 +13,7 @@ import base64
 import glob
 import hashlib
 import json
+import math
 import os
 import socket
 import stat
@@ -222,10 +223,7 @@ def fetch_codex_attention():
 
 # ──────────────────────────────────────────────────────────── лимиты Codex
 
-# Codex CLI пишет ход сессии в rollout-файл, и каждый ответ модели кладёт туда снимок
-# лимитов аккаунта — те же 5 часов и неделя, что показывает его `/status`. Читаем только
-# этот файл: ни auth.json, ни сети, ни запуска самого Codex. Цифры уже лежат на диске,
-# и спрашивать за них токен пользователя не за что.
+# Текущую квоту отдаёт app-server; журналы сессий используются только при его недоступности.
 CODEX = os.path.join(HOME, ".codex")
 # YYYY/MM/DD разложены каталогами; три звёздочки вместо рекурсии — архив сессий лежит
 # в соседнем каталоге и обходить его незачем.
@@ -275,7 +273,9 @@ def codex_window(block, kind, base):
     """
     if not isinstance(block, dict):
         return None
-    used = block.get("used_percent", block.get("used_percentage"))
+    used = block.get("usedPercent", block.get("used_percent", block.get("used_percentage")))
+    if isinstance(used, bool):
+        return None
     try:
         pct = int(round(float(used)))
     # OverflowError — это Infinity: json.loads принимает голый Infinity-токен, и round()
@@ -283,15 +283,15 @@ def codex_window(block, kind, base):
     except (TypeError, ValueError, OverflowError):
         return None
     record = {"kind": kind, "used_percentage": max(0, min(100, pct))}
-    minutes = block.get("window_minutes")
+    minutes = block.get("windowDurationMins", block.get("window_minutes"))
     # bool — подкласс int, а True в поле длительности окна означает испорченный файл,
     # не окно длиной в минуту.
-    if isinstance(minutes, (int, float)) and not isinstance(minutes, bool):
+    if isinstance(minutes, (int, float)) and not isinstance(minutes, bool) and math.isfinite(minutes) and minutes > 0:
         record["window_minutes"] = int(minutes)
-    resets = parse_reset(block.get("resets_at"))
+    resets = parse_reset(block.get("resetsAt", block.get("resets_at")))
     if resets is None:
         after = block.get("resets_in_seconds", block.get("reset_after_seconds"))
-        if isinstance(after, (int, float)) and not isinstance(after, bool):
+        if isinstance(after, (int, float)) and not isinstance(after, bool) and math.isfinite(after):
             resets = int(base + after)
     record["resets_at"] = resets
     return record
@@ -302,20 +302,8 @@ def codex_pool(model):
 
     Резервный — тот, на который Codex уходит, когда обычный лимит кончился.
 
-    Модель, а не поле снимка, — и это проверено, а не выбрано: 13 сентября 2026 на
-    codex-cli 0.154.0 в снимке rollout ОБА пула приходят под одним и тем же
-    `limit_id: "codex"`, а соседнее `limit_name`, которое и было бы именем пула, всегда
-    приходит пустым. Имя пула Codex сообщает только своему интерфейсу — `hooks/list`-сосед
-    `account/rateLimits/read` отдаёт резервный пул как `base_model_inference` с
-    `limitName: "gpt-reserve"`, — но это уже сетевой запрос под аккаунтом человека, а
-    лимиты здесь читаются с диска и ничего никуда не шлют. Так что различает пулы модель
-    хода: резервный тратит только `gpt-reserve`. Совпадение по префиксу — соседние slug'и
-    того же семейства должны читаться так же, а вот `gpt-5.6-luna` сюда не входит
-    намеренно: это обычная модель, доступная и без всякого резерва.
-
-    Цена выбора названа прямо: переименуют slug — пометка молча пропадёт, и окно снова
-    подпишется своей длиной. Поэтому пул, названный в файле, здесь был бы лучше, и если
-    Codex когда-нибудь начнёт присылать `limit_name`, читать надо его.
+    В rollout оба пула приходят под limit_id="codex", поэтому только для запасного
+    снимка пул определяется моделью хода. Прямой API использует limitId/limitName.
     """
     return "reserve" if isinstance(model, str) and model.startswith("gpt-reserve") else "codex"
 
@@ -328,8 +316,8 @@ CODEX_WINDOW_KINDS = ("primary", "secondary")
 CODEX_WINDOW_ORDER = {kind: at for at, kind in enumerate(CODEX_WINDOW_KINDS)}
 
 
-def codex_limits_record(snapshot, ts=None, now=None, model=None):
-    """rate_limits из rollout → codex/limits.json.
+def codex_limits_record(snapshot, ts=None, now=None, model=None, source="rollout"):
+    """Снимок rollout или ответ account/rateLimits/read → codex/limits.json.
 
     Наружу идут факты, а не подписи: процент, длительность окна в минутах и момент
     сброса epoch-секундами. Как назвать окно в панели, решает Swift — у разных планов
@@ -348,20 +336,38 @@ def codex_limits_record(snapshot, ts=None, now=None, model=None):
         return None
     stamp = int(ts if isinstance(ts, (int, float)) and not isinstance(ts, bool)
                 else (now if now is not None else time.time()))
-    pool = codex_pool(model)
-    windows = []
-    for kind in CODEX_WINDOW_KINDS:
-        window = codex_window(snapshot.get(kind), kind, base=stamp)
-        if window:
-            window["pool"] = pool
-            window["ts"] = stamp
-            windows.append(window)
+    snapshots = [(codex_pool(model), snapshot)]
+    if source == "app-server":
+        limits = snapshot.get("rateLimitsByLimitId")
+        if limits is None:
+            legacy = snapshot.get("rateLimits")
+            limits = {legacy.get("limitId") or "codex": legacy} if isinstance(legacy, dict) else {}
+        if not isinstance(limits, dict):
+            return None
+        snapshots = []
+        for limit_id, limit in limits.items():
+            if not isinstance(limit, dict):
+                continue
+            if limit_id == "codex":
+                snapshots.insert(0, ("codex", limit))
+            elif limit_id == "base_model_inference" and limit.get("limitName") == "gpt-reserve":
+                snapshots.append(("reserve", limit))
+    windows, plan = [], None
+    for pool, limit in snapshots:
+        for kind in CODEX_WINDOW_KINDS:
+            window = codex_window(limit.get(kind), kind, base=stamp)
+            if window:
+                window["pool"] = pool
+                window["ts"] = stamp
+                windows.append(window)
+        value = limit.get("planType" if source == "app-server" else "plan_type")
+        if plan is None and isinstance(value, str) and value.strip():
+            plan = value.strip()
     if not windows:
         return None
-    record = {"ts": stamp, "source": "rollout", "windows": windows}
-    plan = snapshot.get("plan_type")
-    if isinstance(plan, str) and plan.strip():
-        record["plan"] = plan.strip()
+    record = {"ts": stamp, "source": source, "windows": windows}
+    if plan:
+        record["plan"] = plan
     return record
 
 
@@ -487,8 +493,9 @@ def codex_file_snapshots(path):
             if not isinstance(payload, dict):
                 payload = record
             snapshot = payload.get("rate_limits")
-            if isinstance(snapshot, dict):
-                pending.append((snapshot, parse_reset(record.get("timestamp"))))
+            stamp = parse_reset(record.get("timestamp"))
+            if stamp is not None and codex_limits_record(snapshot, ts=stamp):
+                pending.append((snapshot, stamp))
         elif b'"turn_context"' in raw:
             dated = True
             if pending:
@@ -516,50 +523,55 @@ def codex_file_snapshots(path):
 CODEX_ROLLOUT_LOOKBACK = 12
 
 
-def codex_snapshots(known_pools=()):
-    """Записи по пулам из файлов сессий → ({пул: запись}, попадался ли снимок вообще).
+def codex_snapshots():
+    """Новейшее датированное измерение каждого пула среди последних файлов сессий.
 
-    Уйдя на резерв, Codex перестаёт присылать обычные окна совсем, и хвост свежего файла
-    может целиком состоять из резервных ходов. Тогда последний обычный замер лежит в
-    предыдущей сессии, и взять его больше неоткуда — а без него панель не знает даже того,
-    что у пятичасового окна есть срок и он уже прошёл.
-
-    Назад идём ровно за обычными окнами и только когда их нет ни здесь, ни в уже записанном
-    файле. За резервным окном — никогда: у аккаунта, который ни разу не упирался в лимит,
-    его нет вовсе, и поиск повторялся бы на каждом опросе без единого шанса найти.
-
-    Поиск останавливает измеренное окно, а не всякий снимок: Codex пишет снимок и на ходы,
-    где мерить нечего (`primary` и `secondary` приходят пустыми, а `limit_id` — чужой). Такой
-    снимок принимали за найденный обычный пул, и поиск замирал на первом же коротком ходе,
-    не дойдя до сессии, где обычные окна есть. Проверено 13 сентября 2026: ровно так и было.
+    Mtime задаёт только ограниченную область поиска: старый rollout могут дописать
+    служебными событиями без нового замера, поэтому сравниваются timestamps снимков.
     """
     found, seen = {}, False
     for path in rollouts_by_age()[:CODEX_ROLLOUT_LOOKBACK]:
         for pool, (snapshot, ts, model) in codex_file_snapshots(path).items():
             seen = True
             record = codex_limits_record(snapshot, ts=ts, model=model)
-            if record:
-                found.setdefault(pool, record)
-        if "codex" in found or "codex" in known_pools:
-            break
+            if record and (pool not in found or record["ts"] > found[pool]["ts"]):
+                found[pool] = record
     return found, seen
 
 
 def fetch_codex_limits():
-    """Один проход: файлы сессий Codex → codex/limits.json. Молчалив при любом сбое."""
-    if not os.path.isdir(CODEX):
-        return t("codex.absent")
+    """Текущая квота через Codex; журналы остаются запасным источником со своим возрастом."""
+    now = int(time.time())
     previous = read_json(CODEX_LIMITS)
-    steps, seen = codex_snapshots({w["pool"] for w in codex_known_windows(previous)})
-    if not steps:
-        return t("codex.empty") if seen else t("codex.nosnapshot")
-    record = previous
-    # От старого замера к свежему: последним слоем должен лечь самый свежий снимок — от него
-    # запись берёт и план, и источник.
-    for step in sorted(steps.values(), key=lambda step: step["ts"]):
-        record = merge_codex_limits(record, step)
+    record, state, detail = None, "failed", "not_installed"
+    if os.path.isdir(CODEX):
+        result, error = codex_rpc("account/rateLimits/read", read_only=True)
+        now = int(time.time())
+        if not error:
+            record = codex_limits_record(result, now=now, source="app-server")
+            state, detail = ("ok", "") if record else ("empty", "no_windows")
+        else:
+            detail = error if error in ("timeout", "not_installed", "connection_unavailable",
+                                        "connection_closed", "invalid_reply", "rpc_error") else "rpc_error"
+        if record is None:
+            steps, _ = codex_snapshots()
+            record = previous
+            known = codex_known_windows(previous)
+            measured = max((w["ts"] for w in known if isinstance(w.get("ts"), (int, float))), default=0)
+            for step in sorted(steps.values(), key=lambda step: step["ts"]):
+                if step["ts"] <= measured:
+                    if isinstance(previous, dict) and previous.get("source") == "app-server":
+                        continue
+                    if step["windows"][0]["pool"] == "reserve" and not any(w["pool"] == "reserve" for w in known):
+                        continue
+                record = merge_codex_limits(record, step)
     secure_codex_root()
-    write_json(CODEX_LIMITS, record)
+    if record and record != previous:
+        write_json(CODEX_LIMITS, record)
+    write_json(os.path.join(CODEX_ROOT, "limits-status.json"),
+               {"ts": int(time.time()), "state": state, "detail": detail}, mode=0o600)
+    if state != "ok":
+        return t("codex.absent") if detail == "not_installed" else detail
     windows = ", ".join(f"{w['kind']} {w['used_percentage']}%" for w in record["windows"])
     return t("codex.updated", w=windows)
 
@@ -629,70 +641,76 @@ def codex_mcp_get(name):
     return data if isinstance(data, dict) else {}
 
 
-def codex_rpc(method, params=None, timeout=30):
-    """Один вызов метода `codex app-server` по stdio → (result, ошибка строкой).
-
-    JSON-RPC: initialize → нужный метод → выходим. Поля ответов в camelCase — проверено
-    на codex-cli 0.154.0; snake_case там не встречается.
-
-    Три вызывающих на три разных метода: статус серверов, запись настроек и список хуков.
-    Разбор ответа у каждого свой, а поднять процесс, дождаться СВОЕГО id среди чужих
-    уведомлений и погасить процесс — общее, и в трёх копиях расходилось бы построчно.
-    """
-    import subprocess, threading, queue
+def codex_rpc(method, params=None, timeout=30, read_only=False):
+    """Один вызов app-server: initialize → initialized → метод → завершение процесса."""
+    import subprocess, select
     binary = find_codex()
     if not binary:
-        return None, t("codex.nobinary")
+        return None, "not_installed" if read_only else t("codex.nobinary")
     try:
-        proc = subprocess.Popen([binary, "app-server"], stdin=subprocess.PIPE,
+        options = ["-c", 'approval_policy="never"', "-c", "features.plugins=false",
+                   "-s", "read-only", "-a", "never"] if read_only else []
+        proc = subprocess.Popen([binary] + options + ["app-server"], stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                 text=True, bufsize=1)
-    except OSError as exc:
-        return None, str(exc)[:200]
-    lines = queue.Queue()
-    threading.Thread(target=lambda: [lines.put(line) for line in proc.stdout],
-                     daemon=True).start()
-    try:
-        for request in ({"jsonrpc": "2.0", "id": 1, "method": "initialize",
-                         "params": {"clientInfo": {"name": "claude-control-bar",
-                                                   "title": "Agent Control Bar",
-                                                   "version": "1"}}},
-                        {"jsonrpc": "2.0", "id": 2, "method": method,
-                         "params": params or {}}):
-            proc.stdin.write(json.dumps(request) + "\n")
-            proc.stdin.flush()
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            try:
-                line = lines.get(timeout=max(0.1, deadline - time.time()))
-            except Exception:
-                break
-            reply = read_json_line(line)
-            # Между ответами приходят уведомления (remoteControl/status/changed и прочие);
-            # ждём именно свой id, а не первую строку, похожую на ответ.
-            if not isinstance(reply, dict) or reply.get("id") != 2:
+    except OSError:
+        return None, "connection_unavailable"
+    pending = b""
+    deadline = time.monotonic() + timeout
+
+    def receive(request_id):
+        nonlocal pending
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None, "timeout" if read_only else t("codex.timeout")
+            if b"\n" not in pending:
+                ready, _, _ = select.select([proc.stdout], [], [], remaining)
+                if not ready:
+                    return None, "timeout" if read_only else t("codex.timeout")
+                chunk = os.read(proc.stdout.fileno(), 65536)
+                if not chunk:
+                    return None, "connection_closed"
+                pending += chunk
                 continue
-            if reply.get("error"):
-                return None, str(reply["error"].get("message", ""))[:200]
-            return reply.get("result"), None
-        return None, t("codex.timeout")
-    except OSError as exc:
-        return None, str(exc)[:200]
+            line, pending = pending.split(b"\n", 1)
+            reply = read_json_line(line)
+            if not isinstance(reply, dict) or reply.get("id") != request_id or "method" in reply:
+                continue
+            if "error" in reply:
+                return None, "rpc_error"
+            if not isinstance(reply.get("result"), dict):
+                return None, "invalid_reply" if read_only else t("codex.badreply")
+            return reply["result"], None
+
+    try:
+        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                                     "params": {"clientInfo": {"name": "claude-control-bar",
+                                                               "title": "Agent Control Bar",
+                                                               "version": "1"}}}) + "\n")
+        proc.stdin.flush()
+        _, error = receive(1)
+        if error:
+            return None, error
+        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "initialized"}) + "\n")
+        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 2, "method": method,
+                                     "params": params or {}}) + "\n")
+        proc.stdin.flush()
+        return receive(2)
+    except OSError:
+        return None, "connection_unavailable"
     finally:
-        # Та же лестница, что в ask_server_for_tools: закрыть stdin, попросить, добить.
         try:
             proc.stdin.close()
-        except Exception:
+        except OSError:
             pass
         try:
             proc.terminate()
             proc.wait(2)
-        except Exception:
-            try:
-                proc.kill()
-                proc.wait(2)
-            except Exception:
-                pass
+        except (OSError, subprocess.TimeoutExpired):
+            proc.kill()
+            proc.wait(2)
+        proc.stdout.close()
 
 
 def codex_server_status():

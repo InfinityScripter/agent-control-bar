@@ -1180,6 +1180,32 @@ if let data = FileManager.default.contents(atPath: limitsSeamPath),
         + "(/usr/bin/python3 -m unittest discover -s tests), it writes build/seam/limits.json")
 }
 
+do {
+    let now = 1_000_000.0
+    let failed = LimitsStatus(json: ["state": "failed", "ts": now, "detail": "timeout"])
+    let codex = LimitsStatus.notice(failed, oauthLimits: true, figuresTs: now - 7_200, now: now, provider: "codex")
+    check(codex?.title == "Codex limits update failed: request timed out" && codex?.offerSignIn == false,
+          "Codex has its own safe error and never offers Claude sign-in")
+    check(codex?.hint.contains("2h ago") == true,
+          "the Codex error preserves the actual age of cached figures")
+    let claude = LimitsStatus.notice(failed, oauthLimits: true, figuresTs: nil, now: now)
+    check([claude, codex].compactMap { $0 }.count == 2,
+          "independent Claude and Codex failures both produce notices")
+    check(LimitsStatus.notice(failed, oauthLimits: false, figuresTs: nil, now: now, provider: "codex") == nil,
+          "the Codex switch hides its stale failure")
+    let empty = LimitsStatus(json: ["state": "empty", "ts": now, "detail": "no_windows"])
+    check(LimitsStatus.notice(empty, oauthLimits: true, figuresTs: nil, now: now, provider: "codex")?.title
+          == "Codex returned no limit windows", "empty API data is explained without inventing zeros")
+    var poll = CodexLimitsPoll()
+    check(poll.begin(now: now), "the first Codex limits request starts immediately")
+    check(!poll.begin(now: now + 300), "one Codex limits request can be in flight")
+    poll.finish()
+    check(!poll.begin(now: now + 59.9), "panel and settings requests share a sixty-second debounce")
+    check(poll.begin(now: now + 60), "Codex limits can refresh at the debounce boundary")
+    poll.finish()
+    check(poll.begin(now: now + 360), "the five-minute background poll can refresh Codex")
+}
+
 // MARK: LimitsStatus — why the last poll brought no figures
 // limits-status.json is written by mcpbar.py on every poll, including the ones that leave
 // limits.json alone. The app reads the state as a string, like every other status from the
@@ -2387,6 +2413,20 @@ check(Gauge(fiveHour: 0.1, sevenDay: 0.2, labels: ("1d", "30d")).rows.map { $0.0
 // python suite, parsed here. The hand-written fixtures above pin the same schema twice
 // independently, which is exactly how a coordinated rename passes both suites while the strip
 // empties. Run the python suite first — CI does.
+let codexAPISeamPath = FileManager.default.currentDirectoryPath + "/build/seam/codex-limits-api.json"
+if let data = FileManager.default.contents(atPath: codexAPISeamPath),
+   let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+   let set = LimitsSet(codex: raw) {
+    check(set.source == "app-server" && set.ts == 1_792_575_900 && set.plan == "pro",
+          "the real API writer preserves source, measurement time and plan across Python and Swift")
+    check(set.windows.map { $0.window.used } == [24] && set.windows.map(\.title) == ["7 days"],
+          "the API window parses with its actual weekly duration and percentage")
+    check(set.windows.first?.window.resets == 1_793_132_700,
+          "the API reset time crosses the file boundary unchanged")
+} else {
+    check(false, "codex API seam fixture unreadable; run the Python tests first")
+}
+
 let codexSeamPath = FileManager.default.currentDirectoryPath + "/build/seam/codex-limits.json"
 if !FileManager.default.fileExists(atPath: codexSeamPath) {
     check(false, "codex seam fixture missing at \(codexSeamPath) — run the python suite first "
@@ -3753,7 +3793,12 @@ do {
     let attentionBackend = BackendCommand.codexAttention.backend(normal: oldBackend, bundledScript: bundleScript)
     check(attentionBackend.python == "/usr/bin/python3" && attentionBackend.script == bundleScript,
           "command attention uses the corrected bundle even with an old plugin backend")
-    for command: BackendCommand in [.mcpRefresh(provider: "claude"), .limits(provider: "codex"), .codexHooks,
+    let limitsBackend = BackendCommand.limits(provider: "codex").backend(normal: oldBackend, bundledScript: bundleScript)
+    check(limitsBackend.python == "/usr/bin/python3" && limitsBackend.script == bundleScript,
+          "Codex limits use the current bundle even when paths.json selects an older plugin")
+    check(BackendCommand.limits(provider: "codex").backend(normal: oldBackend, bundledScript: nil).script.isEmpty,
+          "missing bundled limits code cannot silently run an old plugin")
+    for command: BackendCommand in [.mcpRefresh(provider: "claude"), .limits(provider: "claude"), .codexHooks,
                                     .codexHooksApprove, .statuslineHeal, .claudeLogin,
                                     .toggleServer(provider: "codex", name: "wiki", on: true)] {
         let selected = command.backend(normal: oldBackend, bundledScript: bundleScript)

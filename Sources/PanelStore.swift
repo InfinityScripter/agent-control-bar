@@ -230,17 +230,16 @@ struct PanelLimitGroup: Equatable, Identifiable {
     /// PanelData, where the reset times are still numbers — at equal fullness the window that
     /// comes back sooner is the one that bites, and by here the resets are worded strings.
     let worst: PanelLimit?
+    var source: String? = nil
     /// "Early reset chance in 24h: 13% (whenreset.app)", while the odds are on and the site has a figure.
     var earlyReset: String? = nil
 
     var id: String { provider }
 
-    /// What the group's tooltip says: who, on what plan, measured when — and, for Codex, where the
-    /// figures come from: they are the last snapshot a Codex session wrote, so they stand still
-    /// while no session is running and "measured 3d ago" is not a polling fault.
     var tip: String {
-        let source = provider == Provider.codex.id ? "from the last Codex session" : nil
-        return [title, plan, "measured " + age, source, earlyReset].compactMap { $0 }.joined(separator: " · ")
+        let origin = provider == Provider.codex.id
+            ? (source == "app-server" ? "from Codex account limits" : "from a Codex session snapshot") : nil
+        return [title, plan, "measured " + age, origin, earlyReset].compactMap { $0 }.joined(separator: " · ")
     }
 }
 
@@ -283,6 +282,7 @@ struct PanelSnapshot: Equatable {
     /// old figures left in place under it. Nil while the poll succeeds, the API poll is off, or
     /// the backend is too old to say.
     var limitsNotice: PanelLimitsNotice?
+    var codexLimitsNotice: PanelLimitsNotice?
     /// How the strip stacks the groups, and which one the switcher is showing — the remembered
     /// pick already resolved against the groups there are, see LimitsBoard.showing.
     var limitsLayout: PanelLimitsLayout = .rows
@@ -511,6 +511,7 @@ extension PanelSnapshot {
         hooks = c.panelHooks()
         (limitGroups, limitsNote) = c.panelLimitGroups(now: now)
         limitsNotice = c.panelLimitsNotice(now: now)
+        codexLimitsNotice = c.panelLimitsNotice(now: now, provider: "codex")
         limitsLayout = c.limitsLayout
         limitsProvider = LimitsBoard.showing(c.limitsProvider, among: limitGroups.map(\.provider))
             ?? c.limitsProvider

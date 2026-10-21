@@ -19,8 +19,12 @@ enum BackendCommand {
     case toggleTool(provider: String, server: String, tool: String, prefix: String, on: Bool)
 
     func backend(normal: (python: String, script: String), bundledScript: String?) -> (python: String, script: String) {
-        if case .codexAttention = self { return ("/usr/bin/python3", bundledScript ?? "") }
-        return normal
+        switch self {
+        case .codexAttention, .limits(provider: "codex"):
+            return ("/usr/bin/python3", bundledScript ?? "")
+        default:
+            return normal
+        }
     }
 
     var arguments: [String] {

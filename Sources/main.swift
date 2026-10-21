@@ -16,9 +16,8 @@ final class StatusController: NSObject, NSWindowDelegate {
     lazy var codexMCP = MCPModel(
         path: (root as NSString).appendingPathComponent("codex/mcp.json"))
     var limits: Limits?
-    /// Codex's own windows, read from codex/limits.json — the snapshot scripts/mcpbar.py lifts
-    /// out of the newest rollout file that Codex itself wrote. Its own mtime gate below, because
-    /// the two files are rewritten by two separate commands on the same timer.
+    /// Current Codex quota or a dated session fallback, read from codex/limits.json.
+    /// The provider keeps its own file and mtime gate.
     var codexWindows: LimitsSet?
     /// How many of this app's own hooks Codex has not been told to trust, read from
     /// codex/hooks.json. An untrusted hook is one Codex skips, and every one of ours writes the
@@ -128,23 +127,21 @@ final class StatusController: NSObject, NSWindowDelegate {
     var lastLimitsPoll: Double = 0      // so a rollover cannot bring the next poll forward into a loop
     var limitsTimer: Timer?             // the five-minute poll; each Claude request pushes it back
     var rolledOverHandled: Double = 0   // the reset stamp that already brought one poll forward
+    var codexLimitsStatus: LimitsStatus?
+    var codexLimitsStatusMTime: Date?
+    var codexLimitsPoll = CodexLimitsPoll()
+    var codexLimitsTimer: Timer?
     var codexLimitsMTime: Date?         // the same gate for codex/limits.json
     var codexHooksMTime: Date?          // and for codex/hooks.json
     var codexAttentionMTime: Date?
     var codexAttentionPoll = CodexAttentionPoll()
     /// The mtimes the last hook-trust question was asked against; see askCodexAboutHooks().
     var codexTrustInputs: String?
-    /// Where Codex keeps the session files its limit figures are read out of. Owned by Codex,
-    /// never written here.
-    let codexSessionsDir = (NSHomeDirectory() as NSString).appendingPathComponent(".codex/sessions")
     /// Codex's own directory. Its presence is the whole test for "is Codex installed here" —
     /// asked afresh rather than cached, so installing Codex later needs no restart.
     let codexHome = (NSHomeDirectory() as NSString).appendingPathComponent(".codex")
     /// Codex is installed: its servers and hooks can be asked about.
     var codexInstalled: Bool { FileManager.default.fileExists(atPath: codexHome) }
-    /// Codex has run at least once: only then is there a session file to read limits out of. A
-    /// separate gate from codexInstalled, because an install that never ran has none.
-    var codexHasRun: Bool { FileManager.default.fileExists(atPath: codexSessionsDir) }
     var selfUpdating = false            // one update at a time (DMG install or source build)
     var updateBuild: Process?           // the in-flight source build; Quit terminates it (see quit())
     var updateDownload: URLSessionDownloadTask?  // the in-flight DMG download; Quit cancels it
@@ -216,7 +213,7 @@ final class StatusController: NSObject, NSWindowDelegate {
     var iconSystem = false // false = brand Orange; true = adaptive black/white (template image)
     var useThinkingWords = true     // rotate a playful verb ("Manifesting…") in place of "Thinking…"
     var oauthLimits = true          // poll Anthropic's usage endpoint for the 5h/7d/Fable limits
-    var codexLimits = true          // read Codex's own limit snapshot out of ~/.codex/sessions
+    var codexLimits = true          // ask Codex for current account limits
     /// Whether Codex's MCP servers are listed and switchable. On by default like the limits, and
     /// for the same reason — a machine without Codex sees nothing either way — but its own
     /// switch, because this one is the half that starts every configured server to ask it for its
@@ -344,7 +341,10 @@ final class StatusController: NSObject, NSWindowDelegate {
         // last showed. Five minutes is well clear of the endpoint's rate limiting (community
         // consensus puts the floor at three).
         limitsTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) {
-            [weak self] _ in self?.pollLimits()
+            [weak self] _ in self?.pollClaudeLimits(now: Date().timeIntervalSince1970)
+        }
+        codexLimitsTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) {
+            [weak self] _ in self?.pollCodexLimits(now: Date().timeIntervalSince1970)
         }
         pollLimits()
         refreshNotificationAuthStatus()
