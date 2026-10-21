@@ -1,0 +1,10 @@
+# Текущее состояние
+
+Рабочая копия: /Users/talalaev-m/.codex/worktrees/stale-sessions/claude-control-bar, ветка codex/stale-sessions-0.27.2, база origin/codex/release-0.27.1 dfbe2ae, plan commit d853741. Основной dirty feat/prs-tab не тронут.
+Публикация полностью разрешена current user full; один итоговый PR+release0.27.2 включает PR65 limitsfix. PR65 пока draft, не мержить отдельно; после новогоmerge можно закрыть заменённый65. GitHubplugin PRcreation в прошлойсессии403; при повторе fallback gh. Любой созданныйPR attach artifact.
+Реализация завершена/заморожена, code staged как reviewbase, worker implement_sessions теперь чинит D02 durableauto-reap (unstageddelta). Reviews review_sessions/failure_review завершены, требуется repairreview затемcommit.
+Исходный универсальный build + DMG PASS, лог /private/tmp/acb-stale-build.log; после D02 rebuild. Native actual orphan probe PASS: /private/tmp/acb-real-owner-verification/{result.json,verification.md}; before1/after0, sharedpidalive/ownerdead, no transcript/userstate mutation.
+GUI agent ui_contract тестирует current immutable production binary в /private/tmp/acb-ui-probe-20261021 CFFIXED_USER_HOME+disabledpolls, безопасныйAXtool ограничен tmp-prefix. Реальное окно не захватывать: auto-review отклонила; narrowmetadata допустимы. После finalrebuild повторить путь по необходимости.
+Backup установленной /Applications/Agent Control Bar.app0.27.0 проверен diff -qr в /private/tmp/acb-stale-release-backup-20261021/Agent Control Bar.app. Установка ещё НЕ выполнена.
+PRtext прошёл humanizer+plain-prs /private/tmp/acb-stale-release-text/body.md; facts+evidence рядом. Передпубликацией сверить с итоговымкодом. Description only Чтоизачем, без inventedRelates.
+Остаются: repairreview, finalchecks/build, commit, blindacceptance чистаякопия, push+draftPR+CI, GUIactualfinal+safeinstall, mergeexpectedSHA, Releaseworkflow+publishedDMG/signature, installedversionverify. Autopilot finish только после выполненногоrelease; финальныйлокальныйreportкоммит можно послеmerge без повторногопуша еслинуженrecord.

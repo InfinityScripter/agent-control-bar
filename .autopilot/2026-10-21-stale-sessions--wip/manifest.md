@@ -10,3 +10,5 @@
 | R04 | «посмотри в других примерах тот же ORCA как это делает» | in-ticket | Сравнение с текущим исходным кодом stablyai/orca | spec §ORCA → T01 |
 | R05 | «full мне нужен готовый результат» | in-ticket | Самостоятельная реализация, проверка, ревью и локальное обновление | spec §Приёмка → T01 |
 | R06 | «можно пушить и мёржить до готового результата новой версии» | in-ticket | Разрешены необходимые ветка, коммиты, PR, push, merge и выпуск | spec §Выпуск → T01 |
+| D01 | Build: app-side unlink races a concurrent hook | in-spec | Не удалять state JSON при auto-reap; забыть наблюдённую версию, новый hook возвращает запись | spec §Очистка |
+| D02 | Review: auto-reap memory is lost on restart | in-spec | Сохранить fingerprint автоматически снятой версии; новый hook восстанавливает запись | spec §D02 |

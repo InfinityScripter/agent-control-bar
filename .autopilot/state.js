@@ -11,9 +11,9 @@ window.STATE =
   "memoryFile": "CLAUDE.md",
   "memoryOwner": "user",
   "skillDir": "/Users/talalaev-m/.agents/skills/autopilot",
-  "baseCommit": null,
+  "baseCommit": "d853741",
   "startedAt": "2026-10-21T19:29:01+03:00",
-  "updatedAt": "2026-10-21T19:35:12+03:00",
+  "updatedAt": "2026-10-21T20:03:24+03:00",
   "finishedAt": null,
   "stages": [
     {
@@ -43,20 +43,26 @@ window.STATE =
     },
     {
       "id": "plan",
-      "status": "active",
-      "startedAt": "2026-10-21T19:34:37+03:00"
+      "status": "done",
+      "startedAt": "2026-10-21T19:34:37+03:00",
+      "finishedAt": "2026-10-21T19:35:35+03:00"
     },
     {
       "id": "build",
-      "status": "pending"
+      "status": "done",
+      "startedAt": "2026-10-21T19:35:35+03:00",
+      "finishedAt": "2026-10-21T19:49:29+03:00"
     },
     {
       "id": "review",
-      "status": "pending"
+      "status": "done",
+      "startedAt": "2026-10-21T19:49:29+03:00",
+      "finishedAt": "2026-10-21T20:03:24+03:00"
     },
     {
       "id": "final",
-      "status": "pending"
+      "status": "active",
+      "startedAt": "2026-10-21T20:03:24+03:00"
     }
   ],
   "requirements": {
@@ -94,12 +100,23 @@ window.STATE =
       ],
       "review": "да — состояние сессий и очистка",
       "model": "сильная",
-      "status": "pending",
+      "status": "review",
       "retries": 0,
-      "repairs": 0
+      "repairs": 1,
+      "startedAt": "2026-10-21T19:35:35+03:00",
+      "repairFindings": [
+        "Автоматически исключённая версия не должна возвращаться после рестарта при повторном использовании PID"
+      ],
+      "tests": {
+        "passed": 1200,
+        "failed": 0
+      }
     }
   ],
-  "tests": null,
+  "tests": {
+    "passed": 1200,
+    "failed": 0
+  },
   "debt": {
     "placeholders": [],
     "assumptions": [
@@ -122,9 +139,14 @@ window.STATE =
     "2026-10-21T19:29:51+03:00",
     "2026-10-21T19:34:37+03:00",
     "2026-10-21T19:34:38+03:00",
-    "2026-10-21T19:35:12+03:00"
+    "2026-10-21T19:35:12+03:00",
+    "2026-10-21T19:35:35+03:00",
+    "2026-10-21T19:42:45+03:00",
+    "2026-10-21T19:49:29+03:00",
+    "2026-10-21T19:53:51+03:00",
+    "2026-10-21T20:03:24+03:00"
   ],
-  "rev": 16,
+  "rev": 25,
   "waiting": null,
   "waits": [],
   "log": [
@@ -228,6 +250,67 @@ window.STATE =
       "g": "G3",
       "ok": true,
       "problems": 0
+    },
+    {
+      "t": "2026-10-21T19:35:35+03:00",
+      "k": "stage",
+      "id": "build",
+      "act": "start"
+    },
+    {
+      "t": "2026-10-21T19:35:35+03:00",
+      "k": "ticket",
+      "ids": [
+        "01"
+      ],
+      "act": "start"
+    },
+    {
+      "t": "2026-10-21T19:42:45+03:00",
+      "k": "add",
+      "key": "report",
+      "n": 1
+    },
+    {
+      "t": "2026-10-21T19:49:29+03:00",
+      "k": "ticket",
+      "ids": [
+        "01"
+      ],
+      "act": "review"
+    },
+    {
+      "t": "2026-10-21T19:49:29+03:00",
+      "k": "stage",
+      "id": "review",
+      "act": "start"
+    },
+    {
+      "t": "2026-10-21T19:53:51+03:00",
+      "k": "ticket",
+      "ids": [
+        "01"
+      ],
+      "act": "repair",
+      "note": "Автоматически исключённая версия не должна возвращаться после рестарта при повторном использовании PID"
+    },
+    {
+      "t": "2026-10-21T20:03:24+03:00",
+      "k": "ticket",
+      "ids": [
+        "01"
+      ],
+      "act": "review",
+      "tests": {
+        "passed": 1200,
+        "failed": 0
+      }
+    },
+    {
+      "t": "2026-10-21T20:03:24+03:00",
+      "k": "stage",
+      "id": "final",
+      "act": "start"
     }
   ],
   "reqList": [
@@ -282,5 +365,8 @@ window.STATE =
       "deferred": 0
     }
   },
-  "result": null
+  "result": null,
+  "report": [
+    "ORCA проверена по commit 92bbb380; ручное удаление статуса отделено от остановки процесса."
+  ]
 }
