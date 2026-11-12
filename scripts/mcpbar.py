@@ -609,12 +609,16 @@ def ask_server_for_tools(name, config, timeout=20, cwd=None):
             params = {"cursor": cursor} if cursor else {}
             send({"jsonrpc": "2.0", "id": request_id, "method": "tools/list", "params": params})
             answer = await_id(request_id, deadline)
-            result = (answer or {}).get("result") or {}
-            tools += [describe_tool(t) for t in result.get("tools") or []]
+            result = (answer or {}).get("result")
+            if not isinstance(result, dict) or not isinstance(result.get("tools"), list):
+                return None
+            tools += [describe_tool(t) for t in result["tools"]]
             cursor = result.get("nextCursor")
             request_id += 1
-            if not cursor or time.time() > deadline:
+            if not cursor:
                 break
+            if time.time() > deadline:
+                return None
     except Exception:
         return None
     finally:
