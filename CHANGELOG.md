@@ -7,6 +7,12 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [Unreleased]
+
+### Fixed
+- Failed MCP tool-list pages no longer cache an incomplete list for 24 hours. The app
+  keeps using fallback tool data and retries the server after an hour.
+
 ## [0.27.2] - 2026-10-21
 
 ### Fixed
