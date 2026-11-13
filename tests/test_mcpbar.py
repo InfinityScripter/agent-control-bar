@@ -1581,6 +1581,35 @@ class LimitsStatusFile(unittest.TestCase):
         self.assertGreaterEqual(status["ts"], before)
         self.assertEqual(stat.S_IMODE(os.stat(mcpbar.LIMITS_STATUS).st_mode), 0o600)
 
+    def test_ok_пишется_строго_после_limits_json(self):
+        """Порядок держал только комментарий в fetch_limits. «ok» рядом с прежними цифрами
+        обещал бы свежесть, которой нет: панель гасит блок сбоя по этому статусу."""
+        order = []
+        real = mcpbar.write_json
+
+        def spy(path, *args, **kwargs):
+            order.append(os.path.basename(path))
+            return real(path, *args, **kwargs)
+
+        with mock.patch.object(mcpbar, "write_json", spy):
+            mcpbar.fetch_limits()
+        self.assertEqual(order, ["limits.json", "limits-status.json"])
+        self.assertEqual(self.status()["state"], "ok")
+
+    def test_сбой_записи_limits_json_не_оставляет_ok(self):
+        mcpbar.write_limits_status("failed", "HTTPError")
+        real = mcpbar.write_json
+
+        def broken(path, *args, **kwargs):
+            if path == mcpbar.LIMITS:
+                raise OSError("disk full")
+            return real(path, *args, **kwargs)
+
+        with mock.patch.object(mcpbar, "write_json", broken):
+            with self.assertRaises(OSError):
+                mcpbar.fetch_limits()
+        self.assertEqual(self.status()["state"], "failed")
+
     def test_без_токена_состояние_no_login_и_шов_для_swift(self):
         mcpbar.oauth_token = lambda: None
         mcpbar.fetch_limits()

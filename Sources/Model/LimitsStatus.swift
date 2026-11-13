@@ -97,12 +97,17 @@ extension LimitsStatus {
         return status
     }
 
-    /// What the strip says when it has no figures to draw. The old two lines stay for every case
-    /// but one: a poll that found no login names the cause instead of asking.
+    /// What the strip says when it has no figures to draw. A poll that found no login names the
+    /// cause; a poll that failed or came back empty says only that there are no figures, because
+    /// the block above already names the real (network, endpoint) cause — asking "is Claude Code
+    /// signed in?" under it pointed at the wrong fix.
     static func emptyStripText(_ status: LimitsStatus?, oauthLimits: Bool) -> String {
         guard oauthLimits else { return "Limits are switched off in Settings" }
-        if status?.state == "no-login" { return "Claude Code is not signed in — sign in to see limits" }
-        return "No data yet — is Claude Code signed in?"
+        switch status?.state {
+        case "no-login": return "Claude Code is not signed in — sign in to see limits"
+        case "failed", "empty": return "No figures yet"
+        default: return "No data yet — is Claude Code signed in?"
+        }
     }
 
     /// The line under the Settings switch: the outcome of the last poll and, when it brought

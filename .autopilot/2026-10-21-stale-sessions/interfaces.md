@@ -12,7 +12,7 @@
 Тесты изолировать от ~/.claude/control-bar (старые Python fixtures LIMITS_STATUS требуют внимания).
 
 ## Ограничения
-Стек Swift + Node core + system Python; новых зависимостей нет. Идентичность только identity.env. Пользовательские AGENTS/CLAUDE не редактировать. Основной dirty checkout не трогать. Ветка этой работы codex/stale-sessions-0.27.2 в /Users/talalaev-m/.codex/worktrees/stale-sessions/claude-control-bar.
+Стек Swift + Node core + system Python; новых зависимостей нет. Идентичность только identity.env. Пользовательские AGENTS/CLAUDE не редактировать. Основной dirty checkout не трогать. Ветка этой работы codex/stale-sessions-0.27.2 в ~/.codex/worktrees/stale-sessions/claude-control-bar.
 Версия в .claude-plugin manifests и Info.plist сборки совпадает; существующий tools/release/bump.js предпочтителен.
 Чужую statusLine не трогать. Codex конфиги и auth-файлы не читать/писать. Никаких секретов/содержимого бесед в выводах и артефактах.
 Пользователь явно разрешил новую версию, push/merge. Workers не коммитят и не публикуют; это делает root после проверок.

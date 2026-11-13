@@ -39,6 +39,18 @@ struct Gauge {
     /// Ceiling, not a fixed size: the crab frames are wider than tall and must keep their shape.
     static let iconMaxW: CGFloat = 28
 
+    /// Where the signed-out look dims and where its mark sits, inside the block's own bounds: the
+    /// block never grows (a wider item is parked behind the overflow chevron), and the mark must
+    /// not cover a bar. It used to sit in the top-right corner of the bar area and hid the right
+    /// half of the top bar; with bars it now sits just left of the strip, over the icon's corner
+    /// and the gap. Without bars it sits on the icon's top-right corner.
+    static func signedOutLayout(size: NSSize, bars: Bool, mark: CGFloat = 8)
+        -> (stripX: CGFloat, markBox: NSRect) {
+        let stripX = bars ? max(0, size.width - sideInset - labelW - labelGap - barW) : size.width
+        let markX = max(0, min(stripX - mark, size.width - mark))
+        return (stripX, NSRect(x: markX, y: max(0, size.height - mark - 1), width: mark, height: mark))
+    }
+
     /// Honest fill width: round(percent × track width) in device pixels, nothing else. The old
     /// formula floored the fill at barH (3pt of a 20pt track), so every value from 0 to 15%
     /// drew the same stub and 18% read as "almost empty". A wrong small number must still be
