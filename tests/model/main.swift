@@ -1321,8 +1321,10 @@ check(LimitsStatus.emptyStripText(signedOut, oauthLimits: false) == "Limits are 
       "switched off wins over whatever the file says")
 check(LimitsStatus.emptyStripText(nil, oauthLimits: true) == "No data yet — is Claude Code signed in?",
       "no status file: the strip's old wording")
-check(LimitsStatus.emptyStripText(pollFailed, oauthLimits: true) == "No data yet — is Claude Code signed in?",
-      "a failed poll keeps the old wording; the block above carries the cause")
+check(LimitsStatus.emptyStripText(pollFailed, oauthLimits: true) == "No figures yet",
+      "a failed poll does not ask about sign-in; the block above carries the cause")
+check(LimitsStatus.emptyStripText(pollEmpty, oauthLimits: true) == "No figures yet",
+      "an empty answer does not ask about sign-in either")
 check(LimitsStatus.emptyStripText(signedOut, oauthLimits: true)
         == "Claude Code is not signed in — sign in to see limits",
       "signed out: the strip says so instead of guessing")
@@ -2177,6 +2179,25 @@ check(AnalyticsPing.due(now: 10 * day, lastAttempt: 9 * day, noticedAt: 1), "and
 check(!AnalyticsPing.configured || AnalyticsPing.endpoint.hasPrefix("https://"),
       "a configured endpoint is https or it is nothing")
 check(["arm64", "x86_64", "other"].contains(AnalyticsPing.arch), "arch is one of three words")
+
+// MARK: Gauge.signedOutLayout — the signed-out mark keeps the block's width and spares the bars
+
+do {
+    let strip = Gauge.labelW + Gauge.labelGap + Gauge.barW
+    let withBars = NSSize(width: Gauge.sideInset * 2 + 18 + Gauge.iconGap + strip, height: 18)
+    let (stripX, mark) = Gauge.signedOutLayout(size: withBars, bars: true)
+    check(mark.minX >= 0 && mark.maxX <= withBars.width && mark.minY >= 0 && mark.maxY <= withBars.height,
+          "the mark stays inside the block: a wider item is parked behind the overflow chevron")
+    check(mark.maxX <= stripX, "the mark does not cover the bars (it hid half of the top bar)")
+    check(stripX == withBars.width - Gauge.sideInset - strip, "the dimmed part is exactly the strip")
+    let iconOnly = NSSize(width: 18, height: 18)
+    let (noStrip, iconMark) = Gauge.signedOutLayout(size: iconOnly, bars: false)
+    check(noStrip == iconOnly.width, "without bars nothing is dimmed")
+    check(iconMark.maxX <= iconOnly.width && iconMark.minX >= 0, "without bars the mark sits on the icon")
+    let tiny = NSSize(width: 4, height: 4)
+    let (_, tinyMark) = Gauge.signedOutLayout(size: tiny, bars: true)
+    check(tinyMark.minX >= 0 && tinyMark.minY >= 0, "a degenerate size never yields a negative origin")
+}
 
 // MARK: LimitsNote — how old each provider's figures are, said once per provider
 

@@ -2,7 +2,7 @@ window.STATE =
 {
   "version": 2,
   "slug": "stale-sessions",
-  "dir": "2026-10-21-stale-sessions--wip",
+  "dir": "2026-10-21-stale-sessions",
   "title": "Закрытые сессии и ручная очистка · 0.27.2",
   "mode": "full",
   "depth": "normal",
@@ -10,7 +10,7 @@ window.STATE =
   "briefFile": "2026-10-21-brief.md",
   "memoryFile": "CLAUDE.md",
   "memoryOwner": "user",
-  "skillDir": "/Users/talalaev-m/.agents/skills/autopilot",
+  "skillDir": "~/.agents/skills/autopilot",
   "baseCommit": "d853741",
   "startedAt": "2026-10-21T19:29:01+03:00",
   "updatedAt": "2026-10-21T20:15:37+03:00",

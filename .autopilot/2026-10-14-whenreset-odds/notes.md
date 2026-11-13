@@ -1,6 +1,6 @@
 # Заметки по коду для плашки «шанс сброса лимитов» (whenreset)
 
-Рабочая копия: /Users/talalaev-m/projects/acb-whenreset, ветка `claude/whenreset-odds` от main bad2904.
+Рабочая копия: ~/projects/acb-whenreset, ветка `claude/whenreset-odds` от main bad2904.
 Правила проекта: `.claude/rules/architecture.md`, `.claude/rules/code-conventions.md` — читать обязательно.
 
 ## 1. Поток данных полосы лимитов

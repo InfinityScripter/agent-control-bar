@@ -99,7 +99,9 @@ extension StatusController {
             if render.agent.questionMarker { description += ", Вопрос. " + Session.asyncQuestionHint }
             let gauge = render.agent.gauge
             if render.agent.signedOut {
-                description = LimitsStatus.menuBarTip
+                // Appended, not substituted: replacing the line dropped what the session is doing
+                // for as long as the account stayed signed out.
+                description += ". " + LimitsStatus.menuBarTip
             } else if !gauge.isEmpty {
                 description += render.agent.reserve ? ", Reserve: " : ", limits: "
                 description += gauge.rows.map { "\(Gauge.spoken($0.0)) \(($0.1 * 100).rounded().clampedInt)%" }.joined(separator: ", ")
@@ -126,15 +128,11 @@ extension StatusController {
 
     // MARK: icon
 
-    /// The signed-out look of a finished block: the bars at reduced opacity and a mark in the
-    /// top-right corner of their area, inside the same bounds — a wider item would be parked
-    /// behind the overflow chevron. Without bars the mark sits on the icon itself.
+    /// The signed-out look of a finished block: the bars at reduced opacity and a mark beside
+    /// them, inside the same bounds (see Gauge.signedOutLayout).
     func signedOutIcon(_ gauged: NSImage, bars: Bool) -> NSImage {
         let size = gauged.size
-        let stripX = bars ? max(0, size.width - Gauge.sideInset - Gauge.labelW - Gauge.labelGap - Gauge.barW) : size.width
-        let mark: CGFloat = 8
-        let markBox = NSRect(x: size.width - (bars ? Gauge.sideInset : 0) - mark,
-                             y: size.height - mark - 1, width: mark, height: mark)
+        let (stripX, markBox) = Gauge.signedOutLayout(size: size, bars: bars)
         let image = NSImage(size: size, flipped: false) { _ in
             let kept = NSRect(x: 0, y: 0, width: stripX, height: size.height)
             let strip = NSRect(x: stripX, y: 0, width: size.width - stripX, height: size.height)

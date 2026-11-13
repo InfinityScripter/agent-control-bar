@@ -12,6 +12,12 @@ from, and are kept so the history reads continuously.
 ### Fixed
 - Failed MCP tool-list pages no longer cache an incomplete list for 24 hours. The app
   keeps using fallback tool data and retries the server after an hour.
+- When the limits poll fails or returns no windows, the empty strip says "No figures yet"
+  instead of asking whether Claude Code is signed in; the block above it names the real cause.
+- While Claude Code is signed out, the menu bar tooltip keeps the session status line, and the
+  "!" mark sits beside the limit bars instead of covering the top one.
+- The panel text dump (`CONTROL_BAR_DUMP_MENU`) no longer prints "Limits — Limits" and now
+  includes the limits status blocks.
 
 ## [0.27.2] - 2026-10-21
 

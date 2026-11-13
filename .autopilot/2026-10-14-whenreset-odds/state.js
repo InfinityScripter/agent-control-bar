@@ -10,7 +10,7 @@ window.STATE =
   "briefFile": "2026-10-14-brief.md",
   "memoryFile": "CLAUDE.md",
   "memoryOwner": "user",
-  "skillDir": "/Users/talalaev-m/.agents/skills/autopilot",
+  "skillDir": "~/.agents/skills/autopilot",
   "baseCommit": "97154f5",
   "startedAt": "2026-10-14T20:27:50+03:00",
   "updatedAt": "2026-10-14T21:40:59+03:00",

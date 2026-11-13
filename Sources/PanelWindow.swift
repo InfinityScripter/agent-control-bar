@@ -215,8 +215,18 @@ extension StatusController {
         // The layout the strip is in is printed too: with two providers the dump is the only
         // place to check that the switcher is showing the one it was left on.
         if snapshot.visibility.limits {
-            lines.append("Limits — " + snapshot.limitsNote
+            // The note already starts with "Limits" when one provider has figures ("Limits · 3 min
+            // ago"); prefixing it again printed "Limits — Limits · …".
+            let note = snapshot.limitsNote
+            let header = note.hasPrefix("Limits") ? note : (note.isEmpty ? "Limits" : "Limits — " + note)
+            lines.append(header
                 + (snapshot.limitGroups.count > 1 ? "  [\(snapshot.limitsLayout.rawValue)]" : ""))
+            // The status blocks the strip draws above itself: the dump is where a failed poll has
+            // to be checked from, and it used to drop them.
+            for notice in [snapshot.limitsNotice, snapshot.codexLimitsNotice].compactMap({ $0 }) {
+                lines.append("  [notice] \(notice.title) — \(notice.hint)"
+                    + (notice.offerSignIn ? "  [sign in]" : ""))
+            }
             let showing = snapshot.limitsProvider
             for group in snapshot.limitGroups {
                 let hidden = snapshot.limitGroups.count > 1
