@@ -78,6 +78,10 @@ More on local files and permissions: [PRIVACY.md](PRIVACY.md).
 
 </details>
 
+### Gemini CLI, Qwen Code and Factory Droid
+
+If `~/.gemini`, `~/.qwen` or `~/.factory` exists, installation also adds the app's hooks to that agent's `settings.json`. Your other settings and hooks stay. These sessions appear in the panel with their own glyph, and get their own block in the menu bar while they run. You see working, tool and done states. Qwen Code also shows permission prompts; Gemini CLI has no hook for them. Limits and MCP switches stay Claude and Codex only. A settings file with comments in it does not parse as JSON, so it is left alone and that agent gets no hooks.
+
 ## Read and open sessions
 
 <img src="docs/screenshots/sessions.png" alt="Sessions panel with Claude and Codex limits, several session states and an expanded Codex model and context row" width="430">

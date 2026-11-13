@@ -171,11 +171,13 @@ struct PanelSessionRow: View {
                                 // the line below, and the row already carries two figures.
                                 // Claude rows get none — in a panel with no Codex in it there is
                                 // nothing to tell apart, and a pill on every row is just noise.
-                                if session.provider == Provider.codex.id {
-                                    Image(systemName: Provider.codex.glyph)
+                                // Every other agent gets its own glyph the same way.
+                                if session.provider != Provider.claude.id {
+                                    let agent = Provider.named(session.provider)
+                                    Image(systemName: agent.glyph)
                                         .font(.system(size: 9, weight: .semibold))
                                         .foregroundStyle(.secondary)
-                                        .help("An OpenAI Codex session")
+                                        .help(agent == .codex ? "An OpenAI Codex session" : "A \(agent.title) session")
                                 }
                                 Text(session.name)
                                     .font(.system(size: 13, weight: .medium))

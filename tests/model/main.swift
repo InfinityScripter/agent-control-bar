@@ -3588,8 +3588,12 @@ check(AgentDisplay.resolve(saved: "garbage", codexInstalled: false) == .claude,
       "an unreadable pick falls back to the default")
 check(AgentDisplay.allCases.map(\.rawValue) == ["claude", "codex", "both", "hidden"],
       "the saved spellings are pinned: a rename would forget everybody's pick")
-check(AgentDisplay.hidden.barProviders.isEmpty && AgentDisplay.hidden.panelProviders.count == 2,
-      "Hidden empties the bar and leaves the panel both agents")
+check(AgentDisplay.hidden.barProviders.isEmpty
+        && AgentDisplay.hidden.panelProviders == Set(Provider.agents.map(\.id)),
+      "Hidden empties the bar and leaves the panel every agent")
+check(AgentDisplay.claude.inBar("gemini") && AgentDisplay.codex.inPanel("qwen")
+        && AgentDisplay.both.inBar("droid") && !AgentDisplay.hidden.inBar("gemini"),
+      "the Claude/Codex pick never hides the other agents; only Hidden takes them off the bar")
 check(AgentDisplay.codex.inBar("codex") && !AgentDisplay.codex.inPanel("claude"),
       "Codex chosen: Codex in the bar, Claude out of the panel")
 
@@ -3627,6 +3631,29 @@ do {
     tick = board.tick(now: now + 1, rules: rules, pidAlive: { _ in true }, frontmost: { nil })
     check(tick.lead == nil, "Hidden: nothing leads the bar")
     check(tick.chime, "and a long turn finishing still chimes")
+}
+
+// Another agent's block: present only while it has a session, with its own lead and no bars.
+do {
+    let now = 1_800_000_000.0
+    let board = SessionBoard(engine: SessionEngine())
+    let files = [SessionBoard.File(key: "gemini:g1", path: "g1", provider: "gemini", id: "g1",
+                                   mtime: Date(timeIntervalSince1970: 1))]
+    board.reload(files, read: { _ in ["state": "tool", "pid": 42, "ts": now, "startedAt": now - 30,
+                                      "provider": "claude"] }) { _ in "" }
+    let rules = SessionBoard.Rules(soundThreshold: 0, stalePruneAge: 900, thinkingWords: ["Musing"], needsYou: true)
+    _ = board.tick(now: now, rules: rules, pidAlive: { _ in true }, frontmost: { nil })
+    check(board.sessions["gemini:g1"]?.provider == "gemini",
+          "the directory settles the provider, whatever the file says")
+    let blocks = MenuBarAgent.shown(.claude, board: board, claude: nil, claudeStatus: nil,
+                                    oauthLimits: true, codex: nil, now: now)
+    check(blocks.map(\.provider.id) == ["claude", "gemini"],
+          "Claude keeps its block, Gemini gets one while it has a session: \(blocks.map(\.provider.id))")
+    check(blocks.last?.lead?.id == "g1" && blocks.last?.working == 1 && blocks.last?.gauge.isEmpty == true
+            && blocks.last?.signedOut == false && blocks.last?.questionMarker == false,
+          "the Gemini block leads with its own session and draws no bars")
+    check(MenuBarAgent.shown(.hidden, board: board, claude: nil, claudeStatus: nil, oauthLimits: true,
+                             codex: nil, now: now).isEmpty, "Hidden hides the other agents too")
 }
 
 // Each menu bar block owns its sessions, limits and clock even while the other agent needs us.
@@ -3682,6 +3709,9 @@ do {
     }
     check(MenuBarAgent.shown(.hidden, board: board, claude: claude, claudeStatus: nil, oauthLimits: true, codex: codex, now: now).isEmpty,
           "Hidden has no status, clocks or bars to compose")
+    check(!MenuBarAgent.shown(.both, board: board, claude: claude, claudeStatus: nil, oauthLimits: true, codex: codex, now: now)
+            .contains { $0.provider.sessionsOnly },
+          "an agent without sessions gets no block: it has no limits to show")
     let empty = SessionBoard(engine: SessionEngine())
     let resting = MenuBarAgent.shown(.both, board: empty, claude: claude, claudeStatus: nil, oauthLimits: true, codex: nil, now: now)
     check(resting.count == 2 && resting.allSatisfy { $0.lead == nil && $0.mood == .sleeping && $0.startedAt == 0 },
@@ -4067,7 +4097,19 @@ do {
 
 // What tells the two agents apart. The reap deletes files by stateDir, so a wrong directory here
 // deletes another agent's sessions — which is why the paths are pinned rather than trusted.
-check(Provider.all.map(\.id) == ["claude", "codex"], "both agents, Claude first")
+check(Provider.all.map(\.id) == ["claude", "codex"], "both agents with limits, Claude first")
+check(Provider.agents.map(\.id) == ["claude", "codex", "gemini", "qwen", "droid"],
+      "every agent with sessions, the two with limits first")
+check(Provider.others.allSatisfy(\.sessionsOnly) && !Provider.claude.sessionsOnly && !Provider.codex.sessionsOnly,
+      "only Claude and Codex have limits")
+check(Provider.named("gemini").stateDir(home: "/h") == "/h/.claude/control-bar/gemini/state.d"
+        && Provider.named("qwen").stateDir(home: "/h") == "/h/.claude/control-bar/qwen/state.d"
+        && Provider.named("droid").stateDir(home: "/h") == "/h/.claude/control-bar/droid/state.d",
+      "each other agent has its own directory, as hooks/update.js writes it")
+check(Provider.droid.configFile(home: "/h") == "/h/.factory/settings.json"
+        && Provider.gemini.configFile(home: "/h") == "/h/.gemini/settings.json",
+      "each other agent's config file is the one hooks/agents.js writes")
+check(Set(Provider.agents.map(\.glyph)).count == Provider.agents.count, "no two agents share a glyph")
 check(Provider.named("codex").stateDir(home: "/h") == "/h/.claude/control-bar/codex/state.d",
       "Codex sessions live in their own directory")
 check(Provider.named("claude").stateDir(home: "/h") == "/h/.claude/control-bar/state.d",
@@ -4131,11 +4173,15 @@ check(HookInstall.shellAnswer("node not found\n", isExecutable: { _ in true }) =
 // Session files: both agents' directories, keyed so their ids cannot mix, and a reaped session's
 // path computed from its own provider.
 let listedFiles = Provider.stateFiles(home: "/h") { dir in
-    dir.hasSuffix("/codex/state.d") ? ["abc.json", "abc.json.77.tmp"] : ["1.json", "2.tmp"]
+    dir.hasSuffix("/codex/state.d") ? ["abc.json", "abc.json.77.tmp"]
+        : dir.hasSuffix("/gemini/state.d") ? ["g.json"]
+        : dir.hasSuffix("/control-bar/state.d") ? ["1.json", "2.tmp"] : []
 }
-check(listedFiles.map(\.key) == ["claude:1", "codex:abc"], "state files keyed by provider: \(listedFiles.map(\.key))")
-check(listedFiles.last?.path == "/h/.claude/control-bar/codex/state.d/abc.json"
-        && listedFiles.last?.id == "abc", "a Codex file keeps its own directory and id")
+check(listedFiles.map(\.key) == ["claude:1", "codex:abc", "gemini:g"], "state files keyed by provider: \(listedFiles.map(\.key))")
+check(listedFiles.last?.path == "/h/.claude/control-bar/gemini/state.d/g.json",
+      "another agent's file keeps its own directory")
+check(listedFiles[1].path == "/h/.claude/control-bar/codex/state.d/abc.json"
+        && listedFiles[1].id == "abc", "a Codex file keeps its own directory and id")
 check(Provider.statePath(provider: "codex", id: "abc", home: "/h") == "/h/.claude/control-bar/codex/state.d/abc.json"
         && Provider.statePath(provider: "", id: "1", home: "/h") == "/h/.claude/control-bar/state.d/1.json",
       "a session is reaped from its own agent's directory; no provider means Claude")

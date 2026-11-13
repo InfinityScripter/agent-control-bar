@@ -70,7 +70,7 @@ PLIST
 
 # Bundle the hook scripts (so first-launch self-install works) and the app icon.
 mkdir -p "$STAGE_APP/Contents/Resources"
-cp hooks/update.js hooks/lifecycle.js hooks/install.js hooks/uninstall.js hooks/statusline.sh hooks/statusline.py "$STAGE_APP/Contents/Resources/"
+cp hooks/update.js hooks/lifecycle.js hooks/install.js hooks/uninstall.js hooks/agents.js hooks/statusline.sh hooks/statusline.py "$STAGE_APP/Contents/Resources/"
 # The MCP half runs out of the bundle in the brew/DMG channel — the plugin directory that
 # normally holds it does not exist there.
 mkdir -p "$STAGE_APP/Contents/Resources/scripts"

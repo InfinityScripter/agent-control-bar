@@ -34,19 +34,23 @@ enum AgentDisplay: String, CaseIterable, Identifiable {
         return codexInstalled ? .both : .claude
     }
 
-    /// The providers whose sessions and limits the menu bar icon reads.
+    /// The providers whose sessions and limits the menu bar icon reads. The pick is between
+    /// Claude and Codex; the agents seen only through their hooks (Provider.others) are never
+    /// part of that choice, so they show under every pick but Hidden — someone who picked
+    /// "Claude Code" to hide Codex has not asked to hide Gemini.
     var barProviders: Set<String> {
+        let others = Provider.others.map(\.id)
         switch self {
-        case .claude: return [Provider.claude.id]
-        case .codex: return [Provider.codex.id]
-        case .both: return Set(Provider.all.map(\.id))
+        case .claude: return Set([Provider.claude.id] + others)
+        case .codex: return Set([Provider.codex.id] + others)
+        case .both: return Set(Provider.agents.map(\.id))
         case .hidden: return []
         }
     }
 
     /// The providers the panel lists. Hidden is about the menu bar only; see the case above.
     var panelProviders: Set<String> {
-        self == .hidden ? Set(Provider.all.map(\.id)) : barProviders
+        self == .hidden ? Set(Provider.agents.map(\.id)) : barProviders
     }
 
     func inBar(_ provider: String) -> Bool { barProviders.contains(provider) }
