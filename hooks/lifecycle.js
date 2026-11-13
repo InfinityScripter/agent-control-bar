@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// SessionStart/SessionEnd hooks. Usage: node lifecycle.js <start|end> [--provider codex]
+// SessionStart/SessionEnd hooks. Usage: node lifecycle.js <start|end> [--provider <id>]
 // (hook JSON, incl. session_id, on stdin)
 
 const fs = require("fs");
@@ -13,14 +13,18 @@ const dir = path.join(os.homedir(), ".claude", "control-bar");
 const event = process.argv[2];
 // See update.js for why one file serves both agents. Codex gets its own directory, never a
 // second shape.
+// Other agents (hooks/agents.js) likewise; the id rule is update.js's — keep the two in step.
 const providerFlag = process.argv.indexOf("--provider");
-const codex = providerFlag > 0 && process.argv[providerFlag + 1] === "codex";
-const stateDir = codex ? path.join(dir, "codex", "state.d") : path.join(dir, "state.d");
+const providerArg = providerFlag > 0 ? String(process.argv[providerFlag + 1] || "") : "";
+const provider = /^[a-z][a-z0-9-]{0,31}$/.test(providerArg) ? providerArg : "claude";
+const codex = provider === "codex";
+const other = provider !== "claude" && !codex;
+const stateDir = provider === "claude" ? path.join(dir, "state.d") : path.join(dir, provider, "state.d");
 // One file per session, written by hooks/statusline.py: the context percentage Claude Code
 // itself reported. It lives and dies with the session file, or context.d grows without bound.
 // Codex has none: it states the context in its own rollout, so nothing has to be captured.
 const contextDir = path.join(dir, "context.d");
-const sessionDirs = codex ? [stateDir] : [stateDir, contextDir];
+const sessionDirs = provider === "claude" ? [stateDir, contextDir] : [stateDir];
 
 // 0700/0600 everywhere below, not the umask default. A session file carries the working
 // directory, the transcript path and the pid, and the home folder is group-readable by staff
@@ -124,7 +128,8 @@ const reapDeadSessions = () => {
   // with. The loop above walks stateDir only, so such a file was never visited again and the
   // directory grew without bound, the exact leak the header comment promises away.
   let ctx = [];
-  if (codex) return;   // Codex writes no context files, so there are no strays to collect.
+  // Only Claude's statusLine writes context files, so nobody else has strays to collect.
+  if (provider !== "claude") return;
   try { ctx = fs.readdirSync(contextDir); } catch { return; }
   for (const f of ctx.filter((n) => n.endsWith(".json"))) {
     if (!fs.existsSync(path.join(stateDir, f))) {
@@ -152,7 +157,7 @@ function run() {
   let id = "", cwd = "", transcript = "", source = "";
   // The transcript path is carried from the very first event so the next hook can measure the
   // context window without waiting for one that happens to include it.
-  try { const j = JSON.parse(input); id = j.session_id; cwd = j.cwd || ""; transcript = j.transcript_path || ""; source = j.source || ""; } catch {}
+  try { const j = JSON.parse(input); id = j.session_id; cwd = j.cwd || ""; transcript = other ? "" : (j.transcript_path || ""); source = j.source || ""; } catch {}
   id = safeId(id);
   const statePath = path.join(stateDir, id + ".json");
 
@@ -184,6 +189,7 @@ function run() {
       // the dropdown until it has real activity (update.js flips started:true on a prompt/tool).
       const seed = { state: "idle", label: "", tool: "", project: cwd ? path.basename(cwd) : "", cwd, sessionId: id, transcript, entrypoint: process.env.CLAUDE_CODE_ENTRYPOINT || "", term_program: process.env.TERM_PROGRAM || "", term_bundle: process.env.__CFBundleIdentifier || "", tty: ttyDev(), pid: process.ppid, started: false, startedAt: 0, ts: Math.floor(Date.now() / 1000) };
       if (codex) { seed.provider = "codex"; seed.surface = meta.surface; }
+      if (other) seed.provider = provider;
       writeAtomic(statePath, seed);
     } catch {}
     if (!resumed || !fs.existsSync(path.join(dir, "quit-intent"))) {

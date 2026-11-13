@@ -149,6 +149,12 @@ const installCodexHooks = () => {
 
 installCodexHooks();
 
+// --- Other agents (Gemini CLI, Qwen Code, Factory Droid) -----------------------------------
+// Installed for both channels, like Codex's: each agent reads only its own settings file, so the
+// plugin channel standing down would leave its sessions invisible. hooks/agents.js holds the
+// table and the merge; a machine without an agent's home directory gets nothing for it.
+require("./agents").installAll(home, { cmd, life, isOurs });
+
 if (pluginOwns) {
   console.log("Plugin channel owns the hooks (" + owner.pluginRoot + ") — nothing to install.");
   process.exit(0);

@@ -9,6 +9,16 @@ from, and are kept so the history reads continuously.
 
 ## [Unreleased]
 
+### Added
+- **Gemini CLI, Qwen Code and Factory Droid sessions.** When one of these agents is installed
+  (its `~/.gemini`, `~/.qwen` or `~/.factory` folder exists), the app adds its hooks to the
+  agent's own `settings.json`, keeping your other settings and hooks. Their sessions appear in
+  the panel with their own glyph, and in the menu bar as a block of their own while they have a
+  session. They show working, tool and done states. Qwen Code also shows permission prompts;
+  Gemini CLI has no hook for them, so a Gemini session waiting for approval is not shown as
+  waiting. Limits and MCP servers remain Claude and Codex only. A full uninstall removes the
+  hooks again.
+
 ### Fixed
 - Failed MCP tool-list pages no longer cache an incomplete list for 24 hours. The app
   keeps using fallback tool data and retries the server after an hour.

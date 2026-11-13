@@ -16,7 +16,9 @@ extension StatusController {
             let provider = agent.provider.id
             var render = barRenders[provider] ?? BarRender(agent: agent)
             render.agent = agent
-            var chosen: MenuBarIcon? = provider == "claude" ? animStyle : .pet(codexPetID)
+            // Claude draws the picked style and Codex its pet; any other agent draws its glyph.
+            var chosen: MenuBarIcon? = provider == "claude" ? animStyle
+                : provider == "codex" ? .pet(codexPetID) : nil
             let petRow = PetRow.forSessionState(agent.lead?.eff ?? "idle", provider: provider)
             var ticks: [NSImage]?
             if case .pet(let id) = chosen, let pet = petIconFrames(id: id, provider: provider) {
@@ -74,7 +76,8 @@ extension StatusController {
             if let cached = render.frames[frame] { image = cached }
             else {
                 let icon = iconImage(icon: render.icon, mood: render.agent.mood, ticks: render.ticks,
-                                     color: render.color, frame: frame, animate: render.animate)
+                                     color: render.color, frame: frame, animate: render.animate,
+                                     agent: render.agent.provider)
                 let badged = render.agent.markedIcon(icon, fallback: render.icon == nil, permissionColor: Self.amber)
                 let size = NSSize(width: Gauge.iconMaxW, height: 18)
                 let fixed = NSImage(size: size, flipped: false) { _ in
@@ -162,10 +165,10 @@ extension StatusController {
     }
 
     func iconImage(icon: MenuBarIcon?, mood: CrabMood, ticks: [NSImage]?,
-                   color: NSColor?, frame: Int, animate: Bool) -> NSImage {
+                   color: NSColor?, frame: Int, animate: Bool, agent: Provider = .codex) -> NSImage {
         if let ticks, !ticks.isEmpty { return ticks[frame % ticks.count] }
         guard let icon else {
-            let symbol = NSImage(systemSymbolName: Provider.codex.glyph, accessibilityDescription: Provider.codex.title)
+            let symbol = NSImage(systemSymbolName: agent.glyph, accessibilityDescription: agent.title)
                 ?? NSImage(size: NSSize(width: 18, height: 18))
             symbol.isTemplate = true
             return symbol

@@ -62,6 +62,11 @@ if (!hooksOnly) {
   }
 }
 
+// The other agents' hooks follow Codex's rule: a real uninstall only, never --hooks-only.
+if (!hooksOnly) {
+  try { require("./agents").uninstallAll(home, { isOurs }); } catch {}
+}
+
 if (!hooksOnly) {
   // Undo the statusLine interception first, while the script that knows how still exists: the
   // limits capture rewires settings.json's statusLine.command to this install's statusline.sh,

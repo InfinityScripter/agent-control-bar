@@ -58,7 +58,13 @@ struct MenuBarAgent {
     static func shown(_ display: AgentDisplay, board: SessionBoard, claude: LimitsSet?,
                       claudeStatus: LimitsStatus?, oauthLimits: Bool, codex: LimitsSet?,
                       now: Double) -> [MenuBarAgent] {
-        Provider.all.filter { display.inBar($0.id) }.map { provider in
+        // Claude and Codex keep their block whenever the pick shows them: it carries their limits.
+        // Any other agent has nothing to show without a session, so its block appears only while
+        // it has one — a menu bar item that grows is parked behind the overflow chevron.
+        Provider.agents.filter { provider in
+            display.inBar(provider.id)
+                && (!provider.sessionsOnly || board.sessions.values.contains { $0.provider == provider.id })
+        }.map { provider in
             let own = board.sessions.values.filter { $0.provider == provider.id }
             let lead = board.lead(for: [provider.id])
             let limits = LimitsBoard(claude: provider == .claude ? claude : nil,

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Maps an agent's hook event to this session's file: ~/.claude/control-bar/state.d/<session_id>.json
 // for Claude Code, ~/.claude/control-bar/codex/state.d/<session_id>.json for Codex CLI.
-// Usage: node update.js <prompt|pre|post|notify|permreq|stop> [--provider codex]
+// Usage: node update.js <prompt|pre|post|notify|permreq|stop> [--provider <codex|gemini|qwen|droid>]
 
 const fs = require("fs");
 const os = require("os");
@@ -17,9 +17,18 @@ const event = process.argv[2] || "";
 // fix to the shared 300 lines has to be made twice, and the copy that gets forgotten is the
 // one nobody notices. The provider only ever changes which directory and which transcript
 // parser is used; the state file's shape is deliberately identical.
+//
+// Agents beyond the first two (hooks/agents.js) arrive the same way, as `--provider <id>`. The
+// id names a directory, so it is held to a short lowercase word: anything else — a missing
+// value, a path, a typo — is Claude's, as a file without a provider always was.
 const providerFlag = process.argv.indexOf("--provider");
-const codex = providerFlag > 0 && process.argv[providerFlag + 1] === "codex";
-const stateDir = codex ? path.join(dir, "codex", "state.d") : path.join(dir, "state.d");
+const providerArg = providerFlag > 0 ? String(process.argv[providerFlag + 1] || "") : "";
+const provider = /^[a-z][a-z0-9-]{0,31}$/.test(providerArg) ? providerArg : "claude";
+const codex = provider === "codex";
+// Neither Claude nor Codex: a Claude-shaped hook payload, but no transcript format this file
+// can read and no statusLine capture of its own.
+const other = provider !== "claude" && !codex;
+const stateDir = provider === "claude" ? path.join(dir, "state.d") : path.join(dir, provider, "state.d");
 
 const TOOL_LABELS = {
   Bash: "Running command", Edit: "Editing", Write: "Writing", MultiEdit: "Editing",
@@ -41,6 +50,19 @@ const CODEX_TOOL_LABELS = {
   view_image: "Reading", update_plan: "Planning",
   spawn_agent: "Delegating", wait_agent: "Delegating", list_agents: "Delegating",
   followup_task: "Delegating", send_message: "Delegating", wait: "Delegating",
+};
+
+// The tool names of the other agents. Gemini CLI and Qwen Code (its fork) share one registry;
+// Factory Droid has its own capitalised names. An unknown name reads "Using tool", as elsewhere.
+const OTHER_TOOL_LABELS = {
+  run_shell_command: "Running command", replace: "Editing", edit: "Editing",
+  write_file: "Writing", read_file: "Reading", read_many_files: "Reading", list_directory: "Reading",
+  glob: "Searching", search_file_content: "Searching", grep_search: "Searching",
+  web_fetch: "Browsing web", google_web_search: "Searching web", web_search: "Searching web",
+  write_todos: "Planning", todo_write: "Planning", task: "Delegating",
+  Execute: "Running command", Create: "Writing", Edit: "Editing", MultiEdit: "Editing",
+  Read: "Reading", LS: "Reading", Grep: "Searching", Glob: "Searching",
+  FetchUrl: "Browsing web", WebSearch: "Searching web", TodoWrite: "Planning", Task: "Delegating",
 };
 
 const safeId = (s) => String(s || "").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 64) || "unknown";
@@ -320,6 +342,9 @@ function usageInTail(fd, size, span, models) {
 let raw = "";
 process.stdin.on("data", (d) => (raw += d));
 process.stdin.on("end", () => {
+  // Gemini CLI parses a hook's stdout as JSON and treats anything else as a failed hook. Said
+  // first, before any early return below, so every path answers it.
+  if (provider === "gemini") { try { process.stdout.write("{}\n"); } catch {} }
   let p = {};
   try { p = JSON.parse(raw || "{}"); } catch {}
 
@@ -368,7 +393,9 @@ process.stdin.on("end", () => {
   // the two events that end a turn. A file already written for THIS rollout needs no second look;
   // an event naming a different one does, whether that is a worker thread or the same session
   // after a compaction wrote it a new file.
-  const transcript = p.transcript_path || prev.transcript || "";
+  // Another agent's transcript is in a format the app cannot read; recording its path would only
+  // hand it to Claude's parser. Left empty, the app falls back to the age caps for stuck states.
+  const transcript = other ? "" : (p.transcript_path || prev.transcript || "");
   const settledThread = prev.provider === "codex" && transcript === prev.transcript;
   const codexMeta = codex && !settledThread ? codexRollout(transcript) : null;
   if (codex && (p.agent_id || p.agent_type || (codexMeta && codexMeta.worker))) return;
@@ -385,7 +412,7 @@ process.stdin.on("end", () => {
       state = "thinking"; label = "Thinking…"; startedAt = ts; break;
     case "pre": {
       const t = p.tool_name || "";
-      const labels = codex ? CODEX_TOOL_LABELS : TOOL_LABELS;
+      const labels = codex ? CODEX_TOOL_LABELS : other ? OTHER_TOOL_LABELS : TOOL_LABELS;
       state = "tool"; label = labels[t] || "Using tool";
       if (!startedAt) startedAt = ts;
       break;
@@ -441,7 +468,7 @@ process.stdin.on("end", () => {
   // Carried over from prev when this event's transcript is unreadable (a compaction rewrites the
   // file, and a read landing mid-rewrite finds no usage record) — a momentarily missing number
   // would otherwise blank the context bar and read as "context freed".
-  const ctx = contextFromStatusLine(sid, ts)
+  const ctx = (!other && contextFromStatusLine(sid, ts))
     || (transcript && contextOf(transcript))
     || {
       pct: prev.pct, tokens: prev.tokens, window: prev.window, model: prev.model, assumed: prev.assumed,
@@ -451,6 +478,12 @@ process.stdin.on("end", () => {
   const tty = typeof prev.tty === "string" && prev.tty ? prev.tty : ttyDev();
   const out = { state, label, tool: p.tool_name || "", project, cwd, sessionId: p.session_id || "", transcript, entrypoint, term_program: termProgram, term_bundle: termBundle, tty, pid: process.ppid, started: true, startedAt, ts, ...ctx,
     ...costFromStatusLine(sid, prev), dirty: dirtyCount(cwd, event, prev) };
+  if (other) {
+    // Same field as Codex's below: the app keys sessions by "<provider>:<id>" and draws the pill
+    // from it. The model is named only by agents that put it on the payload.
+    out.provider = provider;
+    out.model = (typeof p.model === "string" && p.model) || prev.model || "";
+  }
   if (codex) {
     // The app keys its session map by "<provider>:<id>" and draws the pill from this field, so
     // an old file without it has to keep reading as Claude's — hence a field rather than a

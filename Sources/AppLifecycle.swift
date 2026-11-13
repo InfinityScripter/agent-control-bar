@@ -117,7 +117,9 @@ extension StatusController {
         let now = Date().timeIntervalSince1970
         if now - claudeProbedAt < 10 { return claudeWasRunning }
         claudeProbedAt = now
-        claudeWasRunning = RunningProcesses.existsAny(of: ["claude", "codex"])
+        // Factory Droid is a native `droid` binary. Gemini CLI and Qwen Code run as `node`, which
+        // names nothing; their sessions keep the app up through their state files instead.
+        claudeWasRunning = RunningProcesses.existsAny(of: ["claude", "codex", "droid"])
         return claudeWasRunning
     }
 

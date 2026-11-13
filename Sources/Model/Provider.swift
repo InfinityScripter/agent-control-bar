@@ -21,10 +21,32 @@ struct Provider: Equatable {
                                 glyph: "chevron.left.forwardslash.chevron.right",
                                 stateDirPath: ".claude/control-bar/codex/state.d",
                                 configPath: ".codex/config.toml")
+    /// The agents with limits, reset odds and MCP servers of their own — the ones the limits strip,
+    /// the reset card and the Claude/Codex/Both setting are about.
     static let all = [claude, codex]
 
+    // Agents seen through their hooks only (hooks/agents.js holds the same ids, config paths and
+    // events): sessions and their state, nothing else. Each writes into a directory of its own,
+    // for the reason Codex does. Glyphs are generic SF Symbols, not the vendors' marks.
+    static let gemini = Provider(id: "gemini", title: "Gemini", glyph: "diamond",
+                                 stateDirPath: ".claude/control-bar/gemini/state.d",
+                                 configPath: ".gemini/settings.json")
+    static let qwen = Provider(id: "qwen", title: "Qwen", glyph: "q.circle",
+                               stateDirPath: ".claude/control-bar/qwen/state.d",
+                               configPath: ".qwen/settings.json")
+    static let droid = Provider(id: "droid", title: "Droid", glyph: "cube",
+                                stateDirPath: ".claude/control-bar/droid/state.d",
+                                configPath: ".factory/settings.json")
+    static let others = [gemini, qwen, droid]
+
+    /// Every agent whose sessions the app lists: the two above and the others.
+    static let agents = all + others
+
+    /// Whether this agent has limits and the rest of the full treatment, or sessions only.
+    var sessionsOnly: Bool { !Provider.all.contains(self) }
+
     /// A file without a known provider is Claude's: it was written before Codex existed.
-    static func named(_ id: String) -> Provider { all.first { $0.id == id } ?? claude }
+    static func named(_ id: String) -> Provider { agents.first { $0.id == id } ?? claude }
 
     /// Where the hooks write this agent's session files.
     func stateDir(home: String) -> String { home + "/" + stateDirPath }
@@ -44,10 +66,10 @@ struct StateFileEntry: Equatable {
 }
 
 extension Provider {
-    /// The session files currently on disk, both agents' (ignores the .tmp files mid-write).
+    /// The session files currently on disk, every agent's (ignores the .tmp files mid-write).
     /// `list` is a directory listing; a directory that cannot be read lists as empty.
     static func stateFiles(home: String, list: (String) -> [String]) -> [StateFileEntry] {
-        all.flatMap { agent in
+        agents.flatMap { agent in
             let provider = agent.id, dir = agent.stateDir(home: home)
             return list(dir)
                 .filter { $0.hasSuffix(".json") }
