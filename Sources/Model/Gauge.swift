@@ -220,19 +220,24 @@ struct Gauge {
         // display a line placed at a half point is two grey pixels instead of one black one.
         let scale = max(1, abs(ctx.cgContext.ctm.a))
         func snap(_ x: CGFloat) -> CGFloat { (x * scale).rounded() / scale }
-        let at = min(max(markSlot, bar.width * timeLeft), bar.width - markSlot)
-        let slot = markSlotStart(at: at, solid: solid)
-        NSRect(x: snap(bar.minX + slot), y: bar.minY,
-               width: snap(bar.minX + at + markSlot) - snap(bar.minX + slot), height: bar.height)
+        let at = bar.minX + markPosition(timeLeft, width: bar.width, solid: solid)
+        NSRect(x: snap(at - markSlot), y: bar.minY,
+               width: snap(at + markSlot) - snap(at - markSlot), height: bar.height)
             .fill(using: .clear)
-        NSRect(x: snap(bar.minX + at - 0.5), y: bar.minY, width: 1, height: bar.height).fill()
+        NSRect(x: snap(at - 0.5), y: bar.minY, width: 1, height: bar.height).fill()
     }
 
-    /// Where the slot around the line begins, from the bar's left edge. Normally half a slot
-    /// before the line. But a solid part that ends at or before the line is never cut into:
-    /// with a few percent left near the end of a window the line sits at the bar's left end,
-    /// and a slot cut there would wipe the whole remainder — "nearly out" drawn as "out".
-    static func markSlotStart(at: CGFloat, solid: CGFloat, slot: CGFloat = markSlot) -> CGFloat {
-        solid <= at ? max(at - slot, solid) : at - slot
+    /// Where the line goes along a bar `width` wide, from its left edge: at the time left, held
+    /// half a slot clear of both ends so the slot around it stays on the bar.
+    ///
+    /// With anything left of the window it is held one more point clear of the left end. Near
+    /// the end of a window the line sits at that end, and the slot around it would otherwise
+    /// cover the whole of a small remainder — "nearly out" drawn exactly as "out". The extra
+    /// point leaves a sliver of the solid part in front of the slot. The price is a line up to a
+    /// point to the right of its true place in the last few percent of the window.
+    static func markPosition(_ timeLeft: Double, width: CGFloat, solid: CGFloat,
+                             slot: CGFloat = markSlot) -> CGFloat {
+        let low = slot + (solid > 0 ? min(solid, 1) : 0)
+        return min(max(low, width * timeLeft), width - slot)
     }
 }

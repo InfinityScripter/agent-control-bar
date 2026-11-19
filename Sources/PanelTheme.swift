@@ -206,11 +206,7 @@ struct PanelLimitBar: View {
         GeometryReader { geo in
             let width = geo.size.width
             let solid = Gauge.fillWidth(left, trackWidth: width, scale: displayScale)
-            let at = markOffset(in: width)
-            // Gauge.markSlotStart, shared with the menu bar's bars: the slot never cuts into a
-            // small remainder that ends before the line.
-            let slotStart = at.map { Gauge.markSlotStart(at: $0, solid: solid, slot: Self.slot) }
-            let slotWidth = at.flatMap { at in slotStart.map { at + Self.slot - $0 } } ?? 0
+            let at = markOffset(in: width, solid: solid)
             ZStack(alignment: .leading) {
                 PanelTheme.track(scheme)
                 if refills {
@@ -225,8 +221,8 @@ struct PanelLimitBar: View {
             // the hatch and the bare track alike.
             .mask(alignment: .leading) {
                 HStack(spacing: 0) {
-                    Rectangle().frame(width: slotStart)
-                    Color.clear.frame(width: slotWidth)
+                    Rectangle().frame(width: at.map { $0 - Self.slot })
+                    Color.clear.frame(width: at == nil ? 0 : Self.slot * 2)
                     Rectangle()
                 }
             }
@@ -242,11 +238,12 @@ struct PanelLimitBar: View {
         .frame(height: Self.height)
     }
 
-    /// The line's place along the bar, on the device pixel grid and held clear of both ends so it
-    /// stays on the bar at 0% and at 100%. Nil when there is no clock, or no room for a slot.
-    private func markOffset(in width: CGFloat) -> CGFloat? {
+    /// The line's place along the bar, on the device pixel grid. Gauge.markPosition decides it,
+    /// as it does for the menu bar's bars: clear of both ends, and never over the whole of a
+    /// small remainder. Nil when there is no clock, or no room for a slot.
+    private func markOffset(in width: CGFloat, solid: CGFloat) -> CGFloat? {
         guard let mark, width >= Self.slot * 4 else { return nil }
-        let at = min(max(Self.slot, width * mark), width - Self.slot)
+        let at = Gauge.markPosition(mark, width: width, solid: solid, slot: Self.slot)
         return (at * displayScale).rounded() / displayScale
     }
 }

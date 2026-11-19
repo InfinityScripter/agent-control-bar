@@ -1590,13 +1590,28 @@ do {
 
     // A few percent left with the window nearly over: the line sits at the bar's left end, and a
     // slot cut around it there would wipe the remainder — "nearly out" drawn as "out".
-    let nearlyOut = gaugeRowAlphas(Gauge(fiveHour: 0.95, sevenDay: nil, timeLeft: (0.02, nil)))
-    check(nearlyOut.prefix(3).allSatisfy { $0 > 0.6 },
-          "the slot never cuts into a small remainder that ends before the line")
-    check(Gauge.markSlotStart(at: 10, solid: 20) == 10 - Gauge.markSlot
-            && Gauge.markSlotStart(at: 10, solid: 4) == 10 - Gauge.markSlot
-            && Gauge.markSlotStart(at: 10, solid: 9.5) == 9.5,
-          "elsewhere the slot is where it always is: half its width before the line")
+    for used in [0.90, 0.92, 0.95, 0.99] {
+        let nearlyOut = gaugeRowAlphas(Gauge(fiveHour: used, sevenDay: nil, timeLeft: (0.03, nil)))
+        // One device pixel at 1% left, two from 2% up: a point of the bar is all the slot spares.
+        check(nearlyOut[0] > 0.6,
+              "with \(Int((100 - used * 100).rounded()))% left at the end of a window a sliver of it stays in front of the slot")
+    }
+    let nothingLeft = gaugeRowAlphas(Gauge(fiveHour: 1.0, sevenDay: nil, timeLeft: (0.03, nil)))
+    check(nothingLeft[0] < 0.1, "while a spent window shows none")
+    check(Gauge.markPosition(0.5, width: 32, solid: 20) == 16 && Gauge.markPosition(0.5, width: 32, solid: 0) == 16,
+          "away from the ends the line is exactly at the time left")
+    check(Gauge.markPosition(0, width: 32, solid: 0) == Gauge.markSlot
+            && Gauge.markPosition(0, width: 32, solid: 3) == Gauge.markSlot + 1
+            && Gauge.markPosition(0, width: 32, solid: 0.5) == Gauge.markSlot + 0.5
+            && Gauge.markPosition(1, width: 32, solid: 32) == 32 - Gauge.markSlot,
+          "at the left end it keeps up to a point further in while anything is left, and no more")
+
+    // The line for a bar is found by the bar's own window, not by its place in the pair.
+    let weekOnly = Gauge(fiveHour: nil, sevenDay: 0.3, timeLeft: (nil, 0.6))
+    check(weekOnly.signature == "7d30|60" && gaugeRowAlphas(weekOnly)[Int(Gauge.barW * 2 * 0.6)] > 0.6,
+          "a lone weekly bar gets the weekly window's line")
+    check(Gauge.leftPercent(1.4) == 0 && Gauge.leftPercent(-0.2) == 100,
+          "what is left is held to 0…100 like the bar itself")
 }
 
 let redIcon = NSImage(size: NSSize(width: 4, height: 4), flipped: false) { rect in
@@ -2488,7 +2503,6 @@ check(LimitsSet(codex: ["ts": 1.0, "source": "rollout"]) == nil, "a file with no
 check(LimitsSet(codex: ["windows": [["kind": "primary"] as [String: Any]] as [[String: Any]]]) == nil,
       "a window with no percentage is no window")
 
-// The names come from the duration, because which pair a Codex plan carries is not fixed.
 // MARK: pace — where even spending would be by now
 //
 // A percentage alone does not say whether it is a lot: 33% of the week gone on its second day is
@@ -2532,6 +2546,7 @@ check(weekWindow(used: 50, daysLeft: 9).timeLeftPercent(at: paceNow) == 100,
 check(weekWindow(used: 50, daysLeft: -1).timeLeftPercent(at: paceNow) == 0,
       "and one already past has no time left")
 
+// The names come from the duration, because which pair a Codex plan carries is not fixed.
 check(LimitsSet.title(minutes: 300, kind: "primary") == "5 hours", "300 minutes is 5 hours")
 check(LimitsSet.title(minutes: 10080, kind: "secondary") == "7 days", "10080 minutes is 7 days")
 check(LimitsSet.title(minutes: 1440, kind: "secondary") == "1 day", "and 1440 is one day, not 1 days")
@@ -3745,6 +3760,9 @@ do {
     let codexIcon = LimitsBoard(claude: fableOnly, codex: codex).gauge(at: now)
     check(codexIcon.fiveHour == 0.1 && codexIcon.sevenDay == 0.2,
           "a Claude plan with only Fable leaves the icon to Codex rather than blank")
+    // 600 s left of 300 minutes, and 9000 s left of a week.
+    check(codexIcon.timeLeft.0 == 0.03 && codexIcon.timeLeft.1 == 0.01,
+          "and Codex's bars get their own windows' clocks too")
     check(codexIcon.labels.0 == "5h" && codexIcon.labels.1 == "7d",
           "and Codex's bars carry their own short labels: \(codexIcon.labels)")
     check(LimitsBoard(claude: nil, codex: codexGone).gauge(at: now).isEmpty,
