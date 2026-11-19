@@ -133,14 +133,30 @@ const codexMeta = (transcript) => {
   }
 };
 
-const reapDeadSessions = () => {
+const HOUR_MS = 3_600_000;
+
+// With the app up, a dead pid is not the whole answer, so a file also has to have been silent
+// for a while. A resumed session rewrites its file under a new pid, and a sweep that read the old
+// pid a moment earlier would delete the new event. A Codex terminal session gets a day rather
+// than an hour: the pid on record can be Codex's shared daemon, the app keeps the row for as long
+// as the terminal's owner lives, and a file swept sooner takes that row away with it.
+const silentLongEnough = (file, state) => {
+  const grace = (codex && state.surface === "cli" ? 24 : 1) * HOUR_MS;
+  try { return Date.now() - fs.statSync(file).mtimeMs >= grace; } catch { return false; }
+};
+
+const reapDeadSessions = (appRunning) => {
   let files = [];
   try { files = fs.readdirSync(stateDir); } catch { return; }
   for (const f of files.filter((n) => n.endsWith(".json"))) {
     const full = path.join(stateDir, f);
-    let pid = 0;
-    try { pid = JSON.parse(fs.readFileSync(full, "utf8")).pid || 0; } catch {}
-    if (!alive(pid)) forget(f.slice(0, -5));
+    let state = {};
+    try { state = JSON.parse(fs.readFileSync(full, "utf8")) || {}; } catch {}
+    if (alive(state.pid || 0)) continue;
+    // The age is read here, after the pid and straight before the unlink: an event that landed
+    // in between has made the file young again.
+    if (appRunning && !silentLongEnough(full, state)) continue;
+    forget(f.slice(0, -5));
   }
   // Strays: statusline.py runs detached, and a capture from the session's last redraw can land
   // AFTER SessionEnd's forget() — re-creating context.d/<sid>.json with no state file to pair
@@ -172,10 +188,12 @@ setTimeout(run, 1000); // hooks always pipe stdin, but never hang the session
 
 function run() {
   if (done) return; done = true;
-  let id = "", cwd = "", transcript = "", source = "";
+  let id = "", cwd = "", transcript = "", source = "", cursor = false;
   // The transcript path is carried from the very first event so the next hook can measure the
   // context window without waiting for one that happens to include it.
-  try { const j = JSON.parse(input); id = j.session_id; cwd = j.cwd || ""; transcript = j.transcript_path || ""; source = j.source || ""; } catch {}
+  try { const j = JSON.parse(input); id = j.session_id; cwd = j.cwd || ""; transcript = j.transcript_path || ""; source = j.source || ""; cursor = !!j.cursor_version; } catch {}
+  // Cursor's own agent, not a Claude Code session — see the same check in update.js.
+  if (cursor) process.exit(0);
   id = safeId(id);
   const statePath = path.join(stateDir, id + ".json");
 
@@ -194,7 +212,10 @@ function run() {
     // process is actually gone. The app not running is no evidence a SESSION is dead: two
     // sessions opening at once both see it down, and the second one's blanket wipe took out
     // the first one's file before the app had ever read it. Liveness is the pid, nothing else.
-    if (!running()) reapDeadSessions();
+    // The sweep also runs with the app up, under a stricter rule: the app only stops showing a
+    // closed session and never deletes its file, and SessionEnd does not always come, so nothing
+    // else would ever empty this directory while the app stays running.
+    reapDeadSessions(running());
     // A Codex worker thread gets no file of its own: it is part of the user's session, not a
     // session of its own, and four of them at once turned one prompt into five rows. Its own
     // SessionEnd still runs harmlessly — forget() on a file that was never written is a no-op.

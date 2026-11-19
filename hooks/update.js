@@ -366,6 +366,13 @@ process.stdin.on("end", () => {
     } catch {}
   }
 
+  // Cursor runs the hooks in ~/.claude/settings.json for its own agent, and such a run is not a
+  // Claude Code session: its Stop often never comes, so it sat in the panel as a nameless row
+  // "thinking" for fifteen minutes. `cursor_version` is on every event Cursor sends and on none
+  // of Claude Code's — a positive mark, because an empty CLAUDE_CODE_ENTRYPOINT is also what a
+  // real Claude Code session can look like (see below).
+  if (p.cursor_version) return;
+
   // This session's own file is the unit of state AND the liveness marker. Writing it on any
   // event also tracks sessions that predate the hook install (never fired SessionStart).
   const sid = safeId(p.session_id);
