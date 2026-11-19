@@ -42,6 +42,15 @@ test("a session start seeds an idle, not-yet-started file the owner alone can re
   assert.deepEqual(fs.readdirSync(stateDir(home)), ["s1.json"], "no temp file is left behind");
 });
 
+test("Claude startup records the configured model service without the endpoint", (t) => {
+  const home = sandbox(t);
+  const base = "https://api.deepseek.com/anthropic?marker=private-fixture";
+  lifecycle(home, ["start"], { session_id: "deepseek" }, { env: { ANTHROPIC_BASE_URL: base } });
+  const seed = readJSON(path.join(stateDir(home), "deepseek.json"));
+  assert.equal(seed.modelService, "deepseek");
+  assert.doesNotMatch(JSON.stringify(seed), /private-fixture|api\.deepseek\.com/);
+});
+
 test("a start seeds over a resumed session's frozen state", (t) => {
   // A resume fires SessionStart with no turn running; a file stuck on "tool" from before the
   // sleep would keep the icon animating until the next event.
@@ -122,12 +131,17 @@ test("a codex rollout one record long still names the surface", (t) => {
   const home = sandbox(t);
   const transcript = path.join(home, "rollout.jsonl");
   fs.writeFileSync(transcript, JSON.stringify({ type: "session_meta",
-    payload: { originator: "codex_vscode", thread_source: "user" } }));
+    payload: { originator: "codex_vscode", thread_source: "user", model_provider: "ZAI" } }));
   lifecycle(home, ["start", "--provider", "codex"],
     { session_id: "c1", cwd: home, transcript_path: transcript, source: "startup" });
   const seed = readJSON(path.join(codexStateDir(home), "c1.json"));
   assert.equal(seed.surface, "ide");
   assert.equal(seed.provider, "codex");
+  assert.equal(seed.modelService, "zai");
+  fs.writeFileSync(transcript, "{");
+  lifecycle(home, ["start", "--provider", "codex"],
+    { session_id: "c1", cwd: home, transcript_path: transcript, source: "resume" });
+  assert.equal(readJSON(path.join(codexStateDir(home), "c1.json")).modelService, "zai");
 });
 
 test("a codex start writes no context directory and never touches Claude's", (t) => {

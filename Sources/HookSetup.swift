@@ -146,7 +146,7 @@ extension StatusController {
         guard !codexHooksChecking else { return }
         codexHooksChecking = true
         refreshCounts()
-        runQuietCommand(.codexHooksApprove) { [weak self] in
+        runQuietCommand(.codexHooksApprove) { [weak self] _ in
             guard let self else { return }
             // The next tick re-reads codex/hooks.json through its own mtime gate; clearing the
             // flag here is what turns the button back from "Approving…" to its own name.

@@ -30,6 +30,7 @@ final class SettingsStore: ObservableObject {
         let updateProblem: String?
         let newerVersion: String?
         let limitsPollStatus: String
+        let serviceAccounts: [ServiceUsageBoard.Account]
     }
     private var live: Live?
 
@@ -38,7 +39,8 @@ final class SettingsStore: ObservableObject {
                         codexPresent: codexPresent, codexHooksUntrusted: codexHooksUntrusted,
                         updateChecking: updateChecking, updateCheckedAt: updateCheckedAt,
                         updateProblem: updateProblem, newerVersion: newerVersion,
-                        limitsPollStatus: limitsPollStatus)
+                        limitsPollStatus: limitsPollStatus,
+                        serviceAccounts: ServiceUsageBoard.services.map { serviceAccount($0) })
         guard next != live else { return }
         live = next
         objectWillChange.send()
@@ -114,6 +116,16 @@ final class SettingsStore: ObservableObject {
     var agentDisplay: Binding<AgentDisplay> {
         bind({ $0.agentDisplay }, { $0.applyAgentDisplay($1) }, or: .claude)
     }
+    func modelServiceVisible(_ service: ModelService) -> Binding<Bool> {
+        bind({ !$0.hiddenModelServices.contains(service) },
+             { $0.applyModelServiceVisibility(service, visible: $1) }, or: true)
+    }
+    func serviceAccount(_ service: ModelService) -> ServiceUsageBoard.Account {
+        controller?.serviceUsage[service] ?? ServiceUsageBoard.Account()
+    }
+    func editServiceKey(_ service: ModelService) { controller?.editServiceKey(service) }
+    func removeServiceKey(_ service: ModelService) { controller?.removeServiceKey(service) }
+    func refreshServiceUsage(_ service: ModelService) { controller?.refreshServiceUsage(service) }
     var limitsLayout: Binding<PanelLimitsLayout> {
         bind({ $0.limitsLayout }, { $0.applyLimitsLayout($1) }, or: .rows)
     }
@@ -336,6 +348,17 @@ extension StatusController {
     func applyAgentDisplay(_ pick: AgentDisplay) {
         agentChoice = pick.rawValue
         UserDefaults.standard.set(pick.rawValue, forKey: "agentDisplay")
+        renderMenuBar(now: Date().timeIntervalSince1970)
+        refreshCounts()
+    }
+
+    func applyModelServiceVisibility(_ service: ModelService, visible: Bool) {
+        if visible { hiddenModelServices.remove(service) }
+        else { hiddenModelServices.insert(service) }
+        UserDefaults.standard.set(hiddenModelServices.map(\.rawValue).sorted(), forKey: "hiddenModelServices")
+        if visible, ServiceUsageBoard.services.contains(service) {
+            refreshServiceUsage(service)
+        }
         renderMenuBar(now: Date().timeIntervalSince1970)
         refreshCounts()
     }

@@ -57,18 +57,22 @@ struct MenuBarAgent {
 
     static func shown(_ display: AgentDisplay, board: SessionBoard, claude: LimitsSet?,
                       claudeStatus: LimitsStatus?, oauthLimits: Bool, codex: LimitsSet?,
-                      now: Double) -> [MenuBarAgent] {
-        Provider.all.filter { display.inBar($0.id) }.map { provider in
-            let own = board.sessions.values.filter { $0.provider == provider.id }
-            let lead = board.lead(for: [provider.id])
-            let limits = LimitsBoard(claude: provider == .claude ? claude : nil,
-                                     codex: provider == .codex ? codex : nil)
+                      now: Double, hiding hiddenServices: Set<ModelService> = []) -> [MenuBarAgent] {
+        let figures = display.limits(claude: claude, codex: codex, forBar: true, hiding: hiddenServices)
+        return Provider.all.filter { display.inBar($0.id) }.map { provider in
+            let own = board.sessions.values.filter {
+                $0.provider == provider.id && !hiddenServices.contains($0.modelService)
+            }
+            let lead = board.lead(for: [provider.id], hiding: hiddenServices)
+            let limits = LimitsBoard(claude: provider == .claude ? figures.claude : nil,
+                                     codex: provider == .codex ? figures.codex : nil)
             return MenuBarAgent(provider: provider, lead: lead,
                 mood: CrabMood.display(forEffectiveStates: own.map(\.eff), leadState: lead?.eff),
                 working: own.filter { isWorkingState($0.eff) }.count,
                 gauge: limits.gauge(at: now),
                 reserve: provider == .codex && limits.codexBarWindows(at: now).first?.title == "Reserve",
                 signedOut: provider == .claude
+                    && !hiddenServices.contains(.anthropic)
                     && LimitsStatus.signedOutShown(claudeStatus, oauthLimits: oauthLimits, figuresTs: claude?.ts),
                 asyncQuestion: provider == .codex && own.contains(where: { $0.asyncQuestion }))
         }

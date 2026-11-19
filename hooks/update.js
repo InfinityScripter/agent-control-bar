@@ -93,6 +93,27 @@ const CODEX_SURFACES = {
 // for that line to keep growing; past it there is no answer, never a truncated line parsed anyway.
 const CODEX_META_BYTES = 524288;
 
+// The two hooks are installed as separate scripts and classify the same endpoint.
+function claudeModelService() {
+  if (["BEDROCK", "VERTEX", "FOUNDRY"].some((host) => process.env[`CLAUDE_CODE_USE_${host}`] === "1")) {
+    return "custom";
+  }
+  const base = process.env.ANTHROPIC_BASE_URL;
+  if (!base) return "anthropic";
+  try {
+    const url = new URL(base);
+    if (url.protocol !== "https:") return "custom";
+    switch (url.hostname) {
+      case "api.anthropic.com": return "anthropic";
+      case "api.deepseek.com": return "deepseek";
+      case "api.z.ai":
+      case "open.bigmodel.cn": return "zai";
+      case "openrouter.ai": return "openrouter";
+    }
+  } catch {}
+  return "custom";
+}
+
 const codexRollout = (transcript) => {
   if (!transcript) return null;
   let fd;
@@ -110,10 +131,12 @@ const codexRollout = (transcript) => {
     // miss the third case, a short read on a network volume.
     if (end === -1 && read < fs.fstatSync(fd).size) return null;
     const meta = (JSON.parse(end === -1 ? text : text.slice(0, end)) || {}).payload || {};
+    const service = typeof meta.model_provider === "string" ? meta.model_provider.trim().toLowerCase() : "";
     return {
       // An unknown originator yields no surface rather than a guessed one: a wrong "CLI" badge
       // on a desktop session is worse than no badge.
       surface: CODEX_SURFACES[meta.originator] || "",
+      modelService: ["openai", "deepseek", "zai", "openrouter"].includes(service) ? service : service && "custom",
       // A missing field is an older Codex that had no workers at all, so it counts as the user's.
       worker: typeof meta.thread_source === "string" && meta.thread_source !== "user",
     };
@@ -365,12 +388,11 @@ process.stdin.on("end", () => {
   // Which thread an event belongs to is settled by the rollout it names, not by how far into the
   // session it arrives. This used to read the rollout only while the session had no file yet, and
   // that left every later event with nothing but the undefined `agent_id` to go on — including
-  // the two events that end a turn. A file already written for THIS rollout needs no second look;
-  // an event naming a different one does, whether that is a worker thread or the same session
-  // after a compaction wrote it a new file.
+  // the two events that end a turn. Recheck the header on a new prompt too: a new rollout
+  // can become readable after SessionStart, and the model service may have changed on resume.
   const transcript = p.transcript_path || prev.transcript || "";
   const settledThread = prev.provider === "codex" && transcript === prev.transcript;
-  const codexMeta = codex && !settledThread ? codexRollout(transcript) : null;
+  const codexMeta = codex && (!settledThread || event === "prompt") ? codexRollout(transcript) : null;
   if (codex && (p.agent_id || p.agent_type || (codexMeta && codexMeta.worker))) return;
 
   const project = p.cwd ? path.basename(p.cwd) : prev.project || "";
@@ -463,6 +485,8 @@ process.stdin.on("end", () => {
     // the rollout read above.
     out.surface = typeof prev.surface === "string" ? prev.surface
                   : (codexMeta ? codexMeta.surface : "");
+    const modelService = codexMeta?.modelService || prev.modelService;
+    if (modelService) out.modelService = modelService;
     out.model = p.model || prev.model || "";
     // The turn this event belongs to. Codex stamps the same id on the rollout record that ENDS
     // the turn, so the app can tell "this session's turn is over" from "some turn finished in
@@ -472,6 +496,8 @@ process.stdin.on("end", () => {
     // completion as this one's — the one way this net could end a turn that is still running. An
     // event without an id leaves it empty, and the app falls back to comparing clocks.
     out.turn_id = typeof p.turn_id === "string" ? p.turn_id : "";
+  } else {
+    out.modelService = claudeModelService();
   }
   try {
     fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });

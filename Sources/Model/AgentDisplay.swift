@@ -54,9 +54,10 @@ enum AgentDisplay: String, CaseIterable, Identifiable {
 
     /// Both limit sets, with the ones this pick leaves out taken away, so the rules in LimitsBoard
     /// — which bars the icon draws, which groups the strip lists — see only what may be shown.
-    func limits(claude: LimitsSet?, codex: LimitsSet?, forBar: Bool) -> LimitsBoard {
+    func limits(claude: LimitsSet?, codex: LimitsSet?, forBar: Bool,
+                hiding hiddenServices: Set<ModelService> = []) -> LimitsBoard {
         let shows = forBar ? barProviders : panelProviders
-        return LimitsBoard(claude: shows.contains(Provider.claude.id) ? claude : nil,
-                           codex: shows.contains(Provider.codex.id) ? codex : nil)
+        return LimitsBoard(claude: shows.contains(Provider.claude.id) && !hiddenServices.contains(.anthropic) ? claude : nil,
+                           codex: shows.contains(Provider.codex.id) && !hiddenServices.contains(.openai) ? codex : nil)
     }
 }

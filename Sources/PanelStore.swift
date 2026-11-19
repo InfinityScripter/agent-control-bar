@@ -141,6 +141,17 @@ final class PanelStore: ObservableObject {
                                 tty: session.tty)
     }
 
+    func refreshCodexHistory() { controller?.refreshCodexHistory() }
+
+    func openCodexHistoryThread(_ thread: CodexHistory.Thread, completion: @escaping (Bool) -> Void) {
+        guard let controller else { completion(false); return }
+        controller.openCodexHistoryThread(thread, completion: completion)
+    }
+
+    func copyCodexResumeCommand(_ thread: CodexHistory.Thread) -> Bool {
+        controller?.copyCodexResumeCommand(thread) ?? false
+    }
+
     func openClaude() {
         controller?.closePanel()
         controller?.openClaude()
@@ -256,6 +267,11 @@ struct PanelSnapshot: Equatable {
     /// How tall the scrolling half may get on the screen this panel opens on.
     var contentCap: CGFloat = PanelTheme.minContentHeight
     var sessions: [PanelSession] = []
+    var offersCodexHistory = false
+    var codexHistory: CodexHistoryState = .idle
+    var liveCodexIDs: Set<String> = []
+    var hiddenModelServices: Set<ModelService> = []
+    var accountUsage: [ModelService: ServiceUsageBoard.Status] = [:]
     var sessionDismissalError: String?
     /// True when there is no live session but the desktop app is up — the panel offers a way back
     /// in rather than showing an empty tab.
@@ -361,8 +377,14 @@ struct PanelSession: Equatable, Identifiable {
     /// Nil means the ordinary rules apply — raise the terminal or the editor it runs in.
     let threadURL: URL?
     let detail: PanelSessionDetail
+    var modelService: ModelService? = nil
 
     var working: Bool { isWorkingState(eff) }
+    var activityGroup: SessionActivityGroup { SessionActivityGroup(state: eff, asyncQuestion: asyncQuestion) }
+    var serviceLabel: String? {
+        guard let modelService, modelService != .native(for: provider) else { return nil }
+        return modelService.title
+    }
     var questionLabel: String? { asyncQuestion && eff != "permission" ? "Вопрос" : nil }
 
     /// The row draws activity and Question separately; diagnostics combine those same values.
@@ -506,6 +528,13 @@ extension PanelSnapshot {
         width = c.boxWidth
         contentCap = c.panelContentCap
         sessions = c.panelSessions(now: now)
+        hiddenModelServices = c.hiddenModelServices
+        accountUsage = c.panelAccountUsage
+        offersCodexHistory = c.agentDisplay.inPanel(Provider.codex.id) && c.codexInstalled
+        codexHistory = c.codexHistory
+        if case .loaded = codexHistory {
+            liveCodexIDs = Set(c.sessions.values.lazy.filter { $0.provider == Provider.codex.id }.map(\.id))
+        }
         sessionDismissalError = c.sessionDismissalError
         offerOpenClaude = sessions.isEmpty && c.desktopRunning && c.agentDisplay.inPanel(Provider.claude.id)
         // Asked of every session this app knows about, not of the rows above: a Codex session that

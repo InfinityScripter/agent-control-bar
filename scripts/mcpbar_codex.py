@@ -2,7 +2,7 @@
 """Codex-половина mcpbar.py: лимиты аккаунта и запасные rollout-снимки, MCP-серверы Codex и доверие к нашим хукам.
 
 Отдельный модуль, а не отдельный скрипт: команды по-прежнему приходят через `mcpbar.py`
-(codex-limits, codex-mcp, codex-hooks), общие помощники — запись файлов, строки, разбор
+(codex-limits, codex-mcp, codex-hooks, codex-history), общие помощники — запись файлов, строки, разбор
 времени — берутся оттуда же. Своих зависимостей, кроме стандартной библиотеки, нет.
 
 `ROOT` читается как `core.ROOT` в момент вызова, а не копируется при импорте: тесты подменяют
@@ -15,6 +15,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import socket
 import stat
 import struct
@@ -641,7 +642,7 @@ def codex_mcp_get(name):
     return data if isinstance(data, dict) else {}
 
 
-def codex_rpc(method, params=None, timeout=30, read_only=False):
+def codex_rpc(method, params=None, timeout=30, read_only=False, min_version=None):
     """Один вызов app-server: initialize → initialized → метод → завершение процесса."""
     import subprocess, select
     binary = find_codex()
@@ -689,9 +690,15 @@ def codex_rpc(method, params=None, timeout=30, read_only=False):
                                                                "title": "Agent Control Bar",
                                                                "version": "1"}}}) + "\n")
         proc.stdin.flush()
-        _, error = receive(1)
+        info, error = receive(1)
         if error:
             return None, error
+        if min_version is not None:
+            agent = info.get("userAgent")
+            version = re.match(r"^[^/\s]+/(\d{1,4})\.(\d{1,4})\.(\d{1,4})(?: |$)",
+                               agent if isinstance(agent, str) else "")
+            if not version or tuple(map(int, version.groups())) < min_version:
+                return None, "upgrade_required"
         proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "initialized"}) + "\n")
         proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 2, "method": method,
                                      "params": params or {}}) + "\n")
@@ -711,6 +718,56 @@ def codex_rpc(method, params=None, timeout=30, read_only=False):
             proc.kill()
             proc.wait(2)
         proc.stdout.close()
+
+
+CODEX_HISTORY_CLIENTS = {
+    "codex_cli_rs": "cli", "codex-tui": "cli", "codex_vscode": "ide",
+    "codex_work_desktop": "app", "Codex Desktop": "app", "T3 Code": "t3",
+}
+
+
+def fetch_codex_history():
+    sources = ["cli", "vscode", "appServer"]
+    result, error = codex_rpc("thread/list", {
+        "limit": 50, "sortKey": "updated_at", "sourceKinds": sources, "modelProviders": [],
+        "currentAccountOnly": True, "useStateDbOnly": True,
+    }, timeout=8, read_only=True, min_version=(0, 168, 0))
+    record = {"threads": [], "hasMore": False}
+    rows = result.get("data") if isinstance(result, dict) else None
+    if error or not isinstance(rows, list):
+        record["error"] = error or "invalid_reply"
+    else:
+        codex_home = os.environ.get("CODEX_HOME") or CODEX
+        record["codexHome"] = os.path.realpath(os.path.expanduser(codex_home))
+        record["hasMore"] = bool(result.get("nextCursor"))
+        seen = set()
+        for row in rows[:50]:
+            if not isinstance(row, dict) or row.get("source") not in sources \
+                    or row.get("parentThreadId") or row.get("threadSource") == "subagent":
+                continue
+            thread_id, updated_at = row.get("id"), row.get("updatedAt")
+            if not isinstance(thread_id, str) or not thread_id or thread_id in seen \
+                    or type(updated_at) is not int:
+                continue
+            seen.add(thread_id)
+            cwd = row.get("cwd") if isinstance(row.get("cwd"), str) else ""
+            name = row.get("name") if isinstance(row.get("name"), str) else ""
+            git = row.get("gitInfo")
+            branch = git.get("branch") if isinstance(git, dict) else None
+            originator = row.get("originator")
+            source = CODEX_HISTORY_CLIENTS.get(originator) if isinstance(originator, str) else None
+            model_provider = row.get("modelProvider")
+            service = model_provider.strip().lower() if isinstance(model_provider, str) else ""
+            if service not in ("openai", "deepseek", "zai", "openrouter"):
+                service = "custom" if service else "openai"
+            record["threads"].append({
+                "id": thread_id, "name": name.strip(),
+                "cwd": cwd, "updatedAt": updated_at,
+                "branch": branch if isinstance(branch, str) else "", "source": source or row["source"],
+                "modelService": service,
+            })
+    secure_codex_root()
+    core.write_json(os.path.join(CODEX_ROOT, "history.json"), record, mode=0o600)
 
 
 def codex_server_status():

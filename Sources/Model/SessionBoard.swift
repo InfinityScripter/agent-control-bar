@@ -33,6 +33,7 @@ final class SessionBoard {
         /// agent. Separate from `leads`: hiding the menu bar status is not asking for silence
         /// about the sessions the panel still lists.
         var cues: Set<String>? = nil
+        var hiddenModelServices: Set<ModelService> = []
     }
 
     struct Tick {
@@ -153,7 +154,8 @@ final class SessionBoard {
             pickWord(s, from: rules.thinkingWords)
             // The edge is tracked for every session, so switching an agent back on cannot fire a
             // chime for a turn that ended while it was out of sight.
-            let cues = rules.cues?.contains(s.provider) ?? true
+            let cues = (rules.cues?.contains(s.provider) ?? true)
+                && !rules.hiddenModelServices.contains(s.modelService)
             if completionEdge(s, now: now, threshold: rules.soundThreshold), cues { out.chime = true }
             // The frontmost-app lookup is a workspace query, so it runs only on a confirmed edge.
             if rules.needsYou, cues, s.eff == "permission", previousEffective != "permission",
@@ -187,12 +189,14 @@ final class SessionBoard {
             }
         }
         nameClones()
-        out.lead = lead(for: rules.leads)
+        out.lead = lead(for: rules.leads, hiding: rules.hiddenModelServices)
         return out
     }
 
-    func lead(for providers: Set<String>? = nil) -> Session? {
-        sessions.values.filter { providers?.contains($0.provider) ?? true }.max { a, b in
+    func lead(for providers: Set<String>? = nil, hiding hiddenServices: Set<ModelService> = []) -> Session? {
+        sessions.values.filter {
+            (providers?.contains($0.provider) ?? true) && !hiddenServices.contains($0.modelService)
+        }.max { a, b in
             let pa = Self.priority(of: a.eff), pb = Self.priority(of: b.eff)
             return pa == pb ? a.ts < b.ts : pa < pb
         }

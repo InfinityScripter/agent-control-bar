@@ -42,13 +42,24 @@ struct PanelView: View {
         nonmutating set { _contentHeight.wrappedValue = newValue }
     }
 
+    private var attentionCount: Int {
+        store.snapshot.sessions.filter { $0.activityGroup == .needsYou }.count
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if let update = store.snapshot.update {
                 PanelUpdateBanner(update: update, store: store)
                     .padding(.bottom, 7)
             }
-            if store.snapshot.visibility.limits { limitsStrip }
+            if store.snapshot.visibility.limits {
+                limitsStrip
+                ForEach(ServiceUsageBoard.services) { service in
+                    if let status = store.snapshot.accountUsage[service] {
+                        PanelServiceUsage(service: service, status: status)
+                    }
+                }
+            }
             if store.snapshot.visibility.chance, let odds = store.snapshot.resetOdds {
                 PanelResetOddsCard(store: store, odds: odds)
             }
@@ -247,7 +258,12 @@ struct PanelView: View {
                         Image(systemName: tab.icon).font(.system(size: 11, weight: .medium))
                         Text(tab.title).font(.system(size: 12,
                                                      weight: store.tab == tab ? .medium : .regular))
-                        if let count = badge(for: tab) {
+                        if tab == .sessions, attentionCount > 0 {
+                            Label("\(attentionCount)", systemImage: "exclamationmark.circle.fill")
+                                .font(.system(size: 10).monospacedDigit())
+                                .foregroundStyle(Color(nsColor: StatusController.amber))
+                                .accessibilityLabel("\(attentionCount) sessions need you")
+                        } else if let count = badge(for: tab) {
                             Text(count)
                                 .font(.system(size: 10).monospacedDigit())
                                 .foregroundStyle(.tertiary)

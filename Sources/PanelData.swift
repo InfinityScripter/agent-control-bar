@@ -18,15 +18,18 @@ extension StatusController {
         // An agent the setting leaves out is not listed at all — not even as the one row kept below
         // so the panel never goes empty: that row would be exactly the session asked not to show.
         let agents = agentDisplay
-        let ordered = sessions.values.sorted { $0.ts > $1.ts }.filter { s in
-            guard agents.inPanel(s.provider) else { return false }
+        let ordered = sessions.values.sorted {
+            $0.ts == $1.ts ? $0.key < $1.key : $0.ts > $1.ts
+        }.filter { s in
+            guard agents.inPanel(s.provider), !hiddenModelServices.contains(s.modelService) else { return false }
             let gated = s.entrypoint == "claude-desktop"
             return !gated || s.started || isActiveState(effState(s, now: now))
         }
         // Hiding is render-only — the file, and thus liveness, is untouched. The most recent
         // session is always kept, so the panel never goes empty while one is alive.
         var visible = ordered.filter { s in
-            let resting = !isActiveState(effState(s, now: now))
+            let resting = SessionActivityGroup(state: effState(s, now: now),
+                                               asyncQuestion: s.asyncQuestion) == .idle
             return !(stalePruneAge > 0 && resting && now - s.ts > stalePruneAge)
         }
         if visible.isEmpty, let lead = ordered.first { visible = [lead] }
@@ -61,7 +64,8 @@ extension StatusController {
             detail: PanelSessionDetail(
                 model: s.model, dirty: s.dirty, tokens: s.tokens, window: s.window,
                 cost: s.cost, duration: s.duration,
-                linesAdded: s.linesAdded, linesRemoved: s.linesRemoved, cwd: s.cwd))
+                linesAdded: s.linesAdded, linesRemoved: s.linesRemoved, cwd: s.cwd),
+            modelService: s.modelService)
     }
 
     /// The row's own word for what the session is doing. Unlike the menu bar label, a row always
@@ -90,6 +94,14 @@ extension StatusController {
 
     // MARK: limits
 
+    var panelAccountUsage: [ModelService: ServiceUsageBoard.Status] {
+        Dictionary(uniqueKeysWithValues: ServiceUsageBoard.services.compactMap { service in
+            let status = serviceUsage[service].status
+            guard !hiddenModelServices.contains(service), status.hasKey else { return nil }
+            return (service, status)
+        })
+    }
+
     /// Each provider's windows, grouped, plus one line saying how old the figures are — or, when
     /// there are none at all, why.
     ///
@@ -105,7 +117,8 @@ extension StatusController {
             // is not signed in through the browser OAuth flow (a `setup-token` login lacks the
             // profile scope the endpoint wants). Saying so beats an empty strip, and beats
             // inventing a number.
-            if !agentDisplay.inPanel("claude") {
+            if !showsAccountLimits(for: Provider.claude.id) {
+                guard showsAccountLimits(for: Provider.codex.id) else { return ([], "No visible account limits") }
                 return ([], codexLimits ? "No Codex limit data yet" : "Codex limits are switched off in Settings")
             }
             return ([], LimitsStatus.emptyStripText(limitsStatus, oauthLimits: oauthLimits))
@@ -141,12 +154,16 @@ extension StatusController {
     /// The block over the strip when the last poll brought no figures, or nil while there is
     /// nothing to explain.
     func panelLimitsNotice(now: Double, provider: String = "claude") -> PanelLimitsNotice? {
-        guard agentDisplay.inPanel(provider) else { return nil }
+        guard showsAccountLimits(for: provider) else { return nil }
         let codex = provider == "codex"
         return LimitsStatus.notice(codex ? codexLimitsStatus : limitsStatus,
                                    oauthLimits: codex ? codexLimits : oauthLimits,
                                    figuresTs: codex ? codexWindows?.ts : limits?.ts, now: now, provider: provider)
             .map { PanelLimitsNotice(title: $0.title, hint: $0.hint, offerSignIn: $0.offerSignIn) }
+    }
+
+    private func showsAccountLimits(for provider: String) -> Bool {
+        agentDisplay.inPanel(provider) && !hiddenModelServices.contains(.native(for: provider))
     }
 
     static func age(of ts: Double, now: Double) -> String {
@@ -157,9 +174,10 @@ extension StatusController {
 
     /// nil while the switch is off, so the card is absent rather than empty.
     func panelResetOdds(now: Double) -> PanelResetOdds? {
-        guard resetOddsOn else { return nil }
+        guard resetOddsOn, !hiddenModelServices.isSuperset(of: [.anthropic, .openai]) else { return nil }
         let look = ResetOddsLook(odds: resetOdds, fetchedAt: resetOddsFetchedAt, problem: resetOddsProblem, now: now)
-        let rows = look.products.map { Self.resetOddsRow($0, agent: Provider.named($0.id), now: now) }
+        let rows = look.products.filter { !hiddenModelServices.contains(.native(for: $0.id)) }
+            .map { Self.resetOddsRow($0, agent: Provider.named($0.id), now: now) }
         return PanelResetOdds(state: look.state, rows: rows, stale: look.stale, note: look.note)
     }
 
@@ -206,9 +224,13 @@ extension StatusController {
         let open = panelStore.expanded.contains(PanelStore.resetOddsID)
         let odds = panelVisibility.chance
             ? panelResetOdds(now: Date().timeIntervalSince1970)?.cardHeight(open: open) ?? 0 : 0
+        let accounts: CGFloat = panelVisibility.limits ? panelAccountUsage.values.reduce(0) { height, status in
+            if case .ready(let data, _) = status { return height + 29 + CGFloat(data.metrics.count * 18) }
+            return height + 54
+        } : 0
         guard panelVisibility.limits,
-              limitsBoard.shown(at: Date().timeIntervalSince1970).count > 1 else { return odds }
-        return odds + (limitsLayout == .rows ? 93 : 40)
+              limitsBoard.shown(at: Date().timeIntervalSince1970).count > 1 else { return odds + accounts }
+        return odds + accounts + (limitsLayout == .rows ? 93 : 40)
     }
 
     /// The banner, the limits strip, the tabs and the footer, plus the gap under the menu bar.

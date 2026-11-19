@@ -44,6 +44,43 @@ test("codex tools get codex's labels, never Claude's", (t) => {
   }
 });
 
+test("the Claude update labels only exact service hosts and recognizes cloud backends", (t) => {
+  const home = sandbox(t);
+  const cases = [
+    [undefined, "anthropic"], ["https://api.anthropic.com", "anthropic"],
+    ["https://api.z.ai/api/anthropic", "zai"], ["https://open.bigmodel.cn/api/anthropic", "zai"],
+    ["https://api.deepseek.com/anthropic", "deepseek"], ["https://openrouter.ai/api", "openrouter"],
+    ["https://api.z.ai.example.test", "custom"], ["https://api.z.ai@other.test", "custom"],
+    ["not a url", "custom"],
+  ];
+  for (const [baseURL, expected] of cases) {
+    event(home, "prompt", { session_id: "s1" }, { env: {
+      ANTHROPIC_BASE_URL: baseURL, CLAUDE_CODE_USE_BEDROCK: undefined,
+      CLAUDE_CODE_USE_VERTEX: undefined, CLAUDE_CODE_USE_FOUNDRY: undefined,
+    } });
+    assert.equal(state(home, "s1").modelService, expected, baseURL);
+  }
+  event(home, "prompt", { session_id: "s1" }, { env: {
+    ANTHROPIC_BASE_URL: undefined, CLAUDE_CODE_USE_BEDROCK: "1",
+  } });
+  assert.equal(state(home, "s1").modelService, "custom");
+});
+
+test("Codex retains the model service across an unreadable rollout and retries the header", (t) => {
+  const home = sandbox(t);
+  const first = path.join(home, "first.jsonl");
+  const second = path.join(home, "second.jsonl");
+  const out = path.join(codexStateDir(home), "c1.json");
+  fs.writeFileSync(first, JSON.stringify({ type: "session_meta", payload: { model_provider: "deepseek" } }));
+  event(home, "prompt", { session_id: "c1", transcript_path: first }, { argv: ["--provider", "codex"] });
+  assert.equal(readJSON(out).modelService, "deepseek");
+  event(home, "prompt", { session_id: "c1", transcript_path: second }, { argv: ["--provider", "codex"] });
+  assert.equal(readJSON(out).modelService, "deepseek");
+  fs.writeFileSync(second, JSON.stringify({ type: "session_meta", payload: { model_provider: "openrouter" } }));
+  event(home, "prompt", { session_id: "c1", transcript_path: second }, { argv: ["--provider", "codex"] });
+  assert.equal(readJSON(out).modelService, "openrouter");
+});
+
 test("the turn clock starts at the prompt, runs through its tools and stops at Stop", (t) => {
   // startedAt drives the elapsed timer on the session row. A tool event resetting it would make
   // a long turn look a few seconds old after every tool call.
