@@ -21,7 +21,8 @@ extension StatusController {
             else { completion(false); return }
             closePanel()
             openSession(session.id, threadURL: url, entrypoint: session.entrypoint,
-                        termProgram: session.termProgram, termBundle: session.termBundle, tty: session.tty)
+                        termProgram: session.termProgram, termBundle: session.termBundle,
+                        t3Thread: session.t3Thread, tty: session.tty)
             completion(true)
             return
         }
@@ -127,7 +128,21 @@ extension StatusController {
     // CLI session: bring its terminal APP to the front (zero permission). Targeting the exact
     // window/tab needs a one-time Automation grant, deferred to the opt-in build (issue #19).
     func openSession(_ id: String, threadURL: URL?, entrypoint: String,
-                     termProgram: String, termBundle: String, tty: String) {
+                     termProgram: String, termBundle: String, t3Thread: String, tty: String) {
+        // T3 Code session: open ITS thread. The recorded bundle id names the app at best — and a
+        // launcher wrapped around it at worst — so `open -b` below would raise a window that is
+        // showing some other thread, or start the launcher. LaunchServices picks the receiver:
+        // the scheme is T3 Code's alone. With no handler installed, or no environment id on this
+        // machine, the click falls through to the ordinary rules.
+        //
+        // Only a session T3 Code runs itself, which its entrypoint says. The thread id alone does
+        // not: every descendant of a thread inherits the variable — an editor or a tmux server
+        // first started from T3's terminal — and those sessions keep their own window.
+        if entrypoint == "t3-code", let url = T3Sessions.threadURL(threadID: t3Thread),
+           NSWorkspace.shared.urlForApplication(toOpen: url) != nil,
+           NSWorkspace.shared.open(url) {
+            return
+        }
         // Codex's own deep link, when the model half decided this session is one to follow there
         // (SessionFormat.codexThreadURL says which). `open -b` pins the receiving app rather than
         // letting LaunchServices pick among whatever else claims `codex://` — the same precaution

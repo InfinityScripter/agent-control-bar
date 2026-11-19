@@ -134,7 +134,7 @@ Claude Code picks up tool changes in new sessions. Codex changes are saved to it
 
 **Check MCP now** (⌘R) refreshes health and tool counts. **Open settings.json** opens Claude's settings file. Claude switches are saved there with backups; Codex switches update its own MCP configuration.
 
-Health checks start configured MCP servers to ask for their tools. Remote servers may receive connections. If Codex server discovery is slow, turn **Codex MCP servers** off in General. The app sends macOS notifications when a server goes down or comes back; a **Notifications are off** notice opens the relevant System Settings page.
+Health checks start configured MCP servers to ask for their tools. Remote servers may receive connections. If Codex server discovery is slow, turn **Codex MCP servers** off in General. The app sends macOS notifications when a server goes down or comes back; if macOS has notifications switched off for the app, Settings → General → Notifications says so and opens the relevant System Settings page.
 
 ## Choose what stays in the menu bar
 

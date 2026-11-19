@@ -93,7 +93,6 @@ struct PanelView: View {
                 .frame(height: min(max(contentHeight, 1), store.snapshot.contentCap))
                 .clipped()
             }
-            if store.snapshot.notificationsDenied { notificationsWarning }
             footer
         }
         .padding(PanelTheme.pad)
@@ -309,18 +308,6 @@ struct PanelView: View {
     }
 
     // MARK: footer
-
-    private var notificationsWarning: some View {
-        Button { store.openNotificationSettings() } label: {
-            PanelNotice(glyph: "bell.slash", text: "Notifications are off — open System Settings")
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .padding(.top, 8)
-        // macOS asks once per app, ever. Alerts like "MCP server went down" stay muted until
-        // notifications are switched back on in System Settings.
-        .help("macOS asks once per app, ever. Alerts stay muted until this is switched back on.")
-    }
 
     @ViewBuilder
     private var footer: some View {

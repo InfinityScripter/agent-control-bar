@@ -90,6 +90,13 @@ extension StatusController {
         NSApp.windowsMenu = windowMenu
     }
 
+    // Becoming key covers both moments the stored answer is worth re-reading: the window opening,
+    // and the user coming back from System Settings having just changed it.
+    func windowDidBecomeKey(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === settingsWindow else { return }
+        refreshNotificationAuthStatus()
+    }
+
     // Back to an accessory the moment Settings goes away. The .regular policy above is what puts
     // this app in the Dock and in Cmd-Tab, and it has no business being in either once the one
     // window it was raised for is gone.

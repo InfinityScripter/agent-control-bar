@@ -61,7 +61,6 @@ extension StatusController {
         pollLimits()
         checkForUpdate()          // refreshes the update cache for next open (gated to once a day)
         fetchResetOddsIfDue()
-        refreshNotificationAuthStatus()
         // The verdict from launch is not good enough for the one person looking at an empty tab,
         // or at a hooks warning they may have just fixed from a terminal.
         if HookInstall.checkDueOnOpen(problem: hookHealth.problem != nil, noSessions: sessions.isEmpty,
@@ -282,7 +281,6 @@ extension StatusController {
             }
             if let error = snapshot.mcp.error { lines.append("  Check failed: \(error)") }
         }
-        if snapshot.notificationsDenied { lines.append("Notifications are off") }
         lines.append("Settings…   ⌘,")
         lines.append("Quit   ⌘Q")
         return lines.joined(separator: "\n")

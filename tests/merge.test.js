@@ -481,6 +481,29 @@ test("an event arriving without the env var keeps the bundle id already on file"
   assert.equal(state.term_bundle, "com.todesktop.230313mzl4w4u92");
 });
 
+// T3 Code runs `claude` as a child with no terminal, and __CFBundleIdentifier only names the app
+// (or whatever launched it) — never which of its threads the session belongs to. T3 exports that
+// itself as T3CODE_THREAD_ID, and the row click needs it to open the thread rather than the app.
+test("a session hosted by T3 Code records its thread id and keeps it across events", () => {
+  const home = sandbox();
+  const saved = process.env.T3CODE_THREAD_ID;
+  const thread = () => JSON.parse(fs.readFileSync(path.join(stateDir(home), "t3a.json"), "utf8")).t3_thread;
+  try {
+    process.env.T3CODE_THREAD_ID = "7c2a3198-31db-4a32-984f-f3bd29908381";
+    run(updatePath, home, ["prompt"], JSON.stringify({ session_id: "t3a", cwd: home }));
+    assert.equal(thread(), "7c2a3198-31db-4a32-984f-f3bd29908381");
+    delete process.env.T3CODE_THREAD_ID;
+    run(updatePath, home, ["pre"], JSON.stringify({ session_id: "t3a", cwd: home, tool_name: "Bash" }));
+    assert.equal(thread(), "7c2a3198-31db-4a32-984f-f3bd29908381", "an event without the variable keeps the id on file");
+    run(updatePath, home, ["prompt"], JSON.stringify({ session_id: "plain", cwd: home }));
+    assert.equal(JSON.parse(fs.readFileSync(path.join(stateDir(home), "plain.json"), "utf8")).t3_thread, "",
+      "a session outside T3 Code names no thread");
+  } finally {
+    if (saved === undefined) delete process.env.T3CODE_THREAD_ID;
+    else process.env.T3CODE_THREAD_ID = saved;
+  }
+});
+
 // An explicit menu Quit writes ~/.claude/control-bar/quit-intent. SessionStart fires for
 // brand-new sessions AND for resumes (--resume/--continue, wake after sleep, compaction) —
 // and both lifecycle.js and bootstrap.py launch the app from it. Only a genuinely new session
@@ -585,7 +608,7 @@ test("the state file a hook event writes carries exactly the keys the swift read
   assert.deepEqual(Object.keys(state).sort(), [
     "assumed", "cost", "cwd", "dirty", "duration", "entrypoint", "label", "linesAdded",
     "linesRemoved", "model", "modelService", "pct", "pid", "project", "sessionId", "started", "startedAt",
-    "state", "term_bundle", "term_program", "tokens", "tool", "transcript", "ts", "tty",
+    "state", "t3_thread", "term_bundle", "term_program", "tokens", "tool", "transcript", "ts", "tty",
     "window",
   ]);
   assert.equal(typeof state.state, "string");
@@ -1010,7 +1033,7 @@ test("the codex state file carries exactly the keys the swift reader parses", ()
   assert.deepEqual(Object.keys(state).sort(), [
     "assumed", "cost", "cwd", "dirty", "duration", "entrypoint", "label", "linesAdded",
     "linesRemoved", "model", "modelService", "pct", "pid", "project", "provider", "sessionId", "started",
-    "startedAt", "state", "surface", "term_bundle", "term_program", "tokens", "tool",
+    "startedAt", "state", "surface", "t3_thread", "term_bundle", "term_program", "tokens", "tool",
     "transcript", "ts", "tty", "turn_id", "window",
   ]);
   assert.equal(state.surface, "ide", "the surface survives the events that follow the start");

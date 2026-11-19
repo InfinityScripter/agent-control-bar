@@ -138,7 +138,7 @@ final class PanelStore: ObservableObject {
         controller?.openSession(session.sessionID, threadURL: session.threadURL,
                                 entrypoint: session.entrypoint,
                                 termProgram: session.termProgram, termBundle: session.termBundle,
-                                tty: session.tty)
+                                t3Thread: session.t3Thread, tty: session.tty)
     }
 
     func refreshCodexHistory() { controller?.refreshCodexHistory() }
@@ -170,7 +170,6 @@ final class PanelStore: ObservableObject {
     func signInClaude() { controller?.signInClaude() }
     func openSettingsJSON() { controller?.closePanel(); controller?.openSettingsJSON() }
     func openSettings() { controller?.closePanel(); controller?.openSettingsWindow() }
-    func openNotificationSettings() { controller?.closePanel(); controller?.openNotificationSettings() }
     func openFilesPrivacySettings() { controller?.closePanel(); controller?.openFilesPrivacySettings() }
     func showWhatsNew() { controller?.closePanel(); controller?.showWhatsNewLatest() }
     func quit() { controller?.quit() }
@@ -318,7 +317,6 @@ struct PanelSnapshot: Equatable {
     var codexPetID = ""
     var mcp = PanelMCP()
     var update: PanelUpdate?
-    var notificationsDenied = false
 }
 
 struct PanelResetOdds: Equatable {
@@ -369,6 +367,9 @@ struct PanelSession: Equatable, Identifiable {
     let entrypoint: String
     let termProgram: String
     let termBundle: String
+    /// The T3 Code thread hosting the session, which the click opens instead of merely raising
+    /// the app; "" for a session running anywhere else.
+    let t3Thread: String
     /// The session's controlling terminal. Carried to the click so it can focus that exact window
     /// and tab; "" for anything not running in one.
     let tty: String
@@ -557,7 +558,6 @@ extension PanelSnapshot {
         codexPetID = c.codexPetID
         self.mcp = mcp
         self.update = update
-        notificationsDenied = c.notificationsDenied
     }
 }
 

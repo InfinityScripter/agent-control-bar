@@ -16,6 +16,7 @@ struct Session {
     var entrypoint: String  // CLAUDE_CODE_ENTRYPOINT: "cli", "claude-desktop", …
     var termProgram: String // TERM_PROGRAM for CLI sessions: "Apple_Terminal", "iTerm.app", …
     var termBundle: String  // __CFBundleIdentifier of the hosting app; "" over ssh / pre-upgrade files
+    var t3Thread: String    // T3CODE_THREAD_ID: the T3 Code thread hosting the session; "" outside T3 Code
     // The session's controlling terminal, "/dev/ttys004". Terminal and iTerm both hand a tab's tty
     // to AppleScript, so this is what turns "raise the terminal app" into "focus THAT tab". "" for
     // a session with no terminal at all — the desktop app, an IDE panel, a pre-upgrade file.
@@ -90,6 +91,7 @@ struct Session {
         self.entrypoint = o["entrypoint"] as? String ?? ""
         self.termProgram = o["term_program"] as? String ?? ""
         self.termBundle = o["term_bundle"] as? String ?? ""
+        self.t3Thread = o["t3_thread"] as? String ?? ""
         self.tty = o["tty"] as? String ?? ""
         self.pid = Int32(truncatingIfNeeded: (o["pid"] as? NSNumber)?.intValue ?? 0)
         self.started = o["started"] as? Bool ?? false

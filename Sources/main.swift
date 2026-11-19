@@ -83,6 +83,7 @@ final class StatusController: NSObject, NSWindowDelegate {
         var frameCount = 1
         var motion = MenuBarMotion()
         var label = ""
+        var textColumn: CGFloat = 0
         var cacheKey = ""
         var frames: [Int: NSImage] = [:]
     }
