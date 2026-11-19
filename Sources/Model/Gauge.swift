@@ -15,11 +15,24 @@ struct Gauge {
     /// the length of its own windows and a plan can carry a pair that is neither 5 hours nor a
     /// week, which is why the labels are passed in rather than spelled here.
     var labels: (String, String) = ("5h", "7d")
+    /// How much of each window's time is left, 0…1, or nil for a window with no clock. A window
+    /// with one gets the line where even spending would be, and its spent part hatched.
+    var timeLeft: (Double?, Double?) = (nil, nil)
 
     /// Everything that changes what the bars look like, in one string — the part of the cache key
     /// for a composed menu bar icon that this type owns.
     var signature: String {
-        rows.map { "\($0.0)\(($0.1 * 100).rounded().clampedInt)" }.joined(separator: ",")
+        zip(rows, marks).map { row, mark in
+            "\(row.0)\((row.1 * 100).rounded().clampedInt)"
+                + (mark.map { "|\(($0 * 100).rounded().clampedInt)" } ?? "")
+        }.joined(separator: ",")
+    }
+
+    /// The time left for each of `rows`, in the same order.
+    private var marks: [Double?] {
+        zip([fiveHour, sevenDay], [timeLeft.0, timeLeft.1]).compactMap { value, mark in
+            value == nil ? nil : .some(mark)
+        }
     }
 
     var rows: [(String, Double)] {
@@ -31,8 +44,11 @@ struct Gauge {
 
     // Geometry is the width budget, so it lives in one place. The menu bar is not elastic: an
     // item that does not fit is not clipped, it is parked off-screen behind the overflow
-    // chevron. Labelled bars cost about 45pt beside the icon.
-    static let barW: CGFloat = 20, barH: CGFloat = 3
+    // chevron. Labelled bars cost about 57pt beside the icon. They were 20 by 3 points, which
+    // has no room for a hatch or for a line that can be told from the bar's end.
+    static let barW: CGFloat = 32, barH: CGFloat = 6
+    /// Half the slot cut for the line, and how far the line stands clear of either end.
+    static let markSlot: CGFloat = 1.5
     static let labelW: CGFloat = 15, labelGap: CGFloat = 3
     static let rowH: CGFloat = 9, rowGap: CGFloat = 2
     static let sideInset: CGFloat = 3, iconGap: CGFloat = 5
@@ -143,25 +159,8 @@ struct Gauge {
 
                 let barX = x + Gauge.labelW + Gauge.labelGap
                 let barY = y + ((Gauge.rowH - Gauge.barH) / 2).rounded()
-                let radius = Gauge.barH / 2
-                let track = NSBezierPath(roundedRect: NSRect(x: barX, y: barY,
-                                                             width: Gauge.barW,
-                                                             height: Gauge.barH),
-                                         xRadius: radius, yRadius: radius)
-                NSColor.labelColor.withAlphaComponent(0.30).setFill()
-                track.fill()
-                // The fill is a straight-edged rect clipped by the track capsule — the way the
-                // system battery gauge draws its charge. A rounded fill of its own eats the
-                // width of small values: at 18% a 3.6pt capsule with 1.5pt corners reads as a
-                // dot, and the honest number looks like 5%.
-                let filled = Gauge.fillWidth(row.1)
-                if filled > 0 {
-                    NSGraphicsContext.current?.saveGraphicsState()
-                    track.setClip()
-                    (colour ?? NSColor.labelColor).setFill()
-                    NSRect(x: barX, y: barY, width: filled, height: Gauge.barH).fill()
-                    NSGraphicsContext.current?.restoreGraphicsState()
-                }
+                Gauge.drawBar(in: NSRect(x: barX, y: barY, width: Gauge.barW, height: Gauge.barH),
+                              used: row.1, timeLeft: marks[i], ink: colour ?? NSColor.labelColor)
             }
             return true
         }
@@ -169,8 +168,76 @@ struct Gauge {
         // Drawn bars carry no text the system can read, so without this the item is silent to
         // VoiceOver — a regression against the plain label it replaces.
         image.accessibilityDescription = shown
-            .map { "\(Gauge.spoken($0.0)) limit \(($0.1 * 100).rounded().clampedInt)%" }
+            .map { "\(Gauge.spoken($0.0)) limit \(Gauge.leftPercent($0.1))% left" }
             .joined(separator: ", ")
         return image
+    }
+
+    /// What is left of a window that is `used` (0…1) spent, in whole percents: the figure the
+    /// bar draws and the one the status item reads out.
+    static func leftPercent(_ used: Double) -> Int {
+        ((1 - min(max(used, 0), 1)) * 100).rounded().clampedInt
+    }
+
+    /// One bar, drawn the way the panel draws a limit and the way T3 Code does: the solid part
+    /// is what is left, the hatched part is what has been spent and comes back at the reset, and
+    /// the line is where the solid part would end by now under even spending. A window with no
+    /// clock has neither line nor hatch, because nothing here knows when it comes back.
+    private static func drawBar(in bar: NSRect, used: Double, timeLeft: Double?, ink: NSColor) {
+        guard let ctx = NSGraphicsContext.current else { return }
+        ctx.saveGraphicsState()
+        defer { ctx.restoreGraphicsState() }
+        let track = NSBezierPath(roundedRect: bar, xRadius: 2, yRadius: 2)
+        track.setClip()
+        NSColor.labelColor.withAlphaComponent(0.30).setFill()
+        bar.fill()
+        // The fill is a straight-edged rect clipped by the track — the way the system battery
+        // gauge draws its charge. A rounded fill of its own eats the width of small values.
+        let solid = fillWidth(1 - min(max(used, 0), 1))
+        if timeLeft != nil {
+            ink.withAlphaComponent(0.9).setStroke()
+            let hatch = NSBezierPath()
+            // One device pixel on a 2x screen, four points apart: any denser and the hatch
+            // reads as a second, paler fill at this size.
+            hatch.lineWidth = 0.5
+            // Each line climbs one bar-height to the right, so the first starts a bar-height
+            // before the spent part for its corner to be covered.
+            var x = bar.minX + solid - bar.height
+            while x < bar.maxX {
+                hatch.move(to: NSPoint(x: x, y: bar.minY))
+                hatch.line(to: NSPoint(x: x + bar.height, y: bar.maxY))
+                x += 4
+            }
+            NSBezierPath(rect: NSRect(x: bar.minX + solid, y: bar.minY,
+                                      width: bar.width - solid, height: bar.height)).addClip()
+            hatch.stroke()
+            track.setClip()
+        }
+        ink.setFill()
+        NSRect(x: bar.minX, y: bar.minY, width: solid, height: bar.height).fill()
+        guard let timeLeft else { return }
+        // Every edge lands on a whole device pixel of the screen this is drawn for. On a 1x
+        // display a line placed at a half point is two grey pixels instead of one black one.
+        let scale = max(1, abs(ctx.cgContext.ctm.a))
+        func snap(_ x: CGFloat) -> CGFloat { (x * scale).rounded() / scale }
+        let at = bar.minX + markPosition(timeLeft, width: bar.width, solid: solid)
+        NSRect(x: snap(at - markSlot), y: bar.minY,
+               width: snap(at + markSlot) - snap(at - markSlot), height: bar.height)
+            .fill(using: .clear)
+        NSRect(x: snap(at - 0.5), y: bar.minY, width: 1, height: bar.height).fill()
+    }
+
+    /// Where the line goes along a bar `width` wide, from its left edge: at the time left, held
+    /// half a slot clear of both ends so the slot around it stays on the bar.
+    ///
+    /// With anything left of the window it is held one more point clear of the left end. Near
+    /// the end of a window the line sits at that end, and the slot around it would otherwise
+    /// cover the whole of a small remainder — "nearly out" drawn exactly as "out". The extra
+    /// point leaves a sliver of the solid part in front of the slot. The price is a line up to a
+    /// point to the right of its true place in the last few percent of the window.
+    static func markPosition(_ timeLeft: Double, width: CGFloat, solid: CGFloat,
+                             slot: CGFloat = markSlot) -> CGFloat {
+        let low = slot + (solid > 0 ? min(solid, 1) : 0)
+        return min(max(low, width * timeLeft), width - slot)
     }
 }

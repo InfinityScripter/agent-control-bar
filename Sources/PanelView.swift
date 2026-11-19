@@ -220,9 +220,13 @@ struct PanelView: View {
                         }
                         .foregroundStyle(active ? Color.primary : Color.secondary)
                         if let worst = group.worst {
-                            PanelBar(value: worst.fraction,
-                                     fill: PanelTheme.level(worst.fraction)
-                                        ?? Color.primary.opacity(active ? 0.45 : 0.25),
+                            // What is left, like the tiles. A spent window would leave nothing
+                            // to colour, and that is the one moment the colour matters: it gets
+                            // the whole hairline, faint, in its warning colour.
+                            let tint = PanelTheme.level(worst.fraction)
+                                ?? Color.primary.opacity(active ? 0.45 : 0.25)
+                            PanelBar(value: worst.remaining > 0 ? worst.leftFraction : 1,
+                                     fill: worst.remaining > 0 ? tint : tint.opacity(0.4),
                                      height: 2.5)
                                 .padding(.horizontal, 6)
                         }
@@ -238,7 +242,7 @@ struct PanelView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(active ? [.isSelected] : [])
-                .accessibilityLabel(group.tip + (group.worst.map { ", fullest window \($0.used)%" } ?? ""))
+                .accessibilityLabel(group.tip + (group.worst.map { ", lowest window \($0.remaining)% left" } ?? ""))
                 .help(group.tip)
             }
         }
@@ -371,13 +375,15 @@ struct PanelLimitTile: View {
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
                 .textCase(.uppercase)
-            HStack(alignment: .firstTextBaseline, spacing: 3) {
-                Text("\(limit.used)%")
-                    .font(.system(size: 14, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(level ?? Color.primary)
-                Spacer(minLength: 0)
+            // With three windows in a row a cell is too narrow for the word, and the figure
+            // and the arrow are what it must not lose.
+            ViewThatFits(in: .horizontal) {
+                figure(level: level, worded: true, arrow: true)
+                figure(level: level, worded: false, arrow: true)
+                figure(level: level, worded: false, arrow: false)
             }
-            PanelBar(value: limit.fraction, fill: tint)
+            PanelLimitBar(left: limit.leftFraction, fill: tint, refills: limit.resets != nil,
+                          mark: limit.paceMark)
                 .padding(.top, 2)
             Text(limit.resets.map { "in \($0)" } ?? "—")
                 .font(.system(size: 9).monospacedDigit())
@@ -392,10 +398,40 @@ struct PanelLimitTile: View {
         .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
             .fill(PanelTheme.wellFill(scheme)))
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel([limit.title, limit.badge, "\(limit.used)% used",
+        .accessibilityLabel([limit.title, limit.badge, "\(limit.remaining)% left", limit.paceNote,
                              limit.resets.map { "resets in \($0)" }]
             .compactMap { $0 }.joined(separator: ", "))
-        .help(limit.resets.map { "Resets in \($0)" } ?? limit.title)
+        .help(limit.tip)
+    }
+
+    /// What is left, and which side of even spending the window is on: the same three-way answer
+    /// the line on the bar gives, for a reader who has not learned the line yet.
+    private func figure(level: Color?, worded: Bool, arrow: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 3) {
+            // Its full width or the next shape down: a figure cut to "10…" is a wrong number.
+            Text("\(limit.remaining)%")
+                .font(.system(size: 14, weight: .semibold).monospacedDigit())
+                .foregroundStyle(level ?? Color.primary)
+                .fixedSize()
+            if worded {
+                Text("left").font(.system(size: 9)).foregroundStyle(.secondary).fixedSize()
+            }
+            if arrow, let pace = limit.pace {
+                Image(systemName: Self.paceGlyph(pace))
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .lineLimit(1)
+    }
+
+    private static func paceGlyph(_ pace: LimitPace) -> String {
+        switch pace {
+        case .ahead: return "arrow.up.right"
+        case .on:    return "arrow.right"
+        case .under: return "arrow.down.right"
+        }
     }
 }
 

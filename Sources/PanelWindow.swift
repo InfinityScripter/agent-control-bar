@@ -234,8 +234,9 @@ extension StatusController {
                 lines.append("  \(group.tip)"
                     + (hidden ? "  [behind the switcher]" : ""))
                 for limit in group.limits {
-                    lines.append("    \(limit.title)\(limit.badge.map { " [\($0)]" } ?? "") \(limit.used)%"
-                        + (limit.resets.map { "  resets in \($0)" } ?? ""))
+                    lines.append("    \(limit.title)\(limit.badge.map { " [\($0)]" } ?? "") \(limit.remaining)% left"
+                        + (limit.resets.map { "  resets in \($0)" } ?? "")
+                        + (limit.paceNote.map { "  \($0)" } ?? ""))
                 }
             }
         }

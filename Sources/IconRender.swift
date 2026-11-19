@@ -113,7 +113,7 @@ extension StatusController {
                 description += ". " + LimitsStatus.menuBarTip
             } else if !gauge.isEmpty {
                 description += render.agent.reserve ? ", Reserve: " : ", limits: "
-                description += gauge.rows.map { "\(Gauge.spoken($0.0)) \(($0.1 * 100).rounded().clampedInt)%" }.joined(separator: ", ")
+                description += gauge.rows.map { "\(Gauge.spoken($0.0)) \(Gauge.leftPercent($0.1))% left" }.joined(separator: ", ")
             }
             descriptions.append(description)
         }
