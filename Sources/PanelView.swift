@@ -220,9 +220,13 @@ struct PanelView: View {
                         }
                         .foregroundStyle(active ? Color.primary : Color.secondary)
                         if let worst = group.worst {
-                            PanelBar(value: worst.leftFraction,
-                                     fill: PanelTheme.level(worst.fraction)
-                                        ?? Color.primary.opacity(active ? 0.45 : 0.25),
+                            // What is left, like the tiles. A spent window would leave nothing
+                            // to colour, and that is the one moment the colour matters: it gets
+                            // the whole hairline, faint, in its warning colour.
+                            let tint = PanelTheme.level(worst.fraction)
+                                ?? Color.primary.opacity(active ? 0.45 : 0.25)
+                            PanelBar(value: worst.remaining > 0 ? worst.leftFraction : 1,
+                                     fill: worst.remaining > 0 ? tint : tint.opacity(0.4),
                                      height: 2.5)
                                 .padding(.horizontal, 6)
                         }
@@ -374,8 +378,9 @@ struct PanelLimitTile: View {
             // With three windows in a row a cell is too narrow for the word, and the figure
             // and the arrow are what it must not lose.
             ViewThatFits(in: .horizontal) {
-                figure(level: level, worded: true)
-                figure(level: level, worded: false)
+                figure(level: level, worded: true, arrow: true)
+                figure(level: level, worded: false, arrow: true)
+                figure(level: level, worded: false, arrow: false)
             }
             PanelLimitBar(left: limit.leftFraction, fill: tint, refills: limit.resets != nil,
                           mark: limit.paceMark)
@@ -401,15 +406,17 @@ struct PanelLimitTile: View {
 
     /// What is left, and which side of even spending the window is on: the same three-way answer
     /// the line on the bar gives, for a reader who has not learned the line yet.
-    private func figure(level: Color?, worded: Bool) -> some View {
+    private func figure(level: Color?, worded: Bool, arrow: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 3) {
+            // Its full width or the next shape down: a figure cut to "10…" is a wrong number.
             Text("\(limit.remaining)%")
                 .font(.system(size: 14, weight: .semibold).monospacedDigit())
                 .foregroundStyle(level ?? Color.primary)
+                .fixedSize()
             if worded {
-                Text("left").font(.system(size: 9)).foregroundStyle(.secondary)
+                Text("left").font(.system(size: 9)).foregroundStyle(.secondary).fixedSize()
             }
-            if let pace = limit.pace {
+            if arrow, let pace = limit.pace {
                 Image(systemName: Self.paceGlyph(pace))
                     .font(.system(size: 8, weight: .semibold))
                     .foregroundStyle(.secondary)

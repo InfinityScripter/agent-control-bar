@@ -207,6 +207,10 @@ struct PanelLimitBar: View {
             let width = geo.size.width
             let solid = Gauge.fillWidth(left, trackWidth: width, scale: displayScale)
             let at = markOffset(in: width)
+            // Gauge.markSlotStart, shared with the menu bar's bars: the slot never cuts into a
+            // small remainder that ends before the line.
+            let slotStart = at.map { Gauge.markSlotStart(at: $0, solid: solid, slot: Self.slot) }
+            let slotWidth = at.flatMap { at in slotStart.map { at + Self.slot - $0 } } ?? 0
             ZStack(alignment: .leading) {
                 PanelTheme.track(scheme)
                 if refills {
@@ -221,8 +225,8 @@ struct PanelLimitBar: View {
             // the hatch and the bare track alike.
             .mask(alignment: .leading) {
                 HStack(spacing: 0) {
-                    Rectangle().frame(width: at.map { $0 - Self.slot })
-                    Color.clear.frame(width: at == nil ? 0 : Self.slot * 2)
+                    Rectangle().frame(width: slotStart)
+                    Color.clear.frame(width: slotWidth)
                     Rectangle()
                 }
             }

@@ -216,10 +216,23 @@ struct Gauge {
         ink.setFill()
         NSRect(x: bar.minX, y: bar.minY, width: solid, height: bar.height).fill()
         guard let timeLeft else { return }
-        // Half points: whole device pixels on the 2x screens this is drawn on, so the slot's
-        // edges and the line stay sharp.
-        let at = bar.minX + (min(max(markSlot, bar.width * timeLeft), bar.width - markSlot) * 2).rounded() / 2
-        NSRect(x: at - markSlot, y: bar.minY, width: markSlot * 2, height: bar.height).fill(using: .clear)
-        NSRect(x: at - 0.5, y: bar.minY, width: 1, height: bar.height).fill()
+        // Every edge lands on a whole device pixel of the screen this is drawn for. On a 1x
+        // display a line placed at a half point is two grey pixels instead of one black one.
+        let scale = max(1, abs(ctx.cgContext.ctm.a))
+        func snap(_ x: CGFloat) -> CGFloat { (x * scale).rounded() / scale }
+        let at = min(max(markSlot, bar.width * timeLeft), bar.width - markSlot)
+        let slot = markSlotStart(at: at, solid: solid)
+        NSRect(x: snap(bar.minX + slot), y: bar.minY,
+               width: snap(bar.minX + at + markSlot) - snap(bar.minX + slot), height: bar.height)
+            .fill(using: .clear)
+        NSRect(x: snap(bar.minX + at - 0.5), y: bar.minY, width: 1, height: bar.height).fill()
+    }
+
+    /// Where the slot around the line begins, from the bar's left edge. Normally half a slot
+    /// before the line. But a solid part that ends at or before the line is never cut into:
+    /// with a few percent left near the end of a window the line sits at the bar's left end,
+    /// and a slot cut there would wipe the whole remainder — "nearly out" drawn as "out".
+    static func markSlotStart(at: CGFloat, solid: CGFloat, slot: CGFloat = markSlot) -> CGFloat {
+        solid <= at ? max(at - slot, solid) : at - slot
     }
 }

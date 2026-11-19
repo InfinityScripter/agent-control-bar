@@ -1584,8 +1584,19 @@ do {
     check(half.signature != Gauge(fiveHour: 0.5, sevenDay: nil).signature
             && half.signature != Gauge(fiveHour: 0.5, sevenDay: nil, timeLeft: (0.5, nil)).signature,
           "the line is part of what the cached icon is keyed by")
-    check(half.image(icon: nil).accessibilityDescription == "5 hour limit 50% left",
-          "and VoiceOver hears what is left, as the bar shows")
+    check(Gauge(fiveHour: 0.34, sevenDay: nil).image(icon: nil).accessibilityDescription
+            == "5 hour limit 66% left",
+          "and VoiceOver hears what is left, as the bar shows, not what is used")
+
+    // A few percent left with the window nearly over: the line sits at the bar's left end, and a
+    // slot cut around it there would wipe the remainder — "nearly out" drawn as "out".
+    let nearlyOut = gaugeRowAlphas(Gauge(fiveHour: 0.95, sevenDay: nil, timeLeft: (0.02, nil)))
+    check(nearlyOut.prefix(3).allSatisfy { $0 > 0.6 },
+          "the slot never cuts into a small remainder that ends before the line")
+    check(Gauge.markSlotStart(at: 10, solid: 20) == 10 - Gauge.markSlot
+            && Gauge.markSlotStart(at: 10, solid: 4) == 10 - Gauge.markSlot
+            && Gauge.markSlotStart(at: 10, solid: 9.5) == 9.5,
+          "elsewhere the slot is where it always is: half its width before the line")
 }
 
 let redIcon = NSImage(size: NSSize(width: 4, height: 4), flipped: false) { rect in
@@ -2501,6 +2512,9 @@ check(weekWindow(used: 24, daysLeft: 5.5).pace(at: paceNow) == .on,
       "within five points of the clock is on pace")
 check(weekWindow(used: 10, daysLeft: 5.5).pace(at: paceNow) == .under,
       "and well behind it leaves headroom")
+check(weekWindow(used: 16, daysLeft: 5.5).pace(at: paceNow) == .under
+        && weekWindow(used: 17, daysLeft: 5.5).pace(at: paceNow) == .on,
+      "the margin is the same five points on the slow side: 5.43 behind is under, 4.43 is on pace")
 // The week is 21.43% gone. Against the rounded 21, 27% used and 26% used would be gaps of 6 and
 // 5; against the clock itself they are 5.57 and 4.57, and that is what is compared.
 check(weekWindow(used: 27, daysLeft: 5.5).pace(at: paceNow) == .ahead,
@@ -3724,6 +3738,10 @@ do {
     let icon = both.gauge(at: now)
     check(icon.fiveHour == 0.4 && icon.sevenDay == 0.7 && icon.labels == ("5h", "7d"),
           "the icon draws Claude's pair when Claude has one")
+    // The line on each bar comes from the window's own clock, so both have to arrive with it.
+    let clocks = claude.windows.map { $0.timeLeftPercent(at: now).map { Double($0) / 100 } }
+    check(clocks.count >= 2 && icon.timeLeft.0 == clocks[0] && icon.timeLeft.1 == clocks[1],
+          "and each bar is handed the time left in its own window, for the line")
     let codexIcon = LimitsBoard(claude: fableOnly, codex: codex).gauge(at: now)
     check(codexIcon.fiveHour == 0.1 && codexIcon.sevenDay == 0.2,
           "a Claude plan with only Fable leaves the icon to Codex rather than blank")
