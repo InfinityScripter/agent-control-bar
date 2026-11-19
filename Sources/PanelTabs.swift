@@ -226,10 +226,25 @@ struct PanelSessionRow: View {
                                 if !session.tag.isEmpty { PanelTag(text: session.tag).fixedSize() }
                             }
                             HStack(spacing: 5) {
-                                Text(session.activityText)
-                                    .font(.system(size: 11, weight: session.eff == "permission" ? .semibold : .regular))
-                                    .foregroundStyle(session.eff == "permission" ? .primary : .secondary)
-                                    .lineLimit(1)
+                                // Two texts, not `activityText` in one. In one, a long branch cut
+                                // the line from its end: "codex/release-0.28.0 · Running co…",
+                                // and the status and the clock are what the line is read for. So
+                                // the branch gives way, from its middle, and they keep their
+                                // width. By priority rather than a fixed size: the status word
+                                // is the hook's label or one of the thinking words, and a long
+                                // one held rigid would push the service tag off the row. Digits
+                                // of one width, or the clock would move the branch's cut every
+                                // second; it still moves when the clock gains a digit.
+                                HStack(spacing: 0) {
+                                    if !session.branch.isEmpty {
+                                        Text(session.branch).truncationMode(.middle)
+                                        Text(" · ").layoutPriority(1)
+                                    }
+                                    Text(session.progressText).monospacedDigit().layoutPriority(1)
+                                }
+                                .font(.system(size: 11, weight: session.eff == "permission" ? .semibold : .regular))
+                                .foregroundStyle(session.eff == "permission" ? .primary : .secondary)
+                                .lineLimit(1)
                                 if let service = session.serviceLabel {
                                     PanelTag(text: service).fixedSize()
                                 }

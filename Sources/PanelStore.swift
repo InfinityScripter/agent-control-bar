@@ -394,8 +394,12 @@ struct PanelSession: Equatable, Identifiable {
     }
 
     var activityText: String {
-        [branch, status, elapsed].compactMap { $0 }.filter { !$0.isEmpty }
-            .joined(separator: " · ")
+        [branch, progressText].filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    /// What the session is doing and for how long: the half of the line a row keeps whole.
+    var progressText: String {
+        [status, elapsed].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
     }
 }
 
