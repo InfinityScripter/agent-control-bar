@@ -77,12 +77,13 @@ extension StatusController {
         let now = Date().timeIntervalSince1970
         pollClaudeLimits(now: now)
         pollCodexLimits(now: now)
+        pollServiceUsage(now: Date(timeIntervalSince1970: now))
     }
 
     func pollCodexLimits(now: Double) {
         guard codexLimits, codexInstalled, codexLimitsPoll.begin(now: now) else { return }
         codexLimitsTimer?.fireDate = Date(timeIntervalSince1970: now + 300)
-        runQuietCommand(.limits(provider: "codex")) { [weak self] in
+        runQuietCommand(.limits(provider: "codex")) { [weak self] _ in
             self?.codexLimitsPoll.finish()
             self?.loadCodexLimits()
             self?.loadCodexLimitsStatus()
@@ -129,12 +130,12 @@ extension StatusController {
     /// Run one backend command for the file it writes and nothing else. Not routed through runBackend:
     /// that toggles mcpBusy and re-reads mcp.json, and a poll that only rewrites its own file
     /// has nothing to say about either — the tick's mtime gate picks the file up.
-    func runQuietCommand(_ command: BackendCommand, then done: (() -> Void)? = nil) {
-        guard !backend(for: command).script.isEmpty else { done?(); return }
+    func runQuietCommand(_ command: BackendCommand, then done: ((Bool) -> Void)? = nil) {
+        guard !backend(for: command).script.isEmpty else { done?(false); return }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
-            self.spawnBackend(command)
-            if let done { DispatchQueue.main.async(execute: done) }
+            let succeeded = self.spawnBackend(command)
+            if let done { DispatchQueue.main.async { done(succeeded) } }
         }
     }
 
@@ -145,11 +146,31 @@ extension StatusController {
 
     func pollCodexAttention(now: Double) {
         guard codexAttentionPoll.begin(now: now, sessions: Array(sessions.values), pidAlive: pidAlive) else { return }
-        runQuietCommand(.codexAttention) { [weak self] in
+        runQuietCommand(.codexAttention) { [weak self] _ in
             guard let self else { return }
             self.codexAttentionPoll.finish()
             self.loadCodexAttention()
             self.evaluate()
+            self.refreshCounts()
+        }
+    }
+
+    func refreshCodexHistory() {
+        guard codexHistory != .loading else { return }
+        codexHistory = .loading
+        refreshCounts()
+        runQuietCommand(.codexHistory) { [weak self] succeeded in
+            guard let self else { return }
+            let path = (self.root as NSString).appendingPathComponent("codex/history.json")
+            let history = succeeded ? FileManager.default.contents(atPath: path)
+                .flatMap { try? JSONDecoder().decode(CodexHistory.self, from: $0) } : nil
+            if let history, history.error == nil {
+                let canOpen = history.codexHome == self.codexHome
+                    && NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.codexBundleID) != nil
+                self.codexHistory = .loaded(history, canOpenInCodex: canOpen)
+            } else {
+                self.codexHistory = .failed(upgradeRequired: history?.error == "upgrade_required")
+            }
             self.refreshCounts()
         }
     }
@@ -161,7 +182,8 @@ extension StatusController {
     /// NameError, unnoticed. Read into a pipe (not inherited: a GUI process's stderr is the
     /// system log, where it is nobody's) and surfaced only on a non-zero exit, so a healthy run
     /// stays quiet.
-    func spawnBackend(_ command: BackendCommand) {
+    @discardableResult
+    func spawnBackend(_ command: BackendCommand) -> Bool {
         let backend = self.backend(for: command)
         let arguments = command.arguments
         let task = Process()
@@ -192,8 +214,10 @@ extension StatusController {
                 NSLog("ClaudeControlBar: mcpbar.py \(arguments.joined(separator: " ")) exited"
                       + " \(task.terminationStatus): \(text)")
             }
+            return task.terminationReason == .exit && task.terminationStatus == 0
         } catch {
             NSLog("ClaudeControlBar: \(backend.python) failed: \(error)")
+            return false
         }
     }
 

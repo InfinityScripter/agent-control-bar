@@ -17,6 +17,7 @@ MCP-картину ведёт этот скрипт (mcp.json), рисует в�
     claude-login     открыть Terminal с `claude auth login` — кнопка «Sign in» в панели
     codex-limits     получить текущую квоту Codex; rollout — запасной источник
     codex-attention  снять живое ожидание разрешения Codex и переписать codex/attention.json
+    codex-history    прочитать последние сессии Codex и переписать codex/history.json
     codex-mcp        серверы MCP Codex: refresh | toggle-server | toggle-tool
     codex-hooks      спросить Codex, каким нашим хукам он не доверяет; approve — одобрить их
     doctor           проверить окружение и показать, что откуда берётся
@@ -2126,6 +2127,12 @@ def main(argv):
         print(codex.fetch_codex_limits())
     elif command == "codex-attention":
         print(codex.fetch_codex_attention())
+    elif command == "codex-history":
+        try:
+            codex.fetch_codex_history()
+        except OSError:
+            print("Could not save Codex history", file=sys.stderr)
+            return 1
     elif command == "codex-hooks":
         print(codex.approve_codex_hooks() if rest[:1] == ["approve"] else codex.fetch_codex_hooks())
     elif command == "codex-mcp":

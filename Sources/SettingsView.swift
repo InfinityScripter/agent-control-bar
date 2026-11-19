@@ -195,6 +195,24 @@ private struct GeneralSettings: View {
                 Text(Self.exactFocusFooter)
             }
             Section {
+                ForEach(ModelService.allCases) { service in
+                    Toggle(service.title, isOn: store.modelServiceVisible(service))
+                }
+            } header: {
+                Text("Model services")
+            } footer: {
+                Text("Choose the services shown in sessions, history, and account limits.")
+            }
+            Section {
+                ForEach(ServiceUsageBoard.services) { service in
+                    serviceAccountRow(service)
+                }
+            } header: {
+                Text("Connected accounts")
+            } footer: {
+                Text("Keys stay in macOS Keychain. Enabled accounts refresh every five minutes or when you open the panel. Hide a service to pause its checks.")
+            }
+            Section {
                 Toggle("Limits via Anthropic API", isOn: store.oauthLimits)
                 if !store.limitsPollStatus.isEmpty {
                     Text(store.limitsPollStatus)
@@ -228,6 +246,39 @@ private struct GeneralSettings: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private func serviceAccountRow(_ service: ModelService) -> some View {
+        let account = store.serviceAccount(service)
+        let visible = store.modelServiceVisible(service).wrappedValue
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(service == .zai ? "Z.ai Personal Coding Plan" : "DeepSeek balance")
+                    .fontWeight(.medium)
+                Spacer()
+                Button(account.status.hasKey ? "Replace key…" : "Set key…") { store.editServiceKey(service) }
+                if account.status.hasKey || !visible || account.status == .failed(.keychainUnavailable) {
+                    Button("Remove key") { store.removeServiceKey(service) }
+                }
+                Button("Refresh") { store.refreshServiceUsage(service) }
+                    .disabled(!visible || account.request != nil)
+            }
+            Text(serviceAccountStatus(account, visible: visible))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func serviceAccountStatus(_ account: ServiceUsageBoard.Account, visible: Bool) -> String {
+        if !visible { return "Hidden. Account checks are paused." }
+        if account.request != nil { return "Checking account…" }
+        switch account.status {
+        case .unknown, .notConfigured: return "Set a key to show account figures."
+        case .keySaved: return "Key saved in macOS Keychain."
+        case .ready(_, let measuredAt):
+            return "Updated " + measuredAt.formatted(.relative(presentation: .named))
+        case .failed(let error): return error.message
+        }
     }
 }
 

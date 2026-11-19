@@ -83,6 +83,27 @@ const CODEX_SURFACES = {
 // truncated line handed to JSON.parse.
 const CODEX_META_BYTES = 524288;
 
+// The two hooks are installed as separate scripts and classify the same endpoint.
+function claudeModelService() {
+  if (["BEDROCK", "VERTEX", "FOUNDRY"].some((host) => process.env[`CLAUDE_CODE_USE_${host}`] === "1")) {
+    return "custom";
+  }
+  const base = process.env.ANTHROPIC_BASE_URL;
+  if (!base) return "anthropic";
+  try {
+    const url = new URL(base);
+    if (url.protocol !== "https:") return "custom";
+    switch (url.hostname) {
+      case "api.anthropic.com": return "anthropic";
+      case "api.deepseek.com": return "deepseek";
+      case "api.z.ai":
+      case "open.bigmodel.cn": return "zai";
+      case "openrouter.ai": return "openrouter";
+    }
+  } catch {}
+  return "custom";
+}
+
 const codexMeta = (transcript) => {
   if (!transcript) return { surface: "", worker: false };
   let fd;
@@ -96,8 +117,10 @@ const codexMeta = (transcript) => {
     // whole read is the line) against a line that does not end inside what we took.
     if (end === -1 && read < fs.fstatSync(fd).size) return { surface: "", worker: false };
     const meta = (JSON.parse(end === -1 ? text : text.slice(0, end)) || {}).payload || {};
+    const service = typeof meta.model_provider === "string" ? meta.model_provider.trim().toLowerCase() : "";
     return {
       surface: CODEX_SURFACES[meta.originator] || "",
+      modelService: ["openai", "deepseek", "zai", "openrouter"].includes(service) ? service : service && "custom",
       // Anything that is not the user's own thread is somebody's worker: `subagent` and
       // `guardian_review` both appear in this machine's rollouts. A missing field is an older
       // Codex that had no workers at all, so it counts as the user's.
@@ -183,7 +206,17 @@ function run() {
       // started:false — a merely-opened conversation seeds this for launch + liveness but stays out of
       // the dropdown until it has real activity (update.js flips started:true on a prompt/tool).
       const seed = { state: "idle", label: "", tool: "", project: cwd ? path.basename(cwd) : "", cwd, sessionId: id, transcript, entrypoint: process.env.CLAUDE_CODE_ENTRYPOINT || "", term_program: process.env.TERM_PROGRAM || "", term_bundle: process.env.__CFBundleIdentifier || "", tty: ttyDev(), pid: process.ppid, started: false, startedAt: 0, ts: Math.floor(Date.now() / 1000) };
-      if (codex) { seed.provider = "codex"; seed.surface = meta.surface; }
+      if (codex) {
+        seed.provider = "codex";
+        seed.surface = meta.surface;
+        let modelService = meta.modelService;
+        if (!modelService) {
+          try { modelService = JSON.parse(fs.readFileSync(statePath, "utf8")).modelService; } catch {}
+        }
+        if (modelService) seed.modelService = modelService;
+      } else {
+        seed.modelService = claudeModelService();
+      }
       writeAtomic(statePath, seed);
     } catch {}
     if (!resumed || !fs.existsSync(path.join(dir, "quit-intent"))) {

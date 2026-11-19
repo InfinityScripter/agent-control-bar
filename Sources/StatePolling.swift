@@ -131,7 +131,7 @@ extension StatusController {
 
     /// The panel's limits: both agents' figures minus whichever the agent setting leaves out.
     var limitsBoard: LimitsBoard {
-        agentDisplay.limits(claude: limits?.set, codex: codexWindows, forBar: false)
+        agentDisplay.limits(claude: limits?.set, codex: codexWindows, forBar: false, hiding: hiddenModelServices)
     }
 
     // Refresh `sessions` from the state directories; SessionBoard re-parses only the files whose
@@ -185,7 +185,8 @@ extension StatusController {
         let agents = agentDisplay
         let rules = SessionBoard.Rules(soundThreshold: soundThreshold, stalePruneAge: stalePruneAge,
                                        thinkingWords: thinkingWords, needsYou: !needsYouSound.isEmpty,
-                                       leads: agents.barProviders, cues: agents.panelProviders)
+                                       leads: agents.barProviders, cues: agents.panelProviders,
+                                       hiddenModelServices: hiddenModelServices)
         let tick = board.tick(now: now, rules: rules, pidAlive: pidAlive,
                               frontmost: { NSWorkspace.shared.frontmostApplication?.bundleIdentifier },
                               owner: { [self] session in

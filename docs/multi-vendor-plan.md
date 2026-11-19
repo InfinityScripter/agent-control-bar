@@ -4,6 +4,14 @@
 не запускалось). Сравнение с Orca по жизненному циклу сессий — в
 `.autopilot/2026-10-21-stale-sessions/orca-comparison.md`.
 
+Обновление 2026-11-19. В 0.28.0 добавлена поддержка сервисов моделей внутри Claude Code и Codex.
+Сервис определяется по адресу API в Claude Code или идентификатору провайдера в Codex. Агент
+продолжает отвечать за состояние сессии и переход к ней. [Возможности в T3 Code](https://github.com/pingdotgg/t3code/blob/main/docs/orchestration-v2/README.md) · [Фильтры Herdr](https://github.com/herdrdev/herdr/blob/ee5bfb5041bb3e4a49d591c72308aae3c81ecdde/src/agent_view_eval.rs)
+
+Баланс DeepSeek читается через официальный API. Для Z.ai используется маршрут официального
+плагина Personal Coding Plan и схема Orca для защиты ключа и проверки актуальности ответа.
+[DeepSeek](https://api-docs.deepseek.com/api/get-user-balance/) · [Плагин Z.ai](https://docs.z.ai/devpack/extension/usage-query-plugin) · [Реализация Orca](https://github.com/stablyai/orca/blob/6b2a4eb7e283be98a9eced1b4a268fa7c9e3dea9/src/main/rate-limits/providers/zcode/zcode-usage-fetcher.ts)
+
 ## Что взять у t3code и Orca
 
 **t3code** сам запускает агентов и говорит с ними по протоколу (Claude Agent SDK, `codex app-server`,
@@ -29,9 +37,8 @@ ACP, HTTP OpenCode). Сессии, начатые в терминале поль
 | C. Плагин, а не хук | OpenCode (JS-плагин), Amp, Hermes, Pi | Свой файл плагина, который вызывает `update.js`. Отдельная работа на агента |
 | D. Только процесс | Aider, Goose, Cline, Crush, Continue и др. | Хуков нет. Можно показать «запущен» по процессу, без состояния. Не делаем в первой волне |
 
-Лимиты кроме Claude и Codex у всех идут через недокументированные HTTP-эндпоинты с локальным
-OAuth-токеном (Cursor, Gemini, Grok, Kimi, Z.ai, OpenCode Go) — это отдельный риск (токен
-пользователя, чужой API без договора). В первую волну не входит.
+У каждого нового агента свой источник показателей. Для этой части сначала проверяем официальный
+контракт, вид ключа и доступность нужных показателей.
 
 MCP-переключатели: ни t3code, ни Orca не умеют их для других агентов. Не входит.
 

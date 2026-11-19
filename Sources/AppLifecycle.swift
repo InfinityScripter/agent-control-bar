@@ -133,7 +133,10 @@ extension StatusController {
     // under the model check; the two slow probes that get the last word run here.
     func checkLifecycle() {
         let inUse = settingsWindow?.isVisible == true || panelIsOpen
-        guard idleQuit.step(now: Date(), inUse: inUse, needed: sessionCount() > 0 || desktopRunning)
+        let monitorsAccount = ServiceUsageBoard.services.contains {
+            !hiddenModelServices.contains($0) && serviceUsage[$0].status.hasKey
+        }
+        guard idleQuit.step(now: Date(), inUse: inUse, needed: sessionCount() > 0 || desktopRunning || monitorsAccount)
                 == .confirm else { return }
         // The process table gets the last word. A session whose hooks never fired — no node
         // on the PATH, hooks switched off, settings sources that skip the user's file —

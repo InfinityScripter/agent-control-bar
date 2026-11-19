@@ -31,6 +31,8 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// because zero has two meanings otherwise — "all approved" and "never asked" — and Settings
     /// must not report the first when it means the second.
     var codexHooksAnswered = false
+    var codexHistory: CodexHistoryState = .idle
+    var serviceUsage = ServiceUsageBoard()
     var mcpBusy = false
     var recheckTimer: Timer?
     /// How often the MCP picture is rebuilt from scratch in the background. Measured at ~34s a
@@ -244,6 +246,7 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// Which agents the bar and the panel show, as saved, or nil when nobody has picked: the
     /// default then follows whether Codex is installed — see AgentDisplay.resolve.
     var agentChoice: String?
+    var hiddenModelServices: Set<ModelService> = []
     var agentDisplay: AgentDisplay {
         AgentDisplay.resolve(saved: agentChoice, codexInstalled: codexInstalled)
     }
@@ -320,6 +323,7 @@ final class StatusController: NSObject, NSWindowDelegate {
         if let s = d.string(forKey: "limitsLayout"), let l = PanelLimitsLayout(rawValue: s) { limitsLayout = l }
         if let s = d.string(forKey: "limitsProvider") { limitsProvider = s }
         agentChoice = d.string(forKey: "agentDisplay")
+        hiddenModelServices = Set((d.stringArray(forKey: "hiddenModelServices") ?? []).compactMap(ModelService.init(rawValue:)))
         if d.object(forKey: "analytics") != nil { analytics = d.bool(forKey: "analytics") }
         if d.object(forKey: "resetOdds") != nil { resetOddsOn = d.bool(forKey: "resetOdds") }
         loadResetOddsCache()
@@ -357,7 +361,10 @@ final class StatusController: NSObject, NSWindowDelegate {
             [weak self] _ in self?.pollClaudeLimits(now: Date().timeIntervalSince1970)
         }
         codexLimitsTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) {
-            [weak self] _ in self?.pollCodexLimits(now: Date().timeIntervalSince1970)
+            [weak self] _ in
+            let now = Date()
+            self?.pollCodexLimits(now: now.timeIntervalSince1970)
+            self?.pollServiceUsage(now: now)
         }
         pollLimits()
         refreshNotificationAuthStatus()

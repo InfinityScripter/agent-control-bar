@@ -8,8 +8,28 @@ import SwiftUI
 
 struct PanelSessionsTab: View {
     @ObservedObject var store: PanelStore
+    private let showsHistory = State(initialValue: false)
 
     var body: some View {
+        VStack(spacing: 0) {
+            if store.snapshot.offersCodexHistory {
+                Picker("Session view", selection: showsHistory.projectedValue) {
+                    Text("Live").tag(false)
+                    Text("Codex history").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .padding(.top, 8)
+            }
+            if showsHistory.wrappedValue && store.snapshot.offersCodexHistory {
+                PanelCodexHistory(store: store)
+            } else {
+                liveSessions
+            }
+        }
+    }
+
+    private var liveSessions: some View {
         VStack(spacing: 0) {
             // Above the list, not below it: it explains what the list is missing, and an empty tab
             // is short enough that a line under "No session running" reads as an afterthought.
@@ -21,21 +41,32 @@ struct PanelSessionsTab: View {
             if store.snapshot.sessions.isEmpty {
                 emptyState
             } else {
-                PanelSectionTitle(text: "Running") {
-                    Text("\(store.snapshot.sessions.count)")
-                        .font(.system(size: 10).monospacedDigit())
-                        .foregroundStyle(.tertiary)
-                }
-                PanelCard {
-                    VStack(spacing: 0) {
-                        ForEach(Array(store.snapshot.sessions.enumerated()), id: \.element.id) { i, session in
-                            if i > 0 { PanelHairline() }
-                            PanelSessionRow(session: session, store: store).panelEntrance(i)
-                        }
+                ForEach(SessionActivityGroup.allCases, id: \.self) { group in
+                    let rows = store.snapshot.sessions.filter { $0.activityGroup == group }
+                    if !rows.isEmpty {
+                        sessionGroup(group, rows: rows)
                     }
                 }
             }
             if store.snapshot.codexHooksBlocked { codexHooksBlock }
+        }
+    }
+
+    private func sessionGroup(_ group: SessionActivityGroup, rows: [PanelSession]) -> some View {
+        VStack(spacing: 0) {
+            PanelSectionTitle(text: group.rawValue) {
+                Text("\(rows.count)")
+                    .font(.system(size: 10).monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            PanelCard {
+                VStack(spacing: 0) {
+                    ForEach(Array(rows.enumerated()), id: \.element.id) { i, session in
+                        if i > 0 { PanelHairline() }
+                        PanelSessionRow(session: session, store: store).panelEntrance(i)
+                    }
+                }
+            }
         }
     }
 
@@ -194,17 +225,21 @@ struct PanelSessionRow: View {
                                 }
                                 if !session.tag.isEmpty { PanelTag(text: session.tag).fixedSize() }
                             }
-                            Text(session.activityText)
-                                .font(.system(size: 11, weight: session.eff == "permission" ? .semibold : .regular))
-                                .foregroundStyle(session.eff == "permission" ? .primary : .secondary)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
+                            HStack(spacing: 5) {
+                                Text(session.activityText)
+                                    .font(.system(size: 11, weight: session.eff == "permission" ? .semibold : .regular))
+                                    .foregroundStyle(session.eff == "permission" ? .primary : .secondary)
+                                    .lineLimit(1)
+                                if let service = session.serviceLabel {
+                                    PanelTag(text: service).fixedSize()
+                                }
+                            }
                         }
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help(session.questionLabel == nil ? "Click to bring this session's window to the front"
+                .help(session.questionLabel == nil ? "Bring this session’s app to the front"
                                                   : Session.asyncQuestionHint)
 
                 Button { store.toggleExpanded(session.id) } label: {

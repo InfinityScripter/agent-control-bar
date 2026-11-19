@@ -7,7 +7,7 @@ extension StatusController {
     func renderMenuBar(now: Double) {
         var agents = MenuBarAgent.shown(agentDisplay, board: board, claude: limits?.set,
                                        claudeStatus: limitsStatus, oauthLimits: oauthLimits,
-                                       codex: codexWindows, now: now)
+                                       codex: codexWindows, now: now, hiding: hiddenModelServices)
         if agents.isEmpty {
             agents = [MenuBarAgent(provider: .claude, lead: nil, mood: .sleeping, working: 0, gauge: Gauge())]
         }

@@ -248,17 +248,16 @@ extension StatusController {
                     + (hooks.hint.map { " — \($0)" } ?? "")
                     + (hooks.checking ? "  [checking]" : ""))
             }
-            for session in snapshot.sessions {
-                // session.subtitle, not a second spelling of it: the row draws that exact sentence, and
-                // the point of this dump is to say what the row says.
-                lines.append("  \(session.name) · \(session.subtitle)"
-                    + (session.pct.map { "  ctx \(session.assumed ? "~" : "")\($0)%" } ?? "")
-                    + (session.tag.isEmpty ? "" : "  " + session.tag)
-                    // Where a click on this row would land, when it is the agent's own deep link
-                    // rather than "raise the terminal". Printed because it is the one thing about a
-                    // row that cannot be seen by looking at it — and the dump exists for exactly the
-                    // checks that clicking cannot make.
-                    + (session.threadURL.map { "  → \($0.absoluteString)" } ?? ""))
+            for group in SessionActivityGroup.allCases {
+                let rows = snapshot.sessions.filter { $0.activityGroup == group }
+                guard !rows.isEmpty else { continue }
+                lines.append("  \(group.rawValue) (\(rows.count))")
+                for session in rows {
+                    lines.append("    \(session.name) · \(session.subtitle)"
+                        + (session.pct.map { "  ctx \(session.assumed ? "~" : "")\($0)%" } ?? "")
+                        + (session.tag.isEmpty ? "" : "  " + session.tag)
+                        + (session.threadURL.map { "  → \($0.absoluteString)" } ?? ""))
+                }
             }
             if snapshot.offerOpenClaude { lines.append("  Open Claude") }
             if snapshot.codexHooksBlocked {

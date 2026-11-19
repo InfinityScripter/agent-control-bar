@@ -478,6 +478,13 @@ check(codexSession.key == "codex:c1" && claudeShaped.key == "claude:old",
 // priority(of:) and the icon renderer would need a second branch.
 check(isWorkingState(codexSession.state) && isActiveState(codexSession.state),
       "a Codex session works and is active by the same words as Claude's")
+check(codexSession.modelService == .openai && claudeShaped.modelService == .anthropic,
+      "older hook files use the agent's original model service")
+let zaiClaude = Session(json: ["provider": "claude", "modelService": "zai"], id: "glm")
+let deepSeekCodex = Session(json: ["provider": "codex", "modelService": "deepseek"], id: "v4")
+check(zaiClaude.modelService == .zai && zaiClaude.key == "claude:glm"
+      && deepSeekCodex.modelService == .deepseek && deepSeekCodex.key == "codex:v4",
+      "the model service changes independently of the agent and its session key")
 
 // The badge. Codex's surface is a fact from its own rollout, Claude's is guessed from an
 // entrypoint — so they are two paths to one pill, and an unknown Codex surface shows nothing
@@ -528,6 +535,61 @@ check(SessionFormat.ttyDevice("/dev/ttys004") == "/dev/ttys004", "the hook's own
 check(SessionFormat.ttyDevice("ttys004") == "/dev/ttys004",
       "and the bare name `ps` prints is completed, because the dictionaries compare full paths")
 check(SessionFormat.ttyDevice("") == nil, "no terminal, nothing to focus")
+
+// The panel groups a blocking approval, then an async question, ahead of fresh activity.
+check(SessionActivityGroup.allCases == [.needsYou, .working, .idle],
+      "the panel presents attention before background work and idle sessions")
+check(SessionActivityGroup(state: "permission", asyncQuestion: false) == .needsYou
+      && SessionActivityGroup(state: "thinking", asyncQuestion: true) == .needsYou
+      && SessionActivityGroup(state: "tool", asyncQuestion: false) == .working
+      && SessionActivityGroup(state: "idle", asyncQuestion: false) == .idle,
+      "the async question stays visible without claiming the agent is blocked")
+
+do {
+    var board = ServiceUsageBoard()
+    let now = Date(timeIntervalSince1970: 1000)
+    let old = board.begin(.deepseek, at: now, minimumInterval: 60)!
+    check(board.begin(.deepseek, at: now, minimumInterval: 0) == nil,
+          "refresh clicks cannot stack requests for one key")
+    board.reset(.deepseek)
+    let replacement = board.begin(.deepseek, at: now, minimumInterval: 0)!
+    check(!board.finish(.deepseek, request: old, result: .failure(.unauthorized), at: now),
+          "a response for a removed or replaced key cannot overwrite the new result")
+    check(board.finish(.deepseek, request: replacement, result: .failure(.keyMissing), at: now)
+          && board[.deepseek].status == .notConfigured
+          && board.begin(.deepseek, at: now.addingTimeInterval(59), minimumInterval: 60) == nil,
+          "no key is distinct from failure and repeated panel opens respect the polling interval")
+}
+
+do {
+    let json = """
+    {"threads":[
+        {"id":"11111111-1111-1111-1111-111111111111","name":"Réparer tests","cwd":"/tmp/O'Neil project",
+         "updatedAt":1234,"branch":"feature/search","source":"cli","modelService":"deepseek"},
+        {"id":"22222222-2222-2222-2222-222222222222","name":"","cwd":"/tmp/Other",
+         "updatedAt":1000,"branch":"main","source":"vscode"}
+    ],"hasMore":true,"codexHome":"/tmp/Codex account"}
+    """
+    let history = try JSONDecoder().decode(CodexHistory.self, from: Data(json.utf8))
+    let first = history.threads[0]
+    check(history.hasMore && history.threads[1].title == "Other",
+          "history preserves the page boundary and uses the workspace for an unnamed chat")
+    check(history.matching("reparer SEARCH", excluding: []).map(\.id) == [first.id]
+          && history.matching("feature", excluding: [first.id]).isEmpty
+          && history.matching("  ", excluding: []).count == 2,
+          "history searches all words and keeps tracked live chats out of the resume list")
+    check(history.matching("deepseek", excluding: []).map(\.id) == [first.id]
+          && history.matching("", excluding: [], hiding: [.deepseek]).map(\.id) == [history.threads[1].id],
+          "model services are searchable and hidden services stay out of history")
+    check(first.resumeCommand(codexHome: history.codexHome)
+          == "CODEX_HOME='/tmp/Codex account' codex resume --cd '/tmp/O'\"'\"'Neil project' \(first.id)",
+          "resume copies the exact profile, workspace and thread id with shell-safe quoting")
+    check(first.resumeCommand(codexHome: nil) == nil
+          && first.resumeCommand(codexHome: "/tmp/injected\ncommand") == nil,
+          "resume requires a known profile and rejects multiline shell input")
+} catch {
+    check(false, "Codex history payload decodes: \(error)")
+}
 // The string is interpolated into `if tty of t is "…"` in an AppleScript. A quote closes the
 // literal and leaves the rest as script, and the state file is one a user is invited to read and
 // can edit — so "our own hook wrote it" is not a guarantee about its contents.
@@ -3627,6 +3689,22 @@ do {
     tick = board.tick(now: now + 1, rules: rules, pidAlive: { _ in true }, frontmost: { nil })
     check(tick.lead == nil, "Hidden: nothing leads the bar")
     check(tick.chime, "and a long turn finishing still chimes")
+
+    disk["/claude/a.json"]?["state"] = "permission"
+    disk["/claude/a.json"]?["modelService"] = "zai"
+    disk["/claude/a.json"]?["ts"] = now + 2
+    board.reload([SessionBoard.File(key: "claude:a", path: "/claude/a.json", provider: "claude",
+                                    id: "a", mtime: Date(timeIntervalSince1970: 3)), files[1]],
+                 read: { disk[$0] }) { _ in "" }
+    rules.leads = ["claude"]
+    rules.cues = ["claude"]
+    rules.hiddenModelServices = [.zai]
+    tick = board.tick(now: now + 2, rules: rules, pidAlive: { _ in true }, frontmost: { nil })
+    check(tick.lead == nil && !tick.needsYou && board.sessions["claude:a"]?.eff == "permission",
+          "hiding Z.ai silences its session without losing its real state")
+    let rendered = MenuBarAgent.shown(.claude, board: board, claude: nil, claudeStatus: nil,
+                                     oauthLimits: true, codex: nil, now: now + 2, hiding: [.zai])
+    check(rendered.first?.lead == nil, "a hidden service cannot drive the menu bar")
 }
 
 // Each menu bar block owns its sessions, limits and clock even while the other agent needs us.
@@ -4519,6 +4597,53 @@ check(PanelVisibility(defaults: visibilityDefaults) == PanelVisibility()
       && visibilityDefaults.object(forKey: "resetOdds") as? Bool == false,
       "show all restores only panel visibility, preserving data and reset opt-outs")
 visibilityDefaults.removePersistentDomain(forName: visibilitySuite)
+
+// Provider balance and quota parsing use synthetic responses and no credentials.
+do {
+    let balance = Data(#"{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"12.30"}]}"#.utf8)
+    let deepSeek = try ModelServiceUsage.decode(balance, for: .deepseek)
+    check(deepSeek.metrics == [.init(title: "Balance", value: "12.30 USD", resetAt: nil)],
+          "DeepSeek balance preserves the displayed currency and amount")
+    let blocked = try ModelServiceUsage.decode(Data(#"{"is_available":false,"balance_infos":[{"currency":"USD","total_balance":"12.30"}]}"#.utf8), for: .deepseek)
+    check(blocked.metrics == [.init(title: "Balance", value: "12.30 USD", resetAt: nil),
+                              .init(title: "API calls", value: "Unavailable", resetAt: nil)],
+          "DeepSeek can report available credit while its API calls are disabled")
+    let quota = Data(#"""
+    {"code":200,"success":true,"data":{"limits":[
+        {"type":"CREDIT_LIMIT","unit":3,"number":5,"percentage":20,"nextResetTime":1786624439633},
+        {"type":"TOKENS_LIMIT","unit":6,"number":1,"percentage":0},
+        {"type":"TIME_LIMIT","unit":5,"number":1,"percentage":100},
+        {"type":"TOKENS_LIMIT","unit":5,"number":1,"percentage":2},
+        {"type":"CREDIT_LIMIT","unit":6,"number":7,"usage":1000,"remaining":765,"currentValue":230,"percentage":10},
+        {"type":"CREDIT_LIMIT","unit":1,"number":2,"percentage":30},
+        {"type":"TOKENS_LIMIT","percentage":5}
+    ]}}
+    """#.utf8)
+    let zai = try ModelServiceUsage.decode(quota, for: .zai)
+    check(zai.metrics.map(\.title) == ["Credits · 5 h", "Tokens · 7 d", "MCP calls · 1 month",
+                                     "Tokens · 1 min", "Credits · 7 wk", "Credits · 2 d", "Tokens"]
+          && zai.metrics.map(\.value) == ["20% used", "0% used", "100% used", "2% used",
+                                         "24% used", "30% used", "5% used"]
+          && zai.metrics[0].resetAt == Date(timeIntervalSince1970: 1786624439.633),
+          "Z.ai uses the window reported by the service, supports credit plans, and reads reset milliseconds")
+    do {
+        _ = try ModelServiceUsage.decode(Data(#"{"code":401,"success":false}"#.utf8), for: .zai)
+        check(false, "an HTTP-200 authentication failure stays a failure")
+    } catch {
+        check(error as? ModelServiceUsageError == .unauthorized,
+              "a rejected Z.ai key is distinguished from an empty quota")
+    }
+    do {
+        let invalid = Data(#"{"code":500,"success":true,"data":{"limits":[{"type":"TOKENS_LIMIT","percentage":5}]}}"#.utf8)
+        _ = try ModelServiceUsage.decode(invalid, for: .zai)
+        check(false, "a Z.ai error envelope cannot supply a quota")
+    } catch {
+        check(error as? ModelServiceUsageError == .invalidResponse,
+              "unknown Z.ai errors stay distinct from valid quotas")
+    }
+} catch {
+    check(false, "valid provider account payloads decode: \(error)")
+}
 
 print(failures == 0 ? "\nall model checks passed" : "\n\(failures) failed")
 exit(failures == 0 ? 0 : 1)

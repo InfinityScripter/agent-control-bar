@@ -7,6 +7,50 @@ import Cocoa
 // not: the rules in openSession below are the product of a long line of "the click did nothing"
 // reports, and none of them had anything to do with how the row was drawn.
 extension StatusController {
+    func openCodexHistoryThread(_ thread: CodexHistory.Thread, completion: @escaping (Bool) -> Void) {
+        guard case .loaded(let history, let canOpenInCodex) = codexHistory,
+              history.threads.contains(thread), !hiddenModelServices.contains(thread.service)
+        else { completion(false); return }
+        reloadSessions()
+        if let session = sessions[Provider.codex.id + ":" + thread.id] {
+            let url = SessionFormat.codexThreadURL(session)
+            let desktopAvailable = url != nil
+                && NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.codexBundleID) != nil
+            guard !hiddenModelServices.contains(session.modelService),
+                  desktopAvailable || !session.termBundle.isEmpty || !session.termProgram.isEmpty
+            else { completion(false); return }
+            closePanel()
+            openSession(session.id, threadURL: url, entrypoint: session.entrypoint,
+                        termProgram: session.termProgram, termBundle: session.termBundle, tty: session.tty)
+            completion(true)
+            return
+        }
+        guard canOpenInCodex, let url = thread.threadURL,
+              let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.codexBundleID)
+        else { completion(false); return }
+        NSWorkspace.shared.open([url], withApplicationAt: app, configuration: .init()) { [weak self] app, error in
+            DispatchQueue.main.async {
+                let opened = app != nil && error == nil
+                if opened { self?.closePanel() }
+                completion(opened)
+            }
+        }
+    }
+
+    func copyCodexResumeCommand(_ thread: CodexHistory.Thread) -> Bool {
+        guard case .loaded(let history, _) = codexHistory, history.threads.contains(thread),
+              !hiddenModelServices.contains(thread.service),
+              let command = thread.resumeCommand(codexHome: history.codexHome)
+        else { return false }
+        reloadSessions()
+        guard sessions[Provider.codex.id + ":" + thread.id] == nil else {
+            refreshCounts()
+            return false
+        }
+        NSPasteboard.general.clearContents()
+        return NSPasteboard.general.setString(command, forType: .string)
+    }
+
     func dismissSession(_ session: PanelSession) {
         // Refresh first so a click on an older panel snapshot cannot hide the latest event.
         reloadSessions()

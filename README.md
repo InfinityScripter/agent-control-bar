@@ -98,6 +98,16 @@ Each row shows its project and branch, turn timer and context usage when availab
 
 Click a row to return to its terminal or editor. Codex desktop sessions open their conversation through a `codex://threads/` link when available. By default, a terminal click brings its app forward. **Settings → General → Exact terminal focus** targets the session's window and tab in Terminal or iTerm; it is off by default and requires macOS Automation permission.
 
+**Live** groups sessions into **Needs you**, **Working**, and **Idle**. An unanswered Codex question appears at the top even while Codex keeps working. The amber count on **Sessions** is the number of conversations that need your attention.
+
+When Codex is enabled, select **Codex history** to search up to 50 recent, unarchived local chats by title, project, branch, client, model service, or ID. Recognized T3 Code chats show their client when the service uses OpenAI. Use the arrow to open a saved chat in ChatGPT, or the terminal button to copy its `codex resume` command with the original directory and Codex profile. Chats shown in **Live** are omitted from history. An older chat still running can be focused from history.
+
+History is loaded on demand through Codex 0.168 or later. It reads local thread metadata and respects the current account for chats that have account metadata. Opening in ChatGPT requires the desktop app and the default local Codex profile.
+
+**Settings → General → Model services** controls which sessions, attention signals, and account limits are shown. Agent Control Bar recognizes DeepSeek, Z.ai, and OpenRouter in Claude Code and Codex, and groups other configured gateways under **Other services**.
+
+In **Connected accounts**, choose **Set key…** to show the DeepSeek API balance or your Z.ai Personal Coding Plan quotas. The app stores each key in macOS Keychain and reads account data from the service itself. Hiding a service pauses its checks; **Remove key** disconnects it. [DeepSeek balance API](https://api-docs.deepseek.com/api/get-user-balance/) · [Z.ai Personal Coding Plan usage](https://docs.z.ai/devpack/extension/usage-query-plugin)
+
 ## Usage limits
 
 The bars show the percentage used. Claude's limits include its 5-hour and 7-day windows, plus a separate Fable weekly window on plans that report one. Reset times appear in the panel. Codex reports its own window lengths; they are not always a 5-hour/week pair.

@@ -7,6 +7,7 @@ enum BackendCommand {
     case limits(provider: String)
     case codexHooks
     case codexAttention
+    case codexHistory
     case codexHooksApprove
     /// Re-point this app's own dead statusLine wrapper in settings.json; a foreign or live one is
     /// left alone by the script, so the call is safe to make on every launch.
@@ -20,7 +21,7 @@ enum BackendCommand {
 
     func backend(normal: (python: String, script: String), bundledScript: String?) -> (python: String, script: String) {
         switch self {
-        case .codexAttention, .limits(provider: "codex"):
+        case .codexAttention, .codexHistory, .limits(provider: "codex"):
             return ("/usr/bin/python3", bundledScript ?? "")
         default:
             return normal
@@ -37,6 +38,8 @@ enum BackendCommand {
             return ["codex-hooks"]
         case .codexAttention:
             return ["codex-attention"]
+        case .codexHistory:
+            return ["codex-history"]
         case .codexHooksApprove:
             return ["codex-hooks", "approve"]
         case .statuslineHeal:

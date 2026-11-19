@@ -1,5 +1,17 @@
 import Foundation
 
+enum SessionActivityGroup: String, CaseIterable {
+    case needsYou = "Needs you"
+    case working = "Working"
+    case idle = "Idle"
+
+    init(state: String, asyncQuestion: Bool) {
+        if state == "permission" || asyncQuestion { self = .needsYou }
+        else if isWorkingState(state) { self = .working }
+        else { self = .idle }
+    }
+}
+
 // Pure formatting for the session card, kept in the model half so the model checks can pin it.
 enum SessionFormat {
     // A short all-caps badge naming the surface a session runs on, one uniform 3-letter pill.
@@ -34,10 +46,15 @@ enum SessionFormat {
     // session whose terminal left no trace in the environment would then be dragged into the
     // desktop app. Unknown means unknown here, the same as it does where the surface is read.
     static func codexThreadURL(_ s: Session) -> URL? {
-        guard s.provider == "codex", s.surface == "app", !s.id.isEmpty else { return nil }
+        guard s.provider == "codex", s.surface == "app" else { return nil }
+        return codexThreadURL(id: s.id)
+    }
+
+    static func codexThreadURL(id: String) -> URL? {
+        guard !id.isEmpty else { return nil }
         // Percent-encoded as a path component: an id carrying a slash would otherwise address a
         // different route of the app, and one carrying "?" would arrive as a query.
-        guard let id = s.id.addingPercentEncoding(
+        guard let id = id.addingPercentEncoding(
             withAllowedCharacters: CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~")))
         else { return nil }
         return URL(string: "codex://threads/" + id)

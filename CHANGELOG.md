@@ -7,7 +7,19 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
-## [Unreleased]
+## [0.28.0] - 2026-11-19
+
+### Added
+- **Needs you comes first.** Live sessions are grouped by attention, work, and idle state.
+  Unanswered Codex questions stay visible while an agent works, and the Sessions tab shows
+  an amber count when a conversation needs attention.
+- **Codex history** searches the 50 most recent local chats by title, project, branch, client,
+  or ID and labels recognized T3 Code chats. Open a chat in ChatGPT or copy a terminal
+  resume command with the original profile and working directory.
+- **Model services** recognizes DeepSeek, Z.ai, and OpenRouter in Claude Code and Codex.
+  Hide individual services from live sessions, history, attention alerts, and limits.
+- **Connected accounts** shows the DeepSeek API balance and Z.ai Personal Coding Plan quotas.
+  Add or remove each API key in Settings. Keys are stored in macOS Keychain.
 
 ### Fixed
 - Failed MCP tool-list pages no longer cache an incomplete list for 24 hours. The app

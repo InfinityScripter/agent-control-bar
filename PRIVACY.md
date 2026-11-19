@@ -1,7 +1,7 @@
 # Privacy
 
-Agent Control Bar keeps no data about you and runs no account or cloud service. Everything it
-shows happens on your Mac. The one thing it sends the developer is a daily count of one, with
+Agent Control Bar keeps session metadata and settings on your Mac. It runs no account or cloud
+service. The one thing it sends the developer is a daily count of one, with
 nothing in it that names a machine — described in full under "The anonymous ping" below, with
 the switch that stops it.
 
@@ -19,6 +19,12 @@ the switch that stops it.
   Codex handles the request to OpenAI and its own authentication. The app does not read Codex's
   credentials itself or refresh its tokens. Switch **Codex limits** off in Settings → General to
   stop these requests and the session-snapshot fallback.
+- **DeepSeek balance and Z.ai Personal Coding Plan quotas**, if you add a key in **Connected
+  accounts**. The app reads `https://api.deepseek.com/user/balance` or
+  `https://api.z.ai/api/monitor/usage/quota/limit` every five minutes and on panel opens, with
+  at least a minute between automatic requests. Each key is sent only to its own service,
+  and redirects are refused. Account figures are held in memory. Hide a service in **Model
+  services** to pause checks or use **Remove key** to disconnect it.
 - **One update check a day**: a request to GitHub's public releases API for the latest tag, and
   one to Homebrew's public formulae API for the current cask version. Both only decide whether
   the panel shows an update banner.
@@ -33,9 +39,9 @@ the switch that stops it.
   own preferences so the panel can show it at launch. Switch **Limit reset odds** off in
   Settings → General and this request never happens, and the kept answer is deleted.
 
-GitHub, Homebrew, Anthropic, OpenAI and whenreset.app see that a request arrived; the developer never
-does. Those, and the ping in the next section, are the only requests the app makes for itself. There is no crash
-reporting and no analytics kit of any kind in the binary.
+GitHub, Homebrew, Anthropic, OpenAI, DeepSeek, Z.ai and whenreset.app see requests sent to their
+services. Only the anonymous ping described below goes to the developer. There is no crash reporting
+or analytics kit in the binary.
 
 ## The anonymous ping
 
@@ -160,6 +166,10 @@ Everything of its own lives under `~/.claude/control-bar/`. The complete list:
 - **The MCP picture:** `mcp.json`, `codex/mcp.json` for Codex's servers, the per-server
   descriptions cache `descriptions.json`, and the model-to-context-window table
   `model-windows.json`.
+- **Codex history:** opening or refreshing **Codex history** requests up to 50 recent thread
+  summaries from Codex's local index. The private `codex/history.json` snapshot stores IDs,
+  titles, directories, branches, host and model service labels, update times, and profile path.
+  Prompts, replies, and credentials are excluded from the snapshot.
 - **The limits:** `limits.json`, and `codex/limits.json` for Codex's windows — percentages,
   window lengths, reset stamps, plan, source and measurement times. Beside them, `limits-status.json`
   and `codex/limits-status.json` record how each provider's latest poll ended, when, and a short
@@ -212,6 +222,9 @@ can contain fragments of what you typed, so the file is capped and rotated rathe
 forever, and it is worth deleting when you are done debugging.
 
 ## What that means for trust
+
+The DeepSeek and Z.ai keys you add are separate entries in macOS Keychain. Use **Remove key**
+in **Connected accounts** to delete an entry, including before uninstalling the app.
 
 Once installed, the hook scripts in `~/.claude/control-bar/` run on every Claude Code event. That
 is how the app knows anything at all, and it makes those files trusted local code — worth keeping

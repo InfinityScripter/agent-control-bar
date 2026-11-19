@@ -584,7 +584,7 @@ test("the state file a hook event writes carries exactly the keys the swift read
   const state = JSON.parse(fs.readFileSync(path.join(stateDir(home), "pin1.json"), "utf8"));
   assert.deepEqual(Object.keys(state).sort(), [
     "assumed", "cost", "cwd", "dirty", "duration", "entrypoint", "label", "linesAdded",
-    "linesRemoved", "model", "pct", "pid", "project", "sessionId", "started", "startedAt",
+    "linesRemoved", "model", "modelService", "pct", "pid", "project", "sessionId", "started", "startedAt",
     "state", "term_bundle", "term_program", "tokens", "tool", "transcript", "ts", "tty",
     "window",
   ]);
@@ -608,7 +608,7 @@ test("the seeded session file carries exactly the keys the swift reader parses",
 
   const state = JSON.parse(fs.readFileSync(path.join(stateDir(home), "pin2.json"), "utf8"));
   assert.deepEqual(Object.keys(state).sort(), [
-    "cwd", "entrypoint", "label", "pid", "project", "sessionId", "started", "startedAt",
+    "cwd", "entrypoint", "label", "modelService", "pid", "project", "sessionId", "started", "startedAt",
     "state", "term_bundle", "term_program", "tool", "transcript", "ts", "tty",
   ]);
   assert.equal(state.started, false, "a merely-opened session stays out of the dropdown");
@@ -996,7 +996,9 @@ test("ending a codex session removes only its own file", () => {
 
 test("the codex state file carries exactly the keys the swift reader parses", () => {
   const home = sandbox();
-  const transcript = rollout(home, [tokenCount(41_420, 200_000)], { originator: "codex_vscode" });
+  const transcript = rollout(home, [tokenCount(41_420, 200_000)], {
+    originator: "codex_vscode", model_provider: "openai",
+  });
   run(lifecyclePath, home, ["start", "--provider", "codex"], JSON.stringify({
     session_id: "pin3", cwd: home, transcript_path: transcript, source: "startup" }));
   run(updatePath, home, ["pre", "--provider", "codex"], JSON.stringify({
@@ -1007,12 +1009,13 @@ test("the codex state file carries exactly the keys the swift reader parses", ()
   const state = JSON.parse(fs.readFileSync(path.join(codexStateDir(home), "pin3.json"), "utf8"));
   assert.deepEqual(Object.keys(state).sort(), [
     "assumed", "cost", "cwd", "dirty", "duration", "entrypoint", "label", "linesAdded",
-    "linesRemoved", "model", "pct", "pid", "project", "provider", "sessionId", "started",
+    "linesRemoved", "model", "modelService", "pct", "pid", "project", "provider", "sessionId", "started",
     "startedAt", "state", "surface", "term_bundle", "term_program", "tokens", "tool",
     "transcript", "ts", "tty", "turn_id", "window",
   ]);
   assert.equal(state.surface, "ide", "the surface survives the events that follow the start");
   assert.equal(state.model, "gpt-5.6-sol", "the model comes from the payload, not from a guess");
+  assert.equal(state.modelService, "openai");
 
   // The reader's half: the swift model checks parse THIS file with the real Session
   // initializer. Its own fixture, so the Claude seam keeps its independent pin.

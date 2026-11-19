@@ -46,6 +46,8 @@ struct Session {
     // third agent must not require a synchronized Swift edit. A file without the field is
     // Claude's: it was written before Codex existed, and every pre-upgrade session has one.
     var provider: String = "claude"
+    private let reportedModelService: String?
+    var modelService: ModelService { ModelService(reported: reportedModelService, agent: provider) }
     // Where a Codex session runs: "cli", "ide", "app", "exec", or "" when its rollout named an
     // originator we do not know. Claude's equivalent is inferred from entrypoint + TERM_PROGRAM
     // instead, because Claude Code does not state it.
@@ -104,6 +106,7 @@ struct Session {
         self.linesRemoved = (o["linesRemoved"] as? NSNumber)?.intValue
         self.dirty = (o["dirty"] as? NSNumber)?.intValue
         self.provider = o["provider"] as? String ?? "claude"
+        self.reportedModelService = o["modelService"] as? String
         self.surface = o["surface"] as? String ?? ""
         self.turnID = o["turn_id"] as? String ?? ""
     }
