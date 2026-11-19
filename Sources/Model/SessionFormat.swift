@@ -26,7 +26,8 @@ enum SessionFormat {
     // badge at all — a wrong "CLI" on a desktop session is worse than an empty spot.
     static func surfaceTag(_ s: Session) -> String {
         if s.provider == "codex" { return s.surface.uppercased() }
-        if s.entrypoint == "claude-desktop" { return "APP" }
+        // "t3-code" is T3 Code running Claude in one of its threads: no terminal, an app's window.
+        if s.entrypoint == "claude-desktop" || s.entrypoint == "t3-code" { return "APP" }
         if s.entrypoint.isEmpty { return "" }
         if s.entrypoint == "claude-vscode" || s.termProgram == "vscode" { return "IDE" }
         return "CLI"
@@ -51,13 +52,16 @@ enum SessionFormat {
     }
 
     static func codexThreadURL(id: String) -> URL? {
+        urlPathComponent(id).flatMap { URL(string: "codex://threads/" + $0) }
+    }
+
+    /// An id as one path component of a deep link, or nil for an empty one. Percent-encoded: an id
+    /// carrying a slash would otherwise address a different route of the app, and one carrying
+    /// "?" would arrive as a query.
+    static func urlPathComponent(_ id: String) -> String? {
         guard !id.isEmpty else { return nil }
-        // Percent-encoded as a path component: an id carrying a slash would otherwise address a
-        // different route of the app, and one carrying "?" would arrive as a query.
-        guard let id = id.addingPercentEncoding(
+        return id.addingPercentEncoding(
             withAllowedCharacters: CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~")))
-        else { return nil }
-        return URL(string: "codex://threads/" + id)
     }
 
     // The session's terminal device as a string safe to name inside an AppleScript literal, or nil

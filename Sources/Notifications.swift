@@ -42,8 +42,8 @@ extension StatusController {
     /// A refusal is remembered, not retried: macOS shows the system dialog once per app, ever —
     /// no later version, reinstall or second `requestAuthorization` brings it back, only the user
     /// in System Settings. So a denial used to be swallowed whole, and someone who declined a year
-    /// ago could never learn why alerts stopped. It now sets `notificationsDenied`, which the menu
-    /// answers with a row that opens the right Settings pane.
+    /// ago could never learn why alerts stopped. It now sets `notificationsDenied`, which Settings
+    /// answers with a row that opens the right System Settings pane.
     func notify(title: String, body: String) {
         // UNUserNotificationCenter.current() traps (NSInternalInconsistencyException,
         // "bundleProxyForCurrentProcess is nil") when the process runs outside an .app bundle —
@@ -73,14 +73,14 @@ extension StatusController {
             }
             let denied = settings.authorizationStatus == .denied
             // Written on the allowed path too: flipping the switch back on in System Settings
-            // must clear the menu row on the next event, not only on the next menu open.
+            // must clear the Settings row on the next event, not only when that window is next key.
             DispatchQueue.main.async { self?.notificationsDenied = denied }
             if !denied { deliver() }
         }
     }
 
-    /// The stored answer, refreshed at launch and on every menu open: flipping the switch in
-    /// System Settings must clear the menu row without a restart.
+    /// The stored answer, refreshed at launch and whenever the Settings window becomes key:
+    /// flipping the switch in System Settings must clear the row there without a restart.
     func refreshNotificationAuthStatus() {
         guard Bundle.main.bundleIdentifier != nil else { return }  // see notify(): traps bundle-less
         UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in

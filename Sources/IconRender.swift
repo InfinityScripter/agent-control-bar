@@ -12,6 +12,8 @@ extension StatusController {
             agents = [MenuBarAgent(provider: .claude, lead: nil, mood: .sleeping, working: 0, gauge: Gauge())]
         }
         barOrder = agents.map(\.provider.id)
+        // A provider taken out of the bar mid-work would come back with the width it had then.
+        for id in barRenders.keys where !barOrder.contains(id) { barRenders[id]?.textColumn = 0 }
         for agent in agents {
             let provider = agent.provider.id
             var render = barRenders[provider] ?? BarRender(agent: agent)
@@ -90,8 +92,15 @@ extension StatusController {
                 barRenders[provider] = render
             }
             let timer = render.agent.timer(show: showTimer, now: now)
-            blocks.append(.init(image: image, label: render.label, timer: timer))
-            keys.append(render.cacheKey + "|" + render.label + "|" + timer)
+            let column = MenuBarImage.textColumn(
+                label: render.label, timer: timer,
+                working: isWorkingState(render.agent.lead?.eff ?? ""), previous: render.textColumn)
+            if column != render.textColumn {
+                render.textColumn = column
+                barRenders[provider] = render
+            }
+            blocks.append(.init(image: image, label: render.label, timer: timer, textWidth: column))
+            keys.append(render.cacheKey + "|" + render.label + "|" + timer + "|\(column)")
             frames.append(String(frame))
             let session = render.agent.lead
             var description = "\(render.agent.provider.title): \(session?.eff ?? "idle")"

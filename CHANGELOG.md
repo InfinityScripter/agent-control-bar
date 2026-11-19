@@ -7,6 +7,32 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.28.1] - 2026-11-19
+
+### Added
+- A Claude Code session running inside T3 Code opens its own thread when you click its row,
+  and its tag reads APP instead of CLI. Codex threads under T3 Code open as before.
+
+### Changed
+- "Notifications are off" moved from the panel to Settings > General. The section appears once
+  macOS has refused the permission.
+- The menu bar text column is as wide as its words, so a resting "Needs you" leaves no gap
+  before the next agent. While a session works the column only grows, and changing tool labels
+  no longer shift the icons.
+- Settings opens on General every time.
+
+### Fixed
+- The app no longer keeps a decoded copy of the whole pet sprite sheet for every frame it
+  draws. With the panel open it used 921 MB before and 140 MB after, measured with `vmmap`
+  on the same Mac. Closing Settings releases the pets shown in its pickers.
+- Runs of Cursor's own agent no longer appear as Claude Code sessions stuck on "Thinking…".
+  Cursor runs the hooks from `~/.claude/settings.json`; its events are now ignored.
+- State files of closed sessions are removed while the app is running: an hour after the
+  session's last event, or a day for a Codex terminal session. Before, a file whose session
+  never reported its end was removed only when a new session started with the app closed.
+- A long branch name no longer cuts the status and the timer off a session row. The branch is
+  shortened in the middle.
+
 ## [0.28.0] - 2026-11-19
 
 ### Added

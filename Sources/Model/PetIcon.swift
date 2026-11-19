@@ -122,7 +122,9 @@ struct PetIconFrames {
         let rows = Set(CrabMood.allCases.map(\.petRow)
             + [PetRow.forSessionState("permission", provider: provider)])
             .sorted { $0.rawValue < $1.rawValue }
-        guard let sheet = Self.decodedSheet(of: pet) else { return nil }
+        // The sheet lives exactly as long as this initialiser: `trim` copies every frame out of
+        // it, so what the bar keeps in the end is a couple of dozen pictures 18 points tall.
+        guard let sheet = pet.decodedSheet() else { return nil }
 
         let cut = rows.map { row in
             (row, pet.format.frames(for: row).compactMap { frame in
@@ -151,28 +153,6 @@ struct PetIconFrames {
 
     /// The pictures for one animation, one per tick, in order.
     func frames(for row: PetRow) -> [NSImage] { ticks[row] ?? [] }
-
-    /// The whole sheet, decoded into a bitmap of our own, once.
-    ///
-    /// An image read from a file is decoded lazily — and lazily means once per USE, not once. Every
-    /// frame cut out of it pays for the whole picture again, which for a pet packed in WebP inside
-    /// an application archive measured 22 ms a frame on this machine: eighteen frames, four tenths
-    /// of a second, for one pet. Drawing the sheet into a buffer first costs 26 ms and makes every
-    /// cut after it free — 400 ms down to 30 for the same work.
-    ///
-    /// The buffer lives exactly as long as this initialiser. It is 14 MB for the atlas sizes we
-    /// know, and what the bar keeps in the end is a couple of dozen pictures 18 points tall.
-    private static func decodedSheet(of pet: Pet) -> CGImage? {
-        guard let source = pet.art.imageSource(),
-              let lazySheet = CGImageSourceCreateImageAtIndex(source, 0, nil),
-              let ctx = CGContext(data: nil, width: pet.format.width, height: pet.format.height,
-                                  bitsPerComponent: 8, bytesPerRow: pet.format.width * 4,
-                                  space: CGColorSpaceCreateDeviceRGB(),
-                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-        else { return nil }
-        ctx.draw(lazySheet, in: CGRect(x: 0, y: 0, width: pet.format.width, height: pet.format.height))
-        return ctx.makeImage()
-    }
 
     /// The smallest rectangle holding every visible pixel of every frame given, counted from the
     /// TOP left — the same corner the atlas format addresses its cells from, and the same one the
@@ -206,28 +186,43 @@ struct PetIconFrames {
         return CGRect(x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1)
     }
 
+    /// How many pixels a frame holds to the point: the densest screen a Mac has. A frame is
+    /// finished pixels rather than a drawing, so it is made for the sharpest bar it can land in,
+    /// and a screen with one pixel to the point scales it down.
+    private static let pixelsPerPoint: CGFloat = 2
+
     /// One frame, scaled and shifted so that `box` covers the whole of `size`. The cell is drawn
-    /// whole and clipped by the image it is drawn into, which is what keeps every frame aligned:
+    /// whole and clipped by the bitmap it is drawn into, which is what keeps every frame aligned:
     /// each one keeps its own position inside the shared box instead of being centred on its own.
+    ///
+    /// Drawn here, into pixels of its own. It used to be a picture that drew itself when shown,
+    /// and the block doing the drawing held the cell — a window onto the decoded sheet — so every
+    /// pet that had been in the bar, or in the picker of them, kept its 14 MB sheet for good.
     private static func trim(_ cell: CGImage, to box: CGRect, into size: NSSize) -> NSImage {
-        let cut = NSImage(size: size, flipped: false) { rect in
-            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
-            let scale = rect.height / box.height
-            // The box was measured downward from the top of the cell, the way the atlas format
-            // addresses it; a context draws upward from the bottom. What this needs is the gap
-            // underneath the art, which is the rest of the cell below the box.
-            let below = CGFloat(cell.height) - box.maxY
-            ctx.interpolationQuality = .high
-            ctx.draw(cell, in: CGRect(x: rect.minX - box.minX * scale,
-                                      y: rect.minY - below * scale,
-                                      width: CGFloat(cell.width) * scale,
-                                      height: CGFloat(cell.height) * scale))
-            return true
-        }
+        let cut = NSImage(size: size)
         // Never a template: the drawn styles are one shape in one colour and become black or white
         // with the menu bar, but a pet is somebody's painted sprite and has nothing left of itself
         // once it is flattened into a single system colour.
         cut.isTemplate = false
+        let width = Int(size.width * pixelsPerPoint), height = Int(size.height * pixelsPerPoint)
+        guard width > 0, height > 0,
+              let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                  bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return cut }
+        let scale = CGFloat(height) / box.height
+        // The box was measured downward from the top of the cell, the way the atlas format
+        // addresses it; a context draws upward from the bottom. What this needs is the gap
+        // underneath the art, which is the rest of the cell below the box.
+        let below = CGFloat(cell.height) - box.maxY
+        ctx.interpolationQuality = .high
+        ctx.draw(cell, in: CGRect(x: -box.minX * scale, y: -below * scale,
+                                  width: CGFloat(cell.width) * scale,
+                                  height: CGFloat(cell.height) * scale))
+        guard let pixels = ctx.makeImage() else { return cut }
+        let frame = NSBitmapImageRep(cgImage: pixels)
+        frame.size = size
+        cut.addRepresentation(frame)
         return cut
     }
 }

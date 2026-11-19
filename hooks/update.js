@@ -366,6 +366,13 @@ process.stdin.on("end", () => {
     } catch {}
   }
 
+  // Cursor runs the hooks in ~/.claude/settings.json for its own agent, and such a run is not a
+  // Claude Code session: its Stop often never comes, so it sat in the panel as a nameless row
+  // "thinking" for fifteen minutes. `cursor_version` is on every event Cursor sends and on none
+  // of Claude Code's — a positive mark, because an empty CLAUDE_CODE_ENTRYPOINT is also what a
+  // real Claude Code session can look like (see below).
+  if (p.cursor_version) return;
+
   // This session's own file is the unit of state AND the liveness marker. Writing it on any
   // event also tracks sessions that predate the hook install (never fired SessionStart).
   const sid = safeId(p.session_id);
@@ -454,6 +461,11 @@ process.stdin.on("end", () => {
   // report "vscode", and the IDE extension panel sets no TERM_PROGRAM at all. The app prefers
   // this for the row click (`open -b`), keeping the TERM_PROGRAM map as the fallback.
   const termBundle = process.env.__CFBundleIdentifier || prev.term_bundle || "";
+  // T3 Code hosts the session as a child process with no terminal, and the bundle id above names
+  // the app (or the launcher that started it), never which of its threads this is. T3 exports
+  // that itself; the app turns it into the deep link that opens the thread on a row click. Every
+  // descendant of a thread inherits the variable, so the app asks the entrypoint as well.
+  const t3Thread = process.env.T3CODE_THREAD_ID || prev.t3_thread || "";
   // process.ppid IS this session's `claude` process (verified: hooks are spawned directly by it,
   // stable for the session's life, on both CLI and desktop). The app uses kill(pid,0) for liveness.
   // started:true — any update.js event (prompt/tool/permission/stop) is real activity, so the session
@@ -471,7 +483,7 @@ process.stdin.on("end", () => {
   // Carried over rather than re-measured: a session's controlling terminal does not change, and
   // this is the one field here that costs a process to find out.
   const tty = typeof prev.tty === "string" && prev.tty ? prev.tty : ttyDev();
-  const out = { state, label, tool: p.tool_name || "", project, cwd, sessionId: p.session_id || "", transcript, entrypoint, term_program: termProgram, term_bundle: termBundle, tty, pid: process.ppid, started: true, startedAt, ts, ...ctx,
+  const out = { state, label, tool: p.tool_name || "", project, cwd, sessionId: p.session_id || "", transcript, entrypoint, term_program: termProgram, term_bundle: termBundle, t3_thread: t3Thread, tty, pid: process.ppid, started: true, startedAt, ts, ...ctx,
     ...costFromStatusLine(sid, prev), dirty: dirtyCount(cwd, event, prev) };
   if (codex) {
     // The app keys its session map by "<provider>:<id>" and draws the pill from this field, so

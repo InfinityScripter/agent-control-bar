@@ -105,6 +105,11 @@ private struct GeneralSettings: View {
         + "Claude or Codex limit reset, built from past vendor announcements. A plain public request "
         + "with no key and nothing about you in it. Off removes the card and stops the request."
 
+    private static let notificationsFooter: String = "Silent while this is off: MCP servers going "
+        + "down or coming back, a signed-out Claude Code account, app updates and the one-time "
+        + "notice about the anonymous usage ping. macOS asks for permission once per app; after a "
+        + "refusal only System Settings can switch them back on."
+
     // The one switch here that costs a macOS permission, so the footer says so before the switch is
     // touched rather than after — the modal on enabling is the second telling, not the first.
     private static let exactFocusFooter: String = "Off, a click on a session brings its terminal to "
@@ -186,6 +191,19 @@ private struct GeneralSettings: View {
                 Text("Panel")
             } footer: {
                 Text("Choose which blocks appear in the panel. Data collection and notifications stay on their existing settings.")
+            }
+            // Only once macOS holds a refusal: before the app has ever asked, System Settings has
+            // no row for it and the button would open a pane with nothing to switch.
+            if store.notificationsDenied {
+                Section {
+                    Label("Off in System Settings", systemImage: "bell.slash")
+                        .foregroundStyle(.secondary)
+                    Button("Open notification settings\u{2026}") { store.openNotificationSettings() }
+                } header: {
+                    Text("Notifications")
+                } footer: {
+                    Text(Self.notificationsFooter)
+                }
             }
             Section {
                 Toggle("Exact terminal focus", isOn: store.exactTerminalFocus)

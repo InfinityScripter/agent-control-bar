@@ -143,6 +143,37 @@ test("a payload that does not parse still yields a state file, not a crash", (t)
   assert.equal(state(home, "unknown").state, "thinking");
 });
 
+// What Cursor 3.30 sends, field for field. It runs the hooks in ~/.claude/settings.json for its
+// own agent, and `cursor_version` is on every one of the 981 events in its hooks log that reached
+// this script; Claude Code sends no such field.
+const cursorEvent = (extra) => ({ conversation_id: "c0", generation_id: "g0", session_id: "cur1",
+  hook_event_name: "preToolUse", cursor_version: "3.30.14", workspace_roots: ["/repo"],
+  transcript_path: null, ...extra });
+
+test("a run of Cursor's own agent is not a Claude Code session", (t) => {
+  // Its Stop never arrived for seven of ten runs measured, so each sat in the panel as a nameless
+  // "session" thinking for fifteen minutes, and seven at once set the crab on fire.
+  const home = sandbox(t);
+  const env = { CLAUDE_CODE_ENTRYPOINT: undefined };
+  event(home, "prompt", cursorEvent({ hook_event_name: "beforeSubmitPrompt", prompt: "hi" }), { env });
+  event(home, "pre", cursorEvent({ tool_name: "Shell" }), { env });
+  event(home, "post", cursorEvent({ hook_event_name: "postToolUse", tool_name: "Shell" }), { env });
+  event(home, "stop", cursorEvent({ hook_event_name: "stop",
+    transcript_path: path.join(home, ".cursor", "projects", "repo", "t.jsonl") }), { env });
+  assert.equal(fs.existsSync(path.join(stateDir(home), "cur1.json")), false);
+  assert.deepEqual(spawnLog(home), [], "and somebody else's agent does not launch the app");
+});
+
+test("a Claude Code session that names no entrypoint is still a session", (t) => {
+  // The line the Cursor check must not cross: an empty CLAUDE_CODE_ENTRYPOINT is allowed, so
+  // its absence alone is no evidence of another host.
+  const home = sandbox(t);
+  event(home, "prompt", { session_id: "s1", cwd: home, hook_event_name: "UserPromptSubmit" },
+    { env: { CLAUDE_CODE_ENTRYPOINT: undefined } });
+  assert.equal(state(home, "s1").state, "thinking");
+  assert.equal(state(home, "s1").entrypoint, "");
+});
+
 test("a corrupt state file from an earlier event is replaced, not fatal", (t) => {
   const home = sandbox(t);
   fs.mkdirSync(stateDir(home), { recursive: true });

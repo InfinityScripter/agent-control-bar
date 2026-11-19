@@ -522,6 +522,31 @@ check(SessionFormat.codexThreadURL(
         Session(json: ["provider": "codex", "surface": "app"], id: "a/b?x"))?
         .absoluteString == "codex://threads/a%2Fb%3Fx",
       "an odd id is escaped rather than taken as a path")
+// A session started from T3 Code. The app's own bundle id only brings its window forward, on
+// whatever thread it was showing; T3 exports the thread id to the session, the hooks record it,
+// and t3code://threads/<environment>/<thread> is the link the app itself parses.
+let t3Home = NSTemporaryDirectory() + "ccb-t3-home/"
+try? FileManager.default.removeItem(atPath: t3Home)
+try! FileManager.default.createDirectory(atPath: t3Home + "userdata", withIntermediateDirectories: true)
+try! "env-1\n".write(toFile: t3Home + "userdata/environment-id", atomically: true, encoding: .utf8)
+check(Session(json: ["t3_thread": "th-1"], id: "s").t3Thread == "th-1"
+      && Session(json: [:], id: "s").t3Thread.isEmpty,
+      "the T3 Code thread id is read from the session file and is empty everywhere else")
+check(T3Sessions.threadURL(threadID: "th-1", home: t3Home)?.absoluteString == "t3code://threads/env-1/th-1",
+      "a T3 Code session opens its own thread: "
+        + "\(T3Sessions.threadURL(threadID: "th-1", home: t3Home)?.absoluteString ?? "nil")")
+check(T3Sessions.threadURL(threadID: "", home: t3Home) == nil, "no thread id, no link")
+check(SessionFormat.surfaceTag(Session(json: ["entrypoint": "t3-code", "t3_thread": "th-1"], id: "x")) == "APP",
+      "a Claude session T3 Code runs in one of its threads is an app session, not a terminal one")
+// The thread id is inherited by everything started from a thread, so it alone decides nothing.
+check(SessionFormat.surfaceTag(Session(json: ["provider": "codex", "surface": "exec", "t3_thread": "th-1"], id: "x")) == "EXEC"
+      && SessionFormat.surfaceTag(Session(json: ["entrypoint": "claude-vscode", "t3_thread": "th-1"], id: "x")) == "IDE"
+      && SessionFormat.surfaceTag(Session(json: ["entrypoint": "cli", "t3_thread": "th-1"], id: "x")) == "CLI",
+      "a session that merely descends from a T3 Code thread keeps the surface it really runs on")
+check(T3Sessions.threadURL(threadID: "th-1", home: t3Home + "missing/") == nil,
+      "without T3 Code's environment id there is no thread link, and the click falls back to the app")
+check(T3Sessions.threadURL(threadID: "a/b?x", home: t3Home)?.absoluteString == "t3code://threads/env-1/a%2Fb%3Fx",
+      "an odd thread id is escaped rather than taken as a path")
 check(SessionFormat.surfaceTag(Session(json: ["provider": "codex", "surface": "exec"], id: "x")) == "EXEC",
       "a non-interactive codex exec run says so")
 check(SessionFormat.surfaceTag(Session(json: ["provider": "codex", "surface": ""], id: "x")).isEmpty,
@@ -3073,10 +3098,20 @@ writeMarkedAtlas([(.idle, 70, 70, 40, 60), (.running, 40, 80, 120, 30), (.waitin
 
 /// Whether anything was drawn at that point of a finished icon, counted from the TOP left the way
 /// a picture is read rather than the way it is drawn.
+///
+/// `x` and `y` are points, and an icon holds more than one pixel to the point, so the question is
+/// asked of every pixel inside that point: an edge is reached when any of them is drawn on.
 func iconHasInk(_ image: NSImage, x: Int, y: Int) -> Bool {
     guard let rep = image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)),
-          x >= 0, y >= 0, x < rep.pixelsWide, y < rep.pixelsHigh else { return false }
-    return (rep.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.1
+          x >= 0, y >= 0, image.size.width >= 1 else { return false }
+    let scale = max(1, rep.pixelsWide / Int(image.size.width))
+    return (0..<scale).contains { dx in
+        (0..<scale).contains { dy in
+            let px = x * scale + dx, py = y * scale + dy
+            return px < rep.pixelsWide && py < rep.pixelsHigh
+                && (rep.colorAt(x: px, y: py)?.alphaComponent ?? 0) > 0.1
+        }
+    }
 }
 
 let markedPet = Pet.load(directory: iconDir)
@@ -3132,6 +3167,25 @@ if let barFrames {
     check(!(0..<width).contains { iconHasInk(running[0], x: $0, y: 0) },
           "while the row that does not reach the top does not suddenly fill it")
 }
+
+// MARK: what a pet's frames keep alive
+//
+// A sheet is 14 MB once decoded, and a frame cut out of it is a window onto it: one frame kept
+// anywhere keeps the whole sheet. Frames are kept in places nobody owns — the bar's used to be
+// pictures that drew themselves from the sheet when shown, and a closed window still holds the
+// last thing it drew: five pets were on screen when Settings closed, and five sheets stayed.
+// So every frame handed out has to be pixels of its own.
+check(barFrames?.frames(for: .idle).first?.representations.first?.pixelsHigh == 36,
+      "a bar frame is finished pixels, two to the point, and not a drawing that holds the sheet")
+let rowFrame = PetAtlas(markedPet!)?.loop(for: .idle).images.first?
+    .cgImage(forProposedRect: nil, context: nil, hints: nil)
+check(rowFrame?.width == PetFormat.v2.cellWidth && rowFrame?.bytesPerRow == PetFormat.v2.cellWidth * 4,
+      "a row frame is a picture one cell wide, not a window onto rows as wide as the sheet")
+// A frame cut straight from the file is one cell wide too, and it is the one that costs a decode
+// of the whole sheet each time it is shown. This atlas is a PNG with plain alpha, so such a frame
+// reports plain alpha; one drawn into our own bitmap reports the premultiplied alpha it was made with.
+check(rowFrame?.alphaInfo == .premultipliedLast,
+      "and it was drawn into a bitmap of ours rather than left to be decoded from the file")
 
 // A pet whose rows are empty has no margin to measure, and dividing by that height is how an
 // icon ends up infinitely wide. Nothing to draw has to come back as nothing to draw.
@@ -3826,13 +3880,33 @@ do {
           "tempo changes preserve animation progress rather than restarting the provider")
     let left = NSImage(size: NSSize(width: 28, height: 18)), right = NSImage(size: NSSize(width: 28, height: 18))
     left.isTemplate = true; right.isTemplate = true
-    let composed = MenuBarImage.compose([.init(image: left, label: "", timer: ""),
-                                         .init(image: right, label: "", timer: "")])
-    check(composed.size.width > 56 && composed.isTemplate, "two empty-status blocks retain two adaptive icons with a gap")
-    let short = MenuBarImage.compose([.init(image: left, label: "Musing…", timer: "3s")])
-    let long = MenuBarImage.compose([.init(image: left, label: String(repeating: "x", count: 400), timer: "99h+")])
-    check(short.size.width == long.size.width && short.size.width > 100 && short.size.width < 120,
-          "status and timer columns stay bounded and stable across words and clock changes")
+    let composed = MenuBarImage.compose([.init(image: left, label: "", timer: "", textWidth: 0),
+                                         .init(image: right, label: "", timer: "", textWidth: 0)])
+    check(composed.size.width > 56 && composed.size.width < 70 && composed.isTemplate,
+          "two empty-status blocks retain two adaptive icons with a gap and no text column")
+    let column = { (label: String, timer: String, working: Bool, previous: CGFloat) in
+        MenuBarImage.textColumn(label: label, timer: timer, working: working, previous: previous)
+    }
+    let fitted = column("Needs you", "", false, MenuBarImage.maxTextWidth)
+    check(fitted > 30 && fitted < 70,
+          "a resting status takes the room its words need, leaving no blank before the next provider: \(fitted)")
+    let oneLine = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+    check(fitted == ("Needs you" as NSString).size(withAttributes: [.font: oneLine]).width.rounded(.up)
+          && column("Needs you", "1s", false, 0) < fitted,
+          "the column is measured in the font it is drawn in: 11pt for one line, the smaller 9pt for two")
+    check(column("", "", true, MenuBarImage.maxTextWidth) == 0, "no words, no column")
+    let narrow = column("Musing…", "3s", true, 0)
+    check(column("Running tests…", "3s", true, narrow) > narrow
+          && column("Running tests…", "3s", true, narrow) == column("Running tests…", "3s", false, 0),
+          "a wider tool label widens a working column to its own width")
+    let long = column(String(repeating: "x", count: 400), "99h+", true, 0)
+    check(long == MenuBarImage.maxTextWidth && column("Musing…", "3s", true, long) == long
+          && column("Musing…", "3s", true, 500) == long,
+          "while a session works the column stays bounded and only grows, so tool labels and the clock move nothing")
+    check(column("Musing…", "3s", true, 0) < long && column("Musing…", "3s", false, long) < long,
+          "and it starts from the words, returning to them once the work is over")
+    let wide = MenuBarImage.compose([.init(image: left, label: "Musing…", timer: "3s", textWidth: long)])
+    check(wide.size.width > 100 && wide.size.width < 120, "the composed block is its icon plus the column it was given")
     let bare = NSImage(size: NSSize(width: 18, height: 18))
     check(Gauge().image(icon: bare) === bare, "an empty gauge returns the bare icon without a blank strip")
 }

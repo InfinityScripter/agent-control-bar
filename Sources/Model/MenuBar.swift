@@ -106,18 +106,39 @@ struct MenuBarMotion {
 }
 
 /// Composes actual provider icons and gauges. A bounded text column keeps long tool labels and
-/// clocks from moving the neighbouring provider or overflowing the menu bar.
+/// clocks from overflowing the menu bar.
 struct MenuBarImage {
     struct Block {
         let image: NSImage
         let label: String
         let timer: String
+        /// See textColumn: the room the two lines are drawn in, 0 when there are none.
+        let textWidth: CGFloat
+    }
+
+    static let maxTextWidth: CGFloat = 84
+
+    private static func font(stacked: Bool) -> NSFont {
+        NSFont.monospacedDigitSystemFont(ofSize: stacked ? 9 : 11, weight: .regular)
+    }
+
+    /// The width a block's words get. Fitted to them: the column used to be a fixed 84pt, and a
+    /// resting "Needs you" left a blank stretch before the next provider's icon. While the session
+    /// works the column only grows — tool labels change every few seconds, and each change would
+    /// otherwise shift this block's icon and every menu-bar item to its left.
+    static func textColumn(label: String, timer: String, working: Bool, previous: CGFloat) -> CGFloat {
+        let lines = [label, timer].filter { !$0.isEmpty }
+        guard !lines.isEmpty else { return 0 }
+        let font = font(stacked: lines.count == 2)
+        let widest = lines.map { ($0 as NSString).size(withAttributes: [.font: font]).width }.max() ?? 0
+        let fitted = min(maxTextWidth, widest.rounded(.up))
+        return working ? max(fitted, min(maxTextWidth, previous)) : fitted
     }
 
     static func compose(_ blocks: [Block]) -> NSImage {
-        let gap: CGFloat = 10, textGap: CGFloat = 4, textWidth: CGFloat = 84
+        let gap: CGFloat = 10, textGap: CGFloat = 4
         let height = NSStatusBar.system.thickness
-        let widths = blocks.map { $0.image.size.width + ($0.label.isEmpty && $0.timer.isEmpty ? 0 : textGap + textWidth) }
+        let widths = blocks.map { $0.image.size.width + ($0.textWidth > 0 ? textGap + $0.textWidth : 0) }
         let width = widths.reduce(0, +) + CGFloat(max(0, blocks.count - 1)) * gap
         let template = blocks.allSatisfy { $0.image.isTemplate }
         let image = NSImage(size: NSSize(width: width, height: height), flipped: false) { _ in
@@ -134,7 +155,7 @@ struct MenuBarImage {
                 let lines = [block.label, block.timer].filter { !$0.isEmpty }
                 if !lines.isEmpty {
                     let stacked = lines.count == 2
-                    let font = NSFont.monospacedDigitSystemFont(ofSize: stacked ? 9 : 11, weight: .regular)
+                    let font = font(stacked: stacked)
                     let lineHeight: CGFloat = stacked ? 11 : 14
                     let paragraph = NSMutableParagraphStyle()
                     paragraph.lineBreakMode = .byTruncatingTail
@@ -143,7 +164,7 @@ struct MenuBarImage {
                         NSAttributedString(string: line, attributes: [
                             .font: font, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph,
                         ]).draw(in: NSRect(x: x + block.image.size.width + textGap, y: y,
-                                          width: textWidth, height: lineHeight))
+                                          width: block.textWidth, height: lineHeight))
                     }
                 }
                 x += widths[i] + gap

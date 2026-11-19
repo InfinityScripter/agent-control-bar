@@ -31,6 +31,7 @@ final class SettingsStore: ObservableObject {
         let newerVersion: String?
         let limitsPollStatus: String
         let serviceAccounts: [ServiceUsageBoard.Account]
+        let notificationsDenied: Bool
     }
     private var live: Live?
 
@@ -40,7 +41,8 @@ final class SettingsStore: ObservableObject {
                         updateChecking: updateChecking, updateCheckedAt: updateCheckedAt,
                         updateProblem: updateProblem, newerVersion: newerVersion,
                         limitsPollStatus: limitsPollStatus,
-                        serviceAccounts: ServiceUsageBoard.services.map { serviceAccount($0) })
+                        serviceAccounts: ServiceUsageBoard.services.map { serviceAccount($0) },
+                        notificationsDenied: notificationsDenied)
         guard next != live else { return }
         live = next
         objectWillChange.send()
@@ -226,6 +228,13 @@ final class SettingsStore: ObservableObject {
     var updateChecking: Bool { controller?.updateCheckRunning ?? false }
     var updateCheckedAt: Date? { controller?.updateCheckedAt }
     var updateProblem: String? { controller?.updateCheckProblem }
+
+    // MARK: Notifications
+
+    /// macOS has a stored refusal for this app. Said here and not on the panel: declining alerts
+    /// is a choice, and a banner about it on every open treated the choice as a fault.
+    var notificationsDenied: Bool { controller?.notificationsDenied ?? false }
+    func openNotificationSettings() { controller?.openNotificationSettings() }
 
     // MARK: Hooks
     //

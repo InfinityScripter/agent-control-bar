@@ -62,18 +62,74 @@ test("a start seeds over a resumed session's frozen state", (t) => {
   assert.equal(readJSON(path.join(stateDir(home), "s1.json")).state, "idle");
 });
 
-test("with the app running, a start reaps nothing and still asks LaunchServices for it", (t) => {
-  // The reap only runs while the app is down: a running app does its own garbage collection in
-  // evaluate(), and two collectors racing over one directory is how live files went missing.
+// A file's mtime is the last event its session sent, so setting it is how a test says "this one
+// has been silent for that long".
+const writeAged = (dir, name, state, hoursAgo) => {
+  const file = path.join(dir, name + ".json");
+  fs.writeFileSync(file, JSON.stringify(state));
+  const at = Date.now() / 1000 - hoursAgo * 3600;
+  fs.utimesSync(file, at, at);
+};
+
+test("with the app running, a start clears the long-dead files and still asks LaunchServices for it", (t) => {
+  // The app never deletes a state file and SessionEnd does not always come, so this sweep is the
+  // only thing that keeps the directory from growing for as long as the app stays up. A dead pid
+  // alone is not enough while it runs: a resumed session rewrites its file under a new pid, and
+  // a sweep that read the old one a moment earlier would delete the new event.
   const home = sandbox(t);
   fs.mkdirSync(stateDir(home), { recursive: true });
-  fs.writeFileSync(path.join(stateDir(home), "dead.json"), JSON.stringify({ pid: 999999 }));
+  writeAged(stateDir(home), "old-dead", { pid: 999999 }, 2);
+  writeAged(stateDir(home), "fresh-dead", { pid: 999999 }, 0);
+  writeAged(stateDir(home), "old-live", { pid: process.pid }, 2);
+  // The context figure lives and dies with its session file, and one left with no session file
+  // at all is swept as well.
+  const contextDir = path.join(barDir(home), "context.d");
+  fs.mkdirSync(contextDir, { recursive: true });
+  for (const name of ["old-dead", "fresh-dead", "orphan"]) {
+    fs.writeFileSync(path.join(contextDir, name + ".json"), "{}");
+  }
 
   lifecycle(home, ["start"], { session_id: "s1", cwd: home }, { env: { APP_RUNNING: "1" } });
 
-  assert.deepEqual(fs.readdirSync(stateDir(home)).sort(), ["dead.json", "s1.json"]);
+  assert.deepEqual(fs.readdirSync(stateDir(home)).sort(),
+    ["fresh-dead.json", "old-live.json", "s1.json"]);
+  assert.deepEqual(fs.readdirSync(contextDir), ["fresh-dead.json"]);
   // `open -g` on a running app is a no-op that also covers the race where it is quitting.
   assert.deepEqual(spawnLog(home), ["open -g -b io.github.infinityscripter.claude-control-bar"]);
+});
+
+test("with the app running, a Codex terminal session is given a day past its recorded pid", (t) => {
+  // That pid can be Codex's shared daemon, which dies while the terminal client lives on; the
+  // app goes by the terminal's owner and keeps the row, so the file has to outlast the pid.
+  const home = sandbox(t);
+  const dir = codexStateDir(home);
+  fs.mkdirSync(dir, { recursive: true });
+  const cli = { pid: 999999, provider: "codex", surface: "cli" };
+  writeAged(dir, "cli-hours", cli, 2);
+  writeAged(dir, "cli-days", cli, 25);
+  writeAged(dir, "app-hours", { pid: 999999, provider: "codex", surface: "app" }, 2);
+
+  lifecycle(home, ["start", "--provider", "codex"],
+    { session_id: "c1", cwd: home, source: "startup" }, { env: { APP_RUNNING: "1" } });
+
+  assert.deepEqual(fs.readdirSync(dir).sort(), ["c1.json", "cli-hours.json"]);
+});
+
+test("a start from Cursor's own agent seeds no session and launches nothing", (t) => {
+  // See the Cursor test in update-hook.test.js for where this payload comes from. It is not a
+  // new Claude Code session in any sense: it must not void an explicit Quit either, or the next
+  // real event would bring the app back up, and it does no sweeping on Claude Code's behalf.
+  const home = sandbox(t);
+  fs.mkdirSync(stateDir(home), { recursive: true });
+  writeAged(stateDir(home), "old-dead", { pid: 999999 }, 2);
+  const marker = path.join(barDir(home), "quit-intent");
+  fs.writeFileSync(marker, "");
+  lifecycle(home, ["start"], { session_id: "cur1", cursor_version: "3.30.14",
+    hook_event_name: "sessionStart", workspace_roots: [home], transcript_path: null },
+    { env: { CLAUDE_CODE_ENTRYPOINT: undefined, APP_RUNNING: "1" } });
+  assert.deepEqual(fs.readdirSync(stateDir(home)), ["old-dead.json"]);
+  assert.ok(fs.existsSync(marker), "Cursor took the user's Quit away");
+  assert.deepEqual(spawnLog(home), []);
 });
 
 test("a state file whose pid does not parse is reaped as dead", (t) => {
