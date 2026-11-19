@@ -110,13 +110,15 @@ In **Connected accounts**, choose **Set key…** to show the DeepSeek API balanc
 
 ## Usage limits
 
-The bars show the percentage used. Claude's limits include its 5-hour and 7-day windows, plus a separate Fable weekly window on plans that report one. Reset times appear in the panel. Codex reports its own window lengths; they are not always a 5-hour/week pair.
+The bars show what is left of each window, drawn the way T3 Code draws it. The solid part is the quota left. The hatched part is what has been spent and comes back at the reset. A line on the bar marks where even spending would be by now: if the solid part runs past the line, there is headroom; if it stops short of the line, the window runs out before it resets. In the panel an arrow beside the figure says the same thing: ↗ for spending faster than the window passes, → for on pace, ↘ for slower. The bars in the menu bar follow the same rules. A window that reports no reset time has no line and no hatch. The warning colours still start at 75% and 90% used.
+
+Claude's limits include its 5-hour and 7-day windows, plus a separate Fable weekly window on plans that report one. Reset times appear in the panel. Codex reports its own window lengths; they are not always a 5-hour/week pair.
 
 Codex can report an ordinary pool and a reserve pool. The menu bar prefers the ordinary pool. If only reserve figures are available, it uses them and identifies the fallback in the tooltip. The panel lists all reported pools. A provider with no usable figures gets no limit bars; it does not inherit the other provider's numbers.
 
-After a recorded reset time passes, that window shows zero used until the next measurement, with no old reset countdown. Codex snapshots without enough timing information are omitted.
+After a recorded reset time passes, that window shows 100% left until the next measurement, with no old reset countdown. Codex snapshots without enough timing information are omitted.
 
-In **Settings → Appearance → Limits strip**, **Two rows** shows both providers together. **Switcher** gives one provider the full width; the other remains behind its tab, with a thin usage indicator under the name.
+In **Settings → Appearance → Limits strip**, **Two rows** shows both providers together. **Switcher** gives one provider the full width; the other remains behind its tab, with a thin bar of what is left under the name.
 
 Under the strip, a **Reset odds** card shows whenreset.app's estimate that Claude or Codex limits get reset early within 24 hours. Its chevron unfolds the 48-hour and 7-day odds, the last reset and how many resets have been tracked for each provider. It is an estimate from past vendor announcements, not an official forecast. The app asks the site at most every 15 minutes; turn **Limit reset odds** off in General to remove the card and stop the request.
 

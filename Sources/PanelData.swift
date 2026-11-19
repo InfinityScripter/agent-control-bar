@@ -132,7 +132,9 @@ extension StatusController {
             // report is skipped, not zeroed — the model hands over only the windows it read.
             let rows = entry.windows.map { window in
                 PanelLimit(title: window.title, badge: window.badge, used: window.window.used,
-                           resets: window.window.resets.flatMap { $0 > now ? Self.until($0) : nil })
+                           resets: window.window.resets.flatMap { $0 > now ? Self.until($0) : nil },
+                           remaining: window.window.remaining,
+                           timeLeft: window.timeLeftPercent(at: now), pace: window.pace(at: now))
             }
             let soonest = entry.windows.compactMap { $0.window.resets }.filter { $0 > now }.min()
             // Picked from the windows rather than from the rows above: the rule breaks a tie on
@@ -231,13 +233,13 @@ extension StatusController {
         } : 0
         guard panelVisibility.limits,
               limitsBoard.shown(at: Date().timeIntervalSince1970).count > 1 else { return odds + accounts }
-        return odds + accounts + (limitsLayout == .rows ? 93 : 40)
+        return odds + accounts + (limitsLayout == .rows ? 97 : 40)
     }
 
     /// The banner, the limits strip, the tabs and the footer, plus the gap under the menu bar.
     /// Deliberately generous: over-reserving costs a little scrolling, under-reserving costs the
     /// panel its anchor.
-    static let panelChromeHeight: CGFloat = 273
+    static let panelChromeHeight: CGFloat = 277
 
     // MARK: MCP
 

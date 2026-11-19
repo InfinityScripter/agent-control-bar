@@ -440,9 +440,45 @@ struct PanelLimit: Equatable, Identifiable {
     let used: Int
     /// "1h 3m" until the window resets; nil when the writer did not know.
     let resets: String?
+    /// What is left of the window, in percent: the figure the tile shows and the solid part of
+    /// its bar.
+    var remaining = 0
+    /// How much of the window's time is left, in percent, and how the spending stands against
+    /// it. Nil together, when the window has no clock: no reset time, or no known length.
+    var timeLeft: Int? = nil
+    var pace: LimitPace? = nil
 
     var id: String { title }
+    /// How much is used, for the warning colours: "nearly out" is still 75% and 90% used.
     var fraction: Double { Double(used) / 100 }
+    var leftFraction: Double { Double(remaining) / 100 }
+    /// Where the line on the bar goes: where the solid part would end under even spending.
+    var paceMark: Double? { timeLeft.map { Double($0) / 100 } }
+
+    /// The pace in words, for the tooltip, VoiceOver and the text dump.
+    var paceNote: String? {
+        guard let timeLeft, let pace else { return nil }
+        return "\(timeLeft)% of the window left: \(Self.paceWords(pace))"
+    }
+
+    /// The whole tooltip. Built here rather than in the view, where a chain of strings is what
+    /// the type checker gives up on.
+    var tip: String {
+        let lines: [String?] = [
+            "\(remaining)% left" + (paceNote.map { ", \($0)" } ?? ""),
+            paceNote == nil ? nil : "The line on the bar is where even spending would be.",
+            resets.map { "Resets in \($0)" },
+        ]
+        return lines.compactMap { $0 }.joined(separator: "\n")
+    }
+
+    private static func paceWords(_ pace: LimitPace) -> String {
+        switch pace {
+        case .ahead: return "spending faster than the window passes"
+        case .on:    return "on pace with the window"
+        case .under: return "headroom left for the rest of the window"
+        }
+    }
 }
 
 struct PanelMCP: Equatable {

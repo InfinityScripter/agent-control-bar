@@ -180,6 +180,92 @@ struct PanelBar: View {
     }
 }
 
+/// A limit window's bar, drawn the way T3 Code draws it, so one account reads the same in both.
+/// The solid part is what is left. The hatched part is what has been spent and comes back at the
+/// reset. The line is where the solid part would end by now under even spending: solid running
+/// past the line is headroom, solid stopping short of it is a window that runs out early.
+struct PanelLimitBar: View {
+    @Environment(\.colorScheme) private var scheme
+    /// The pixels-per-point of the screen this is drawn on, for the same reason PanelBar asks.
+    @Environment(\.displayScale) private var displayScale
+    /// How much of the window is left, 0…1.
+    let left: Double
+    var fill: Color
+    /// Whether the spent part is hatched. Hatching says "this comes back", so a window that does
+    /// not say when it resets gets a plain track instead.
+    var refills: Bool
+    /// How much of the window's time is left, 0…1, or nil when the window has no clock.
+    var mark: Double?
+
+    /// Twice PanelBar's hairline: a hatch needs a few points of height to read as one.
+    static let height: CGFloat = 8
+    /// Half the slot cut for the line, and how far the line stands clear of either end.
+    private static let slot: CGFloat = 2.5
+
+    var body: some View {
+        GeometryReader { geo in
+            let width = geo.size.width
+            let solid = Gauge.fillWidth(left, trackWidth: width, scale: displayScale)
+            let at = markOffset(in: width)
+            ZStack(alignment: .leading) {
+                PanelTheme.track(scheme)
+                if refills {
+                    PanelHatch().stroke(fill.opacity(0.55), lineWidth: 1)
+                        .frame(width: max(0, width - solid))
+                        .clipped()
+                        .offset(x: solid)
+                }
+                fill.frame(width: solid)
+            }
+            // The line sits in a slot cut out of the bar, so it reads against the solid part,
+            // the hatch and the bare track alike.
+            .mask(alignment: .leading) {
+                HStack(spacing: 0) {
+                    Rectangle().frame(width: at.map { $0 - Self.slot })
+                    Color.clear.frame(width: at == nil ? 0 : Self.slot * 2)
+                    Rectangle()
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 2.5, style: .continuous))
+            .overlay(alignment: .leading) {
+                if let at {
+                    Capsule().fill(Color.primary)
+                        .frame(width: 1.5, height: Self.height)
+                        .offset(x: at - 0.75)
+                }
+            }
+        }
+        .frame(height: Self.height)
+    }
+
+    /// The line's place along the bar, on the device pixel grid and held clear of both ends so it
+    /// stays on the bar at 0% and at 100%. Nil when there is no clock, or no room for a slot.
+    private func markOffset(in width: CGFloat) -> CGFloat? {
+        guard let mark, width >= Self.slot * 4 else { return nil }
+        let at = min(max(Self.slot, width * mark), width - Self.slot)
+        return (at * displayScale).rounded() / displayScale
+    }
+}
+
+/// Thin diagonal lines across a rectangle, leaning the way T3 Code's hatch leans.
+struct PanelHatch: Shape {
+    /// How far apart the lines start along the bottom edge.
+    var spacing: CGFloat = 4
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        // Each line climbs one bar-height to the right, so the first has to start a bar-height
+        // before the left edge for the corner to be covered.
+        var x = rect.minX - rect.height
+        while x < rect.maxX {
+            path.move(to: CGPoint(x: x, y: rect.maxY))
+            path.addLine(to: CGPoint(x: x + rect.height, y: rect.minY))
+            x += spacing
+        }
+        return path
+    }
+}
+
 /// A row's trailing chevron, rotated when its detail is open.
 struct PanelDisclosure: View {
     let open: Bool

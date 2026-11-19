@@ -27,8 +27,9 @@ struct LimitsBoard {
     /// used to leave the icon blank while Codex figures sat unused below.
     func gauge(at now: Double) -> Gauge {
         let drawn = claude?.drawable(at: now) ?? []
-        let pair = Gauge(fiveHour: drawn.first { $0.key == "five_hour" }?.window.fraction,
-                         sevenDay: drawn.first { $0.key == "seven_day" }?.window.fraction)
+        let (five, seven) = (drawn.first { $0.key == "five_hour" }, drawn.first { $0.key == "seven_day" })
+        let pair = Gauge(fiveHour: five?.window.fraction, sevenDay: seven?.window.fraction,
+                         timeLeft: (Self.timeLeft(five, at: now), Self.timeLeft(seven, at: now)))
         if !pair.isEmpty { return pair }
         // A window whose length Codex never reported has no honest two-character label, so it
         // gets no bar rather than a guessed one.
@@ -36,7 +37,14 @@ struct LimitsBoard {
         guard let first = live.first else { return Gauge() }
         let second = live.count > 1 ? live.last : nil
         return Gauge(fiveHour: first.window.fraction, sevenDay: second?.window.fraction,
-                     labels: (first.shortTitle ?? "", second?.shortTitle ?? ""))
+                     labels: (first.shortTitle ?? "", second?.shortTitle ?? ""),
+                     timeLeft: (Self.timeLeft(first, at: now), Self.timeLeft(second, at: now)))
+    }
+
+    /// Where the bar's line goes. From the whole percent, like the panel's line, so the icon is
+    /// redrawn when the line has moved by a visible amount and not on every tick.
+    private static func timeLeft(_ window: NamedWindow?, at now: Double) -> Double? {
+        window?.timeLeftPercent(at: now).map { Double($0) / 100 }
     }
 
     /// Reserve is a separate pool, not a second ordinary window. Never mix it into a pair.

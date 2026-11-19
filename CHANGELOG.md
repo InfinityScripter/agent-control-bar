@@ -7,6 +7,23 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [Unreleased]
+
+### Changed
+- Limit bars show what is left of each window instead of what is used, drawn the way T3 Code
+  draws it: the solid part is the quota left, the hatched part is what has been spent and comes
+  back at the reset. This applies to the tiles in the panel and to the bars beside the menu
+  bar icon. The warning colours still start at 75% and 90% used.
+- The bars beside the menu bar icon are longer and thicker, 32 by 6 points instead of 20 by 3.
+  Each agent's block in the menu bar is 12 points wider.
+
+### Added
+- A line on each limit bar marks where even spending would be by now, and in the panel an arrow
+  beside the figure says whether the window is being spent faster than its time passes, on
+  pace, or slower. The tooltip gives both figures, for example "60% left, 78% of the window
+  left". The five-point margin is the one T3 Code uses. A window that reports no reset time has
+  no line and no hatch.
+
 ## [0.28.1] - 2026-11-19
 
 ### Added

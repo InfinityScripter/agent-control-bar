@@ -23,6 +23,9 @@ struct LimitWindow: Equatable {
 
     /// Fraction for the gauges; the percentage stays an Int on disk so the file is diffable.
     var fraction: Double { Double(used) / 100 }
+    /// What is left of the window, in percent. `used` comes out of a file and is held to 0…100
+    /// here, so a figure a writer got wrong cannot draw a bar longer than its track.
+    var remaining: Int { 100 - min(100, max(0, used)) }
 }
 
 /// The account's limits as read from limits.json. Two windows every subscriber has, plus the
@@ -136,6 +139,47 @@ struct NamedWindow: Equatable {
         NamedWindow(key: key, title: title, badge: badge, minutes: minutes, ts: ts,
                     window: LimitWindow(used: 0, resets: nil))
     }
+
+    /// How far through its time the window is, 0…1 — which is also how much of it even spending
+    /// would have used by `now`. Nil when the window does not say when it resets or how long it
+    /// is: without both there is no clock to read.
+    ///
+    /// A percentage alone does not say whether it is a lot. 33% of the week is trouble on its
+    /// second day and nothing on its sixth, and this is what tells the two apart.
+    func elapsedShare(at now: Double) -> Double? {
+        guard let resets = window.resets, let minutes, minutes > 0 else { return nil }
+        let length = Double(minutes) * 60
+        // Clamped: a reset further off than the window is long is a clock that disagrees with
+        // the writer's, and a bar has no place to draw a line before its start.
+        return min(1, max(0, (length - (resets - now)) / length))
+    }
+
+    /// How much of the window's time is left, in whole percents: where the line on the bar goes.
+    /// The bars show what is LEFT of a window, so even spending is measured in time left, the way
+    /// T3 Code measures it. A whole number moves once per hundredth of the window — every 100
+    /// minutes of a week — so a panel that compares its snapshot 2.5 times a second does not
+    /// redraw for a line that has not visibly moved.
+    func timeLeftPercent(at now: Double) -> Int? {
+        elapsedShare(at: now).map { ((1 - $0) * 100).rounded().clampedInt }
+    }
+
+    /// Whether the window is being spent faster than its time passes. The five-point margin is
+    /// T3 Code's, so one account reads the same way in both apps.
+    func pace(at now: Double) -> LimitPace? {
+        elapsedShare(at: now).map { share in
+            let gap = Double(window.used) - share * 100
+            return gap > 5 ? .ahead : (gap < -5 ? .under : .on)
+        }
+    }
+}
+
+/// How a window's spending stands against its clock.
+enum LimitPace {
+    /// More used than time has passed: at this rate the window runs out before it resets.
+    case ahead
+    case on
+    /// Less used than time has passed: there is headroom for the rest of the window.
+    case under
 }
 
 /// One provider's limits, whatever shape its plan gives them. Both files the app reads

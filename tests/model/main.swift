@@ -1518,26 +1518,26 @@ if let real = try? String(contentsOfFile: repoRoot + "/CHANGELOG.md", encoding: 
 // The measurable contract: fill width = round(percent × track width) in device pixels.
 // The old formula floored the fill at barH (15% of the track), so 1% and 15% drew the same
 // stub and the user read 18% as "almost empty".
-// 1% is the one sanctioned deviation from pure rounding: round(0.01 × 40px) = 0, but the
-// battery gauge never draws "empty" for a non-zero charge, so anything above zero keeps a
-// one-device-pixel sliver.
-for (pct, px) in [(0.01, 1.0), (0.05, 2.0), (0.18, 7.0), (0.50, 20.0), (0.95, 38.0), (1.00, 40.0)] {
+// Half a percent is the one sanctioned deviation from pure rounding: round(0.005 × 64px) = 0,
+// but the battery gauge never draws "empty" for a non-zero charge, so anything above zero keeps
+// a one-device-pixel sliver.
+for (pct, px) in [(0.005, 1.0), (0.05, 3.0), (0.18, 12.0), (0.50, 32.0), (0.95, 61.0), (1.00, 64.0)] {
     check(Gauge.fillWidth(pct) * 2 == CGFloat(px),
-          "fillWidth(\(Int(pct * 100))%) is \(Gauge.fillWidth(pct) * 2)px, expected \(px)px")
+          "fillWidth(\(pct * 100)%) is \(Gauge.fillWidth(pct) * 2)px, expected \(px)px")
 }
 check(Gauge.fillWidth(-0.5) == 0, "a negative value clamps to empty")
 check(Gauge.fillWidth(3.0) == Gauge.barW, "an absurd value clamps to full")
 
 // And the same width must survive the actual drawing code: rasterise image(icon:) at 2x and
-// count the filled pixels along the bar's centre row. A pure function can be honest while the
-// bezier path lies (that is exactly what happened).
-func measuredFillPx(_ pct: Double) -> Int {
-    let image = Gauge(fiveHour: pct, sevenDay: nil).image(icon: nil)
+// read the alpha along the bar's centre row. A pure function can be honest while the bezier
+// path lies (that is exactly what happened).
+func gaugeRowAlphas(_ gauge: Gauge) -> [CGFloat] {
+    let image = gauge.image(icon: nil)
     let w = Int(image.size.width * 2), h = Int(image.size.height * 2)
     guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h,
                                      bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
                                      isPlanar: false, colorSpaceName: .deviceRGB,
-                                     bytesPerRow: 0, bitsPerPixel: 0) else { return -1 }
+                                     bytesPerRow: 0, bitsPerPixel: 0) else { return [] }
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
     NSGraphicsContext.current?.imageInterpolation = .none
@@ -1549,20 +1549,44 @@ func measuredFillPx(_ pct: Double) -> Int {
     let barY = y0 + ((Gauge.rowH - Gauge.barH) / 2).rounded() + Gauge.barH / 2
     let row = h - 1 - Int(barY * 2)            // bitmap rows are top-down, the image is not
     let barX = Int((Gauge.sideInset + Gauge.labelW + Gauge.labelGap) * 2)
-    var count = 0
-    for x in barX..<(barX + Int(Gauge.barW * 2)) {
-        guard let c = rep.colorAt(x: x, y: row) else { continue }
-        if c.alphaComponent > 0.6 { count += 1 }
-    }
-    return count
+    return (barX..<(barX + Int(Gauge.barW * 2))).map { rep.colorAt(x: $0, y: row)?.alphaComponent ?? 0 }
 }
-for (pct, px) in [(0.05, 2), (0.18, 7), (0.50, 20), (0.95, 38), (1.00, 40)] {
-    let got = measuredFillPx(pct)
+
+// The bar is drawn the way the panel's is, and the way T3 Code draws it: the solid part is what
+// is LEFT of the window, counted from the left edge. So 18% used is a bar 82% solid.
+func measuredLeftPx(used: Double) -> Int {
+    gaugeRowAlphas(Gauge(fiveHour: used, sevenDay: nil)).filter { $0 > 0.6 }.count
+}
+for (used, px) in [(0.05, 61), (0.18, 52), (0.50, 32), (0.95, 3), (0.0, 64)] {
+    let got = measuredLeftPx(used: used)
     check(abs(got - px) <= 1,
-          "drawn fill at \(Int(pct * 100))% is \(got)px of 40, expected \(px)±1 (antialiasing)")
+          "at \(Int(used * 100))% used the solid part is \(got)px of 64, expected \(px)±1 (antialiasing)")
 }
-let sliver = measuredFillPx(0.01)
-check(sliver >= 1 && sliver <= 2, "1% draws a \(sliver)px sliver — visible, but nothing like the 15% stub")
+let sliver = measuredLeftPx(used: 0.995)
+check(sliver >= 1 && sliver <= 2, "half a percent left draws a \(sliver)px sliver, not an empty bar")
+check(measuredLeftPx(used: 1.0) == 0, "and a spent window draws no solid part at all")
+
+// A window with a clock also gets the line where even spending would be, in a slot cut out of the
+// bar, and its spent part is hatched: hatching says "this comes back at the reset".
+do {
+    let half = Gauge(fiveHour: 0.5, sevenDay: nil, timeLeft: (0.75, nil))
+    let alphas = gaugeRowAlphas(half)
+    let at = Int(Gauge.barW * 2 * 0.75)
+    check(alphas.count == Int(Gauge.barW * 2) && alphas[at] > 0.6, "the line is drawn at the time left")
+    check(alphas[at - 3] < 0.1 && alphas[at + 2] < 0.1, "with a clear slot on either side of it")
+    // Past the slot, to the end: hatch lines on a bare track, so some pixels are inked and some not.
+    let spent = alphas[(at + 6)...]
+    let inked = spent.filter { $0 > 0.6 }.count
+    check(inked > 0 && inked < spent.count / 2, "the spent part is hatched, not solid and not bare")
+    let plain = gaugeRowAlphas(Gauge(fiveHour: 0.5, sevenDay: nil))
+    check(plain[(at - 3)...].allSatisfy { $0 > 0.1 && $0 < 0.6 },
+          "a window with no clock keeps a bare track: no line, no slot, no hatch")
+    check(half.signature != Gauge(fiveHour: 0.5, sevenDay: nil).signature
+            && half.signature != Gauge(fiveHour: 0.5, sevenDay: nil, timeLeft: (0.5, nil)).signature,
+          "the line is part of what the cached icon is keyed by")
+    check(half.image(icon: nil).accessibilityDescription == "5 hour limit 50% left",
+          "and VoiceOver hears what is left, as the bar shows")
+}
 
 let redIcon = NSImage(size: NSSize(width: 4, height: 4), flipped: false) { rect in
     NSColor(deviceRed: 0.9, green: 0.1, blue: 0.05, alpha: 1).setFill(); rect.fill(); return true
@@ -2454,6 +2478,46 @@ check(LimitsSet(codex: ["windows": [["kind": "primary"] as [String: Any]] as [[S
       "a window with no percentage is no window")
 
 // The names come from the duration, because which pair a Codex plan carries is not fixed.
+// MARK: pace — where even spending would be by now
+//
+// A percentage alone does not say whether it is a lot: 33% of the week gone on its second day is
+// trouble, on its sixth it is nothing. The window's own clock answers that — how much of its
+// time has passed — and the panel draws it as a line on the bar. The thresholds are T3 Code's,
+// so the same account reads the same way in both.
+let paceNow = 1_800_000_000.0
+func weekWindow(used: Int, daysLeft: Double?, minutes: Int? = 10080) -> NamedWindow {
+    NamedWindow(key: "seven_day", title: "7 days", badge: nil, minutes: minutes,
+                window: LimitWindow(used: used, resets: daysLeft.map { paceNow + $0 * 86400 }))
+}
+// Five and a half days left of seven: 78.6% of the week still to come.
+check(weekWindow(used: 33, daysLeft: 5.5).timeLeftPercent(at: paceNow) == 79,
+      "a week with five and a half days to go has 79% of its time left")
+check(LimitWindow(used: 33, resets: nil).remaining == 67, "and 33% used leaves 67%")
+check(LimitWindow(used: 140, resets: nil).remaining == 0 && LimitWindow(used: -5, resets: nil).remaining == 100,
+      "a figure outside 0…100 cannot leave less than nothing or more than everything")
+check(weekWindow(used: 33, daysLeft: 5.5).pace(at: paceNow) == .ahead,
+      "33% used by then is ahead of even spending")
+check(weekWindow(used: 24, daysLeft: 5.5).pace(at: paceNow) == .on,
+      "within five points of the clock is on pace")
+check(weekWindow(used: 10, daysLeft: 5.5).pace(at: paceNow) == .under,
+      "and well behind it leaves headroom")
+// The week is 21.43% gone. Against the rounded 21, 27% used and 26% used would be gaps of 6 and
+// 5; against the clock itself they are 5.57 and 4.57, and that is what is compared.
+check(weekWindow(used: 27, daysLeft: 5.5).pace(at: paceNow) == .ahead,
+      "a gap of more than five points is ahead, measured against the unrounded clock")
+check(weekWindow(used: 26, daysLeft: 5.5).pace(at: paceNow) == .on,
+      "and one of less than five is not")
+check(weekWindow(used: 50, daysLeft: nil).timeLeftPercent(at: paceNow) == nil
+        && weekWindow(used: 50, daysLeft: nil).pace(at: paceNow) == nil,
+      "a window that does not say when it resets has no clock to compare with")
+check(weekWindow(used: 50, daysLeft: 3, minutes: nil).timeLeftPercent(at: paceNow) == nil
+        && weekWindow(used: 50, daysLeft: 3, minutes: 0).timeLeftPercent(at: paceNow) == nil,
+      "nor does one whose length is unknown or zero")
+check(weekWindow(used: 50, daysLeft: 9).timeLeftPercent(at: paceNow) == 100,
+      "a reset further off than the window is long is the very start, not more than all of it")
+check(weekWindow(used: 50, daysLeft: -1).timeLeftPercent(at: paceNow) == 0,
+      "and one already past has no time left")
+
 check(LimitsSet.title(minutes: 300, kind: "primary") == "5 hours", "300 minutes is 5 hours")
 check(LimitsSet.title(minutes: 10080, kind: "secondary") == "7 days", "10080 minutes is 7 days")
 check(LimitsSet.title(minutes: 1440, kind: "secondary") == "1 day", "and 1440 is one day, not 1 days")
