@@ -7,7 +7,7 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
-## [Unreleased]
+## [0.29.0] - 2026-11-19
 
 ### Changed
 - Limit bars show what is left of each window instead of what is used, drawn the way T3 Code
