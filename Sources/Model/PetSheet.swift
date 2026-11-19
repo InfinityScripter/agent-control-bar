@@ -213,6 +213,30 @@ struct Pet {
         return library.first { $0.id == id } ?? library.first
     }
 
+    /// The whole sheet, decoded into a bitmap of our own, once.
+    ///
+    /// An image read from a file is decoded lazily — and lazily means once per USE, not once. Every
+    /// frame cut out of it pays for the whole picture again. In time: 22 ms a frame for a pet
+    /// packed in WebP inside an application archive, measured on this machine. And in memory:
+    /// each frame put on screen kept a decoded copy of the entire sheet, which with two pets in
+    /// the panel came to 54 copies and three quarters of a gigabyte. Drawing the sheet into a
+    /// buffer first costs 26 ms and 14 MB for the atlas sizes we know, and every frame cut after
+    /// that is a window onto the one buffer.
+    ///
+    /// A window, not a copy: one cell kept anywhere keeps the whole buffer with it, so whoever
+    /// cuts cells copies out what it hands on.
+    func decodedSheet() -> CGImage? {
+        guard let source = art.imageSource(),
+              let lazySheet = CGImageSourceCreateImageAtIndex(source, 0, nil),
+              let ctx = CGContext(data: nil, width: format.width, height: format.height,
+                                  bitsPerComponent: 8, bytesPerRow: format.width * 4,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        ctx.draw(lazySheet, in: CGRect(x: 0, y: 0, width: format.width, height: format.height))
+        return ctx.makeImage()
+    }
+
     /// Which layout this art is, from its size in real pixels — read from the picture's header
     /// rather than by decoding it. It has to be pixels: NSImage reports a size in points, so an
     /// atlas saved at 144 dpi would measure two-thirds of its true width and match no format.
@@ -253,7 +277,11 @@ struct PetLoop {
     }
 }
 
-/// A pet's atlas, decoded once and cut into animations as each is first asked for.
+/// A pet's atlas, decoded once and cut into animations as each is first asked for. The decoded
+/// sheet is kept for as long as the atlas is, because its frames are cut from it — which is why
+/// only the chosen pets have one outside the Settings window. It is decoded for the first
+/// animation rather than on creation: the picker makes an atlas for every pet in the library and
+/// draws only the ones scrolled into view, and a decode is 26 ms of the main thread each.
 ///
 /// Cutting is done on the CGImage rather than on an NSImage because CGImage crops in the file's
 /// own pixels, counted from the top left — the same coordinates the format is written in. An
@@ -261,14 +289,14 @@ struct PetLoop {
 /// come out sliced along the wrong lines.
 final class PetAtlas {
     let pet: Pet
-    private let sheet: CGImage
+    private lazy var sheet: CGImage? = pet.decodedSheet()
     private var cut: [PetRow: PetLoop] = [:]
 
+    /// Nil when the art cannot be read at all, which is asked of the file without decoding it.
     init?(_ pet: Pet) {
         guard let source = pet.art.imageSource(),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+              CGImageSourceCreateImageAtIndex(source, 0, nil) != nil else { return nil }
         self.pet = pet
-        self.sheet = image
     }
 
     /// One animation, cut and kept. A row whose art will not cut comes back empty and the caller
@@ -279,13 +307,28 @@ final class PetAtlas {
         var images: [NSImage] = []
         var durations: [Double] = []
         for frame in pet.format.frames(for: row) {
-            guard let cell = sheet.cropping(to: pet.format.rect(row: frame.row, column: frame.column))
+            guard let cell = sheet?.cropping(to: pet.format.rect(row: frame.row, column: frame.column)),
+                  let picture = Self.copy(of: cell)
             else { continue }
-            images.append(NSImage(cgImage: cell, size: size))
+            images.append(NSImage(cgImage: picture, size: size))
             durations.append(frame.duration)
         }
         let loop = PetLoop(images: images, durations: durations)
         cut[row] = loop
         return loop
+    }
+
+    /// A cell in pixels of its own. A cell cut from the sheet is a window onto it, and a frame
+    /// handed to a view outlives this atlas in places nobody owns — a closed window still holds
+    /// the last thing it drew — so each one left behind would keep the whole 14 MB sheet alive.
+    /// A copy keeps 160 KB.
+    private static func copy(of cell: CGImage) -> CGImage? {
+        guard let ctx = CGContext(data: nil, width: cell.width, height: cell.height,
+                                  bitsPerComponent: 8, bytesPerRow: cell.width * 4,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        ctx.draw(cell, in: CGRect(x: 0, y: 0, width: cell.width, height: cell.height))
+        return ctx.makeImage()
     }
 }

@@ -20,6 +20,7 @@ extension StatusController {
         reloadPetLibrary()
         let window = settingsWindow ?? makeSettingsWindow()
         settingsWindow = window
+        if window.contentViewController == nil { installSettingsPages(in: window) }
         // An accessory app has no Dock tile and cannot be brought to the front the ordinary way:
         // its window opens behind whatever the user was looking at and never becomes key, so the
         // controls in it do not take the keyboard. Becoming .regular for as long as Settings is
@@ -34,16 +35,11 @@ extension StatusController {
     }
 
     private func makeSettingsWindow() -> NSWindow {
-        let host = NSHostingController(rootView: SettingsView(store: settingsStore))
-        // Empty on purpose. Every automatic option here (.intrinsicContentSize, .preferredContentSize)
-        // hands the window's size to the SwiftUI content, and these four pages differ enough in
-        // height that the window would resize itself on every sidebar click.
-        host.sizingOptions = []
-        let window = NSWindow(contentViewController: host)
-        window.title = "Settings"
         // .miniaturizable so the Window menu's Minimize is not a dead row.
-        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        window.setContentSize(NSSize(width: 720, height: 470))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 470),
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                              backing: .buffered, defer: true)
+        window.title = "Settings"
         window.contentMinSize = NSSize(width: 620, height: 420)
         // Kept and reopened rather than rebuilt: without this the window is deallocated on close
         // and the next open lands on a dangling reference.
@@ -52,6 +48,20 @@ extension StatusController {
         window.delegate = self
         window.center()
         return window
+    }
+
+    /// The pages, built for each opening: windowWillClose takes them out again, and says why.
+    private func installSettingsPages(in window: NSWindow) {
+        let host = NSHostingController(rootView: SettingsView(store: settingsStore))
+        // Empty on purpose. Every automatic option here (.intrinsicContentSize, .preferredContentSize)
+        // hands the window's size to the SwiftUI content, and these pages differ enough in
+        // height that the window would resize itself on every sidebar click.
+        host.sizingOptions = []
+        // A window resizes itself to the controller it is handed. The frame is the user's — where
+        // they left the window and how large — so it is put back.
+        let frame = window.frame
+        window.contentViewController = host
+        window.setFrame(frame, display: false)
     }
 
     /// A menu bar for the window to live under.
@@ -104,6 +114,11 @@ extension StatusController {
         guard (notification.object as? NSWindow) === settingsWindow else { return }
         NSApp.setActivationPolicy(.accessory)
         // The pet picker draws every pet, so it holds every pet's frames. The panel needs one.
+        // Emptying the caches is half of giving them back: the pickers hold what they were last
+        // handed, a closed window never asks again, and so the pages went on keeping a decoded
+        // sheet for every pet in the library. Only the pages going away lets go of those — the
+        // window stays, with its place on screen, and opens on General again next time.
         releasePetPreviews()
+        settingsWindow?.contentViewController = nil
     }
 }

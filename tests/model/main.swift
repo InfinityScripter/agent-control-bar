@@ -3098,10 +3098,20 @@ writeMarkedAtlas([(.idle, 70, 70, 40, 60), (.running, 40, 80, 120, 30), (.waitin
 
 /// Whether anything was drawn at that point of a finished icon, counted from the TOP left the way
 /// a picture is read rather than the way it is drawn.
+///
+/// `x` and `y` are points, and an icon holds more than one pixel to the point, so the question is
+/// asked of every pixel inside that point: an edge is reached when any of them is drawn on.
 func iconHasInk(_ image: NSImage, x: Int, y: Int) -> Bool {
     guard let rep = image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)),
-          x >= 0, y >= 0, x < rep.pixelsWide, y < rep.pixelsHigh else { return false }
-    return (rep.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.1
+          x >= 0, y >= 0, image.size.width >= 1 else { return false }
+    let scale = max(1, rep.pixelsWide / Int(image.size.width))
+    return (0..<scale).contains { dx in
+        (0..<scale).contains { dy in
+            let px = x * scale + dx, py = y * scale + dy
+            return px < rep.pixelsWide && py < rep.pixelsHigh
+                && (rep.colorAt(x: px, y: py)?.alphaComponent ?? 0) > 0.1
+        }
+    }
 }
 
 let markedPet = Pet.load(directory: iconDir)
@@ -3157,6 +3167,25 @@ if let barFrames {
     check(!(0..<width).contains { iconHasInk(running[0], x: $0, y: 0) },
           "while the row that does not reach the top does not suddenly fill it")
 }
+
+// MARK: what a pet's frames keep alive
+//
+// A sheet is 14 MB once decoded, and a frame cut out of it is a window onto it: one frame kept
+// anywhere keeps the whole sheet. Frames are kept in places nobody owns — the bar's used to be
+// pictures that drew themselves from the sheet when shown, and a closed window still holds the
+// last thing it drew: five pets were on screen when Settings closed, and five sheets stayed.
+// So every frame handed out has to be pixels of its own.
+check(barFrames?.frames(for: .idle).first?.representations.first?.pixelsHigh == 36,
+      "a bar frame is finished pixels, two to the point, and not a drawing that holds the sheet")
+let rowFrame = PetAtlas(markedPet!)?.loop(for: .idle).images.first?
+    .cgImage(forProposedRect: nil, context: nil, hints: nil)
+check(rowFrame?.width == PetFormat.v2.cellWidth && rowFrame?.bytesPerRow == PetFormat.v2.cellWidth * 4,
+      "a row frame is a picture one cell wide, not a window onto rows as wide as the sheet")
+// A frame cut straight from the file is one cell wide too, and it is the one that costs a decode
+// of the whole sheet each time it is shown. This atlas is a PNG with plain alpha, so such a frame
+// reports plain alpha; one drawn into our own bitmap reports the premultiplied alpha it was made with.
+check(rowFrame?.alphaInfo == .premultipliedLast,
+      "and it was drawn into a bitmap of ours rather than left to be decoded from the file")
 
 // A pet whose rows are empty has no margin to measure, and dividing by that height is how an
 // icon ends up infinitely wide. Nothing to draw has to come back as nothing to draw.
