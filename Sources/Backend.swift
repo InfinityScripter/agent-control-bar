@@ -198,6 +198,20 @@ extension StatusController {
         }
     }
 
+    func refreshClaudeHistory() {
+        guard claudeHistory != .loading else { return }
+        claudeHistory = .loading
+        refreshCounts()
+        runQuietCommand(.claudeHistory) { [weak self] succeeded in
+            guard let self else { return }
+            let path = (self.root as NSString).appendingPathComponent("history.json")
+            let history = succeeded ? FileManager.default.contents(atPath: path)
+                .flatMap { try? JSONDecoder().decode(ClaudeHistory.self, from: $0) } : nil
+            self.claudeHistory = history.map { .loaded($0) } ?? .failed
+            self.refreshCounts()
+        }
+    }
+
     func refreshCodexHistory() {
         guard codexHistory != .loading else { return }
         codexHistory = .loading

@@ -34,27 +34,18 @@ struct CodexHistory: Decodable, Equatable {
 
         func resumeCommand(codexHome: String?) -> String? {
             guard UUID(uuidString: id) != nil, let codexHome,
-                  let home = Self.shellPath(codexHome), let directory = Self.shellPath(cwd)
+                  let home = HistorySearch.shellPath(codexHome), let directory = HistorySearch.shellPath(cwd)
             else { return nil }
             return "CODEX_HOME=\(home) codex resume --cd \(directory) \(id)"
-        }
-
-        private static func shellPath(_ path: String) -> String? {
-            guard path.hasPrefix("/"), path.rangeOfCharacter(from: .controlCharacters) == nil
-            else { return nil }
-            return "'" + path.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
         }
     }
 
     func matching(_ query: String, excluding liveIDs: Set<String>,
                   hiding hiddenServices: Set<ModelService> = []) -> [Thread] {
-        let words = query.split(whereSeparator: \.isWhitespace)
-        return threads.filter { thread in
+        threads.filter { thread in
             guard !liveIDs.contains(thread.id), !hiddenServices.contains(thread.service) else { return false }
-            let fields = [thread.title, thread.cwd, thread.branch, thread.id, thread.sourceLabel, thread.service.title]
-            return words.allSatisfy { word in
-                fields.contains { $0.range(of: word, options: [.caseInsensitive, .diacriticInsensitive]) != nil }
-            }
+            return HistorySearch.matches(
+                query, in: [thread.title, thread.cwd, thread.branch, thread.id, thread.sourceLabel, thread.service.title])
         }
     }
 }

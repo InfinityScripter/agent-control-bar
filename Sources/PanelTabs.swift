@@ -8,25 +8,40 @@ import SwiftUI
 
 struct PanelSessionsTab: View {
     @ObservedObject var store: PanelStore
-    private let showsHistory = State(initialValue: false)
+    private enum Shown { case live, claude, codex }
+    private let shown = State(initialValue: Shown.live)
 
     var body: some View {
+        let snapshot = store.snapshot
         VStack(spacing: 0) {
-            if store.snapshot.offersCodexHistory {
-                Picker("Session view", selection: showsHistory.projectedValue) {
-                    Text("Live").tag(false)
-                    Text("Codex history").tag(true)
+            if snapshot.offersClaudeHistory || snapshot.offersCodexHistory {
+                Picker("Session view", selection: selection) {
+                    Text("Live").tag(Shown.live)
+                    if snapshot.offersClaudeHistory { Text("Claude").tag(Shown.claude) }
+                    if snapshot.offersCodexHistory { Text("Codex").tag(Shown.codex) }
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .padding(.top, 8)
             }
-            if showsHistory.wrappedValue && store.snapshot.offersCodexHistory {
-                PanelCodexHistory(store: store)
-            } else {
-                liveSessions
+            switch selection.wrappedValue {
+            case .claude: PanelClaudeHistory(store: store)
+            case .codex: PanelCodexHistory(store: store)
+            case .live: liveSessions
             }
         }
+    }
+
+    /// The chosen view, or Live once Settings stops offering the chosen history — so the picker
+    /// never points at a segment it no longer draws.
+    private var selection: Binding<Shown> {
+        Binding(get: {
+            switch shown.wrappedValue {
+            case .claude where !store.snapshot.offersClaudeHistory: return .live
+            case .codex where !store.snapshot.offersCodexHistory: return .live
+            default: return shown.wrappedValue
+            }
+        }, set: { shown.wrappedValue = $0 })
     }
 
     private var liveSessions: some View {

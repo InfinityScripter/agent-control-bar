@@ -10,6 +10,10 @@ from, and are kept so the history reads continuously.
 ## [Unreleased]
 
 ### Added
+- **Claude history** sits beside Live and Codex in the Sessions tab. Search the 50 most recent
+  Claude Code chats by title, project, branch, client, or ID, open a Claude app chat in the app,
+  or copy a `claude --resume` command that starts in the chat's directory. The list is built
+  from transcript metadata; prompts and replies are never stored.
 - **Usage window.** **Usage** in the panel footer (⌘U) opens a window with **Cost**, **Tokens**
   and **Limits** tabs, a port of T3 Code's Usage page. Cost and tokens for the past 24 hours,
   7, 30 or 90 days are counted on your Mac from Claude Code and Codex session files and priced
@@ -22,6 +26,7 @@ from, and are kept so the history reads continuously.
   banked on the account can be spent with **Use reset**, after a confirmation.
 
 ### Changed
+- The Sessions picker reads **Live | Claude | Codex**; **Codex history** is now **Codex**.
 - The limits polls also store the plan, the account e-mail and banked reset credits, in
   `account.json` and `codex/account.json`. The Claude poll asks for the credits in its one
   request; the Codex e-mail is asked for at most once a day. [PRIVACY.md](PRIVACY.md) lists
@@ -47,7 +52,7 @@ from, and are kept so the history reads continuously.
   unasked or history loading until the app was restarted.
 - Mounting an update's disk image is limited to two minutes. A mount that never returned left
   the banner on "Installing…" for as long as the app ran.
-- **Codex history** names where a chat ran with the short words of the live rows: CLI, IDE and
+- The **Codex** list names where a chat ran with the short words of the live rows: CLI, IDE and
   APP instead of Terminal, Editor and ChatGPT, and T3 instead of T3 Code. Search matches the
   new words.
 - The tooltip of a session row starts with the full project name and its folder. The name in

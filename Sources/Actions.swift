@@ -50,6 +50,38 @@ extension StatusController {
         return NSPasteboard.general.setString(command, forType: .string)
     }
 
+    /// A chat still running opens like its Live row would. Otherwise only a desktop-app chat can
+    /// be opened, through the same record lookup a desktop row uses; a chat the app has no record
+    /// of reports failure instead of merely raising the app, which would look like it worked.
+    func openClaudeHistoryThread(_ thread: ClaudeHistory.Thread) -> Bool {
+        guard case .loaded(let history) = claudeHistory, history.threads.contains(thread) else { return false }
+        reloadSessions()
+        if let session = sessions[Provider.claude.id + ":" + thread.id] {
+            guard !hiddenModelServices.contains(session.modelService), session.hasFocusTarget else { return false }
+            closePanel()
+            openSession(session.key)
+            return true
+        }
+        guard thread.opensInDesktop, let local = DesktopSessions.sessionID(forCLI: thread.id),
+              let url = DesktopSessions.focusURL(sessionID: local), NSWorkspace.shared.open(url)
+        else { return false }
+        closePanel()
+        return true
+    }
+
+    func copyClaudeResumeCommand(_ thread: ClaudeHistory.Thread) -> Bool {
+        guard case .loaded(let history) = claudeHistory, history.threads.contains(thread),
+              let command = thread.resumeCommand
+        else { return false }
+        reloadSessions()
+        guard sessions[Provider.claude.id + ":" + thread.id] == nil else {
+            refreshCounts()
+            return false
+        }
+        NSPasteboard.general.clearContents()
+        return NSPasteboard.general.setString(command, forType: .string)
+    }
+
     func dismissSession(_ session: PanelSession) {
         // Refresh first so a click on an older panel snapshot cannot hide the latest event.
         reloadSessions()

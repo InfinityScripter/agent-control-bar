@@ -143,6 +143,16 @@ final class PanelStore: ObservableObject {
         controller?.openSession(session.id)
     }
 
+    func refreshClaudeHistory() { controller?.refreshClaudeHistory() }
+
+    func openClaudeHistoryThread(_ thread: ClaudeHistory.Thread) -> Bool {
+        controller?.openClaudeHistoryThread(thread) ?? false
+    }
+
+    func copyClaudeResumeCommand(_ thread: ClaudeHistory.Thread) -> Bool {
+        controller?.copyClaudeResumeCommand(thread) ?? false
+    }
+
     func refreshCodexHistory() { controller?.refreshCodexHistory() }
 
     func openCodexHistoryThread(_ thread: CodexHistory.Thread, completion: @escaping (Bool) -> Void) {
@@ -270,6 +280,13 @@ struct PanelSnapshot: Equatable {
     /// How tall the scrolling half may get on the screen this panel opens on.
     var contentCap: CGFloat = PanelTheme.minContentHeight
     var sessions: [PanelSession] = []
+    var offersClaudeHistory = false
+    var claudeHistory: ClaudeHistoryState = .idle
+    /// Running Claude chats a history row may focus instead of offering to resume them.
+    var liveClaudeIDs: Set<String> = []
+    var focusableClaudeIDs: Set<String> = []
+    /// Running chats of a hidden model service: Live leaves them out, so history must too.
+    var hiddenLiveClaudeIDs: Set<String> = []
     var offersCodexHistory = false
     var codexHistory: CodexHistoryState = .idle
     var liveCodexIDs: Set<String> = []
@@ -573,6 +590,16 @@ extension PanelSnapshot {
         sessions = c.panelSessions(now: now)
         hiddenModelServices = c.hiddenModelServices
         accountUsage = c.panelAccountUsage
+        offersClaudeHistory = c.agentDisplay.inPanel(Provider.claude.id)
+        claudeHistory = c.claudeHistory
+        if case .loaded = claudeHistory {
+            let running = c.sessions.values.filter { $0.provider == Provider.claude.id }
+            let (hidden, shown) = (running.filter { c.hiddenModelServices.contains($0.modelService) },
+                                   running.filter { !c.hiddenModelServices.contains($0.modelService) })
+            liveClaudeIDs = Set(shown.map(\.id))
+            focusableClaudeIDs = Set(shown.filter(\.hasFocusTarget).map(\.id))
+            hiddenLiveClaudeIDs = Set(hidden.map(\.id))
+        }
         offersCodexHistory = c.agentDisplay.inPanel(Provider.codex.id) && c.codexInstalled
         codexHistory = c.codexHistory
         if case .loaded = codexHistory {

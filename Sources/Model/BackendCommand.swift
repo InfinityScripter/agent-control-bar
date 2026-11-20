@@ -16,6 +16,7 @@ enum BackendCommand {
     case codexHooks
     case codexAttention
     case codexHistory
+    case claudeHistory
     case codexHooksApprove
     /// Re-point this app's own dead statusLine wrapper in settings.json; a foreign or live one is
     /// left alone by the script, so the call is safe to make on every launch.
@@ -120,6 +121,8 @@ enum BackendCommand {
             return ["codex-attention"]
         case .codexHistory:
             return ["codex-history"]
+        case .claudeHistory:
+            return ["claude-history"]
         case .codexHooksApprove:
             return ["codex-hooks", "approve"]
         case .statuslineHeal:
