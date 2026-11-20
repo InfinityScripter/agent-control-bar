@@ -5289,12 +5289,18 @@ do {
 
 // MARK: - The Usage window (Cost, Tokens, Limits)
 // Ported from T3 Code (MIT, commit 803f21f); the vectors below are its own tests' where a
-// comment names one. Every block is a `do { }` so its names stay its own.
+// comment names one.
+//
+// Every block is a function called on the next line, so its names stay its own. Not a bare
+// `do`: top-level code is one function to the compiler, and the optimizer of the Swift on the CI
+// runner (6.1, Intel) slows down far faster than that function grows. With these checks added
+// as `do` blocks the `-O` build of this file did not finish in 28 minutes there; as functions
+// it takes 7.5.
 
 // Checks for Sources/Model/UsageLimitsModel.swift — the UI-free model behind the Limits tab.
 // Fixture clock of T3's own tests: now = 2026-09-03T12:00:00Z; "14:00" below is now + 2 h.
 
-do {
+func usageChecks01() {
     // Pace maths (spec 01 §4.7, examples E1-E3, D1, D8).
     let now = 1_788_436_800.0
     let share = UsageLimitMath.elapsedShare(resetsAt: now + 7200, windowMinutes: 300, now: now)
@@ -5322,8 +5328,9 @@ do {
     check(UsageLimitMath.paceClass(usedPercent: 55, elapsed: 0.6) == "on", "D8: a gap of exactly -5 is still on pace")
     check(UsageLimitMath.paceClass(usedPercent: 54.99, elapsed: 0.6) == "under", "D8: just past -5 is under")
 }
+usageChecks01()
 
-do {
+func usageChecks02() {
     // Pace tick position (spec 01 §5.2): centre clamped 3 pt from either end, hidden under 6 pt.
     check(UsageLimitMath.tickX(percent: 40, width: 200) == 80, "the tick sits at its percent of the segment")
     check(UsageLimitMath.tickX(percent: 0, width: 200) == 3, "the tick never comes closer than 3 pt to the left end")
@@ -5332,8 +5339,9 @@ do {
     check(UsageLimitMath.tickX(percent: 50, width: 5.9) == nil, "a segment narrower than 6 pt draws no tick")
     check(UsageLimitMath.tickX(percent: nil, width: 200) == nil, "no pace clock, no tick")
 }
+usageChecks02()
 
-do {
+func usageChecks03() {
     // Codex kind from the window length, with T3's slot fallbacks (spec 08 §4.7).
     check(UsageLimitMath.codexKind(minutes: 300) == "session", "5 hours is a session window")
     check(UsageLimitMath.codexKind(minutes: 10079) == "session", "one minute short of a week is still a session")
@@ -5349,8 +5357,9 @@ do {
     check(UsageLimitMath.codexFallbackMinutes(slot: "secondary", plan: "free") == 10080,
           "the secondary slot without a length is weekly on every plan")
 }
+usageChecks03()
 
-do {
+func usageChecks04() {
     // One Claude account: plain rows, labels, order, rounding and the refill/hatch pair.
     let now = 1_788_436_800.0
     let claude = { (windows: [(String, Int, Double?)], ts: Double) -> LimitsSet in
@@ -5399,8 +5408,9 @@ do {
     check(unused?.remainingPercent == 100 && unused?.hatchPercent == 0 && unused?.restoresPercent == 0,
           "an untouched window has no hatch and restores nothing")
 }
+usageChecks04()
 
-do {
+func usageChecks05() {
     // ACB's rule (spec 08 §4.6): a window whose reset has passed is drawn empty.
     let now = 1_788_436_800.0
     let set = LimitsSet(provider: "claude", windows: [
@@ -5421,8 +5431,9 @@ do {
     check(session.map { $0.details(now: now).map(\.label) == ["Left"] } ?? false,
           "the popover of an emptied window has only the Left row")
 }
+usageChecks05()
 
-do {
+func usageChecks06() {
     // Weekly-exhausted suppression of the session row (spec 01 §4.5, examples E7-E8c, E11, D10).
     let now = 1_788_436_800.0
     let hour = 3600.0
@@ -5498,8 +5509,9 @@ do {
     check(lateWindow?.resetsAt == nil && lateWindow?.restoresPercent == nil,
           "for Codex the cutoff takes the newer stamp of the two windows involved")
 }
+usageChecks06()
 
-do {
+func usageChecks07() {
     // What does NOT trigger the suppression: a model's week, and the Reserve pool either way.
     let now = 1_788_436_800.0
     let fable = UsageProviderLimits(provider: "claude", set: LimitsSet(provider: "claude", windows: [
@@ -5531,8 +5543,9 @@ do {
     check(reserveSession.last?.remainingPercent == 90,
           "a spent ordinary week does not zero the Reserve pool's session window")
 }
+usageChecks07()
 
-do {
+func usageChecks08() {
     // Codex rows: kind and label from the length, slot fallbacks, and the sidecar's extra rows.
     let now = 1_788_436_800.0
     let codex = { (windows: [(String, Int?)], plan: String?) -> [UsageLimitRow] in
@@ -5583,8 +5596,9 @@ do {
     ], source: "rollout", ts: now, plan: "plus"), account: nil, now: now)
     check(onlyLimits.plan == "ChatGPT Plus Subscription", "without a sidecar the Codex plan comes from the limits file")
 }
+usageChecks08()
 
-do {
+func usageChecks09() {
     // Claude extras: scoped weeks and monthly spend from the sidecar; passed resets; duplicates.
     let now = 1_788_436_800.0
     let account = UsageAccount(json: [
@@ -5634,8 +5648,9 @@ do {
     check(half.rows.first?.remainingPercent == 1 && half.rows.first?.usedPercent == 100,
           "E9: 99.5% used leaves 1%, used and remaining are rounded independently")
 }
+usageChecks09()
 
-do {
+func usageChecks10() {
     // Sidecar parsing: every key optional, wrong types are "unknown", never an error.
     let text = """
     {"ts": 1795112308, "provider": "claude", "subscriptionType": "max",
@@ -5704,8 +5719,9 @@ do {
     check(integers.extraWindows.first?.usedPercent == 30 && integers.extraWindows.first?.windowMinutes == 43200,
           "whole numbers and fractions are both accepted wherever a number is expected")
 }
+usageChecks10()
 
-do {
+func usageChecks11() {
     // Plan labels (ClaudeProvider.ts:114-179, CodexProvider.ts:211-245).
     let claude = UsagePlan.claudeLabel
     check(claude("max") == "Claude Max Subscription", "max is Claude Max")
@@ -5748,8 +5764,9 @@ do {
     check(UsagePlan.codexLabel(limitsPlan: "unknown", accountPlan: nil) == "ChatGPT Subscription",
           "unknown everywhere is the bare ChatGPT subscription")
 }
+usageChecks11()
 
-do {
+func usageChecks12() {
     // Durations and countdowns (spec 01 §6.1-6.3, examples D2-D7).
     let now = 1_788_436_800.0
     check(UsageLimitText.duration(331_140) == "3d 19h", "D2: 3 d 19 h 59 min reads 3d 19h")
@@ -5779,8 +5796,9 @@ do {
           && UsageLimitText.paceLabel("under") == "Under pace: headroom left for the rest of the window",
           "the trend icon's tooltip is T3's sentence")
 }
+usageChecks12()
 
-do {
+func usageChecks13() {
     // Absolute reset time (spec 01 §6.4, example D12). The formats follow the supplied locale.
     let us = Locale(identifier: "en_US"), ru = Locale(identifier: "ru_RU")
     let berlin = TimeZone(identifier: "Europe/Berlin")!, tokyo = TimeZone(identifier: "Asia/Tokyo")!
@@ -5819,8 +5837,9 @@ do {
     check(time(at(2026, 10, 25, 12, 0), at(2026, 10, 24, 12, 0), us, berlin) == "tomorrow at 12:00 PM",
           "a clock change between the two days does not shift the day count")
 }
+usageChecks13()
 
-do {
+func usageChecks14() {
     // The popover's window rows (UsageLimitsPooled.tsx:199-215) and the segment's spoken label.
     let us = Locale(identifier: "en_US"), utc = TimeZone(identifier: "UTC")!
     let now = 1_788_436_800.0   // 2026-09-03 12:00 UTC
@@ -5854,8 +5873,9 @@ do {
     check(row(10, nil, 300)?.accessibilityLabel(name: "Claude", credits: 2, now: now)
           == "Claude: 90% left, 2 reset credits banked", "missing parts are dropped, several credits are plural")
 }
+usageChecks14()
 
-do {
+func usageChecks15() {
     // Reset-credit choices (usageLimitsCopy.ts:126-191), one machine.
     let now = 1_788_436_800.0
     let codex = { (count: Int, expires: Double?) -> UsageResetCredits in
@@ -5926,8 +5946,9 @@ do {
           && UsageResetCredit.cancelButton == "Cancel" && UsageResetCredit.busyButton == "Using…"
           && UsageResetCredit.busyStatus == "Using reset credit…", "the dialog and the progress line use T3's words")
 }
+usageChecks15()
 
-do {
+func usageChecks16() {
     // reset-credit-result.json and the sentence each result is shown as.
     let result = { (provider: String, outcome: Any?, error: Any?, confirmed: Any?) -> UsageResetResult in
         var json: [String: Any] = ["ts": 1_795_112_308, "provider": provider, "creditId": "grant_abc"]
@@ -5983,11 +6004,12 @@ do {
           && !mangled.confirmed && mangled.message == "Could not use the reset credit.",
           "a mangled result file degrades to an unknown result")
 }
+usageChecks16()
 
 // Independent verifier's vectors for Sources/Model/UsageLimitsModel.swift. Each block names the
 // T3 file and lines its inputs and expectations were taken from.
 
-do {
+func usageChecks17() {
     // apps/web/src/timestampFormat.test.ts:21-36 and :53-74 — the relative day is the calendar's
     // day in the given zone, and a past reset reads like any past timestamp.
     let us = Locale(identifier: "en_US")
@@ -6012,8 +6034,9 @@ do {
           && time(earlierInWeek, sameDay, "Asia/Bangkok") == "11/5 3:00 AM",
           "timestampFormat.test.ts:66-73: Bangkok reads the same two instants as 11:45 AM and 11/5")
 }
+usageChecks17()
 
-do {
+func usageChecks18() {
     // apps/web/src/timestampFormat.ts:204-217 — the day difference is between calendar DATES. In
     // zones whose clocks jump at midnight the day starts at 01:00 and is 23 hours long.
     let us = Locale(identifier: "en_US")
@@ -6038,8 +6061,9 @@ do {
               "timestampFormat.ts:204: \(zone): the 23-hour day is tomorrow from the day before and that day is yesterday from it")
     }
 }
+usageChecks18()
 
-do {
+func usageChecks19() {
     // apps/server/src/provider/codexUsageLimits.test.ts:82-150 — T3's Codex fixtures, read through
     // the real codex/limits.json shape.
     let set = { (text: String) -> LimitsSet? in
@@ -6084,8 +6108,9 @@ do {
           && lone.rows.first?.remainingPercent == 58 && lone.plan == nil,
           "codexUsageLimits.test.ts:129: a lone secondary is one Weekly row, and no plan is claimed")
 }
+usageChecks19()
 
-do {
+func usageChecks20() {
     // apps/server/src/provider/codexUsageLimits.test.ts:19-45 — the Enterprise monthly credit
     // allowance, as the sidecar carries it; checkedAt 2026-07-18T10:00Z.
     let us = Locale(identifier: "en_US"), utc = TimeZone(identifier: "UTC")!
@@ -6110,8 +6135,9 @@ do {
               == ["99%", "tomorrow at 10:26 PM · in 1d 12h", "+1% of pool"],
           "UsageLimitsPooled.tsx:200-214: without a length there is no Even pace row; 2026-07-19T22:26:40Z is tomorrow")
 }
+usageChecks20()
 
-do {
+func usageChecks21() {
     // apps/server/src/provider/claudeUsageLimits.test.ts:9-66, :87-105, :120-166, :202-216 — T3's
     // Claude fixtures through the real limits.json shape; checkedAt 2026-07-18T10:00Z.
     let now = 1_784_368_800.0
@@ -6154,8 +6180,9 @@ do {
     check(spend(["enabled": true, "zeroCap": true]).map(\.id) == ["five_hour"],
           "claudeUsageLimits.test.ts:202-216: a $0 cap has no percentage, so it is no Monthly row")
 }
+usageChecks21()
 
-do {
+func usageChecks22() {
     // packages/shared/src/usageLimits.test.ts:1256-1276 and :1321-1343, and usageLimits.ts:583-607 —
     // the blocked account of T3's pool tests, seen alone.
     let now = 1_788_436_800.0, hour = 3600.0
@@ -6193,8 +6220,9 @@ do {
           && outlives(40, now + 2 * hour - 1)?.restoresPercent == 60,
           "usageLimits.ts:587-595: one second earlier both clocks are still ahead of the reading")
 }
+usageChecks22()
 
-do {
+func usageChecks23() {
     // apps/server/src/provider/claudeResetCredits.test.ts:41-128 — T3's grant fixtures as the
     // sidecar carries them; NOW 2026-09-22T12:00Z.
     let iso = ISO8601DateFormatter()
@@ -6234,8 +6262,9 @@ do {
     check(ineligible.credits == nil && ineligible.ticketCount == 0,
           "claudeResetCredits.test.ts:122-127: an ineligible account has no credits at all")
 }
+usageChecks23()
 
-do {
+func usageChecks24() {
     // apps/server/src/provider/ClaudeProvider.ts:105-179 and CodexProvider.ts:199-218 — the plan
     // label rules, on inputs the tables do not list one by one.
     let claude = UsagePlan.claudeLabel
@@ -6261,8 +6290,9 @@ do {
           && UsagePlan.codexLabel(limitsPlan: nil, accountPlan: nil) == nil,
           "CodexProvider.ts:207-208, :241: unknown on both sides is the bare ChatGPT subscription; nothing known is no label")
 }
+usageChecks24()
 
-do {
+func usageChecks25() {
     // packages/shared/src/usageLimitsCopy.ts:115-123, usageLimits.ts:700-716,
     // apps/web/src/components/usage/UsageLimits.tsx:89-91, UsageLimitsPooled.tsx:210-214, :418-427.
     check(UsageLimitText.duration(90061) == "1d 1h" && UsageLimitText.duration(172_799) == "1d 23h"
@@ -6293,6 +6323,7 @@ do {
     check(row(99.4)?.remainingPercent == 1 && row(99.4)?.usedPercent == 99 && row(99.4)?.hatchPercent == 99,
           "UsageLimitsPooled.tsx:423: the hatch is the smaller of the empty part (99) and the refill (99.4)")
 }
+usageChecks25()
 
 // Checks for Sources/Model/UsageSummaryModel.swift — the model behind the Usage window's Cost and
 // Tokens tabs. Vectors come from T3 Code (commit 803f21f): usageFormat.test.ts, usageMerge.test.ts,
@@ -6300,7 +6331,7 @@ do {
 // "oracle" were printed by T3's own formatter code under Node, not derived by hand.
 
 // Currency, counts and percentages (spec 03 §10.1, §10.3, §10.4).
-do {
+func usageChecks26() {
     let usd: [(Double, String)] = [
         (0, "$0.00"), (0.004, "$0.00"), (0.005, "$0.01"), (1234.567, "$1,234.57"),
         (-1.5, "-$1.50"), (41.2, "$41.20"),
@@ -6333,9 +6364,10 @@ do {
         check(got == expected, "percent: \(share) prints \(expected), got \(got)")
     }
 }
+usageChecks26()
 
 // Tokens (spec 03 §10.2 and usageFormat.test.ts "moves to the next unit when rounding reaches it").
-do {
+func usageChecks27() {
     let vectors: [(Double, String)] = [
         (0, "0"), (999, "999"), (999.6, "1K"), (1000, "1K"), (1234, "1.23K"), (1500, "1.50K"),
         (12345, "12.3K"), (15000, "15K"), (15500, "15.5K"), (123_456, "123K"), (999_499, "999K"),
@@ -6355,9 +6387,10 @@ do {
     let printed = odd.map { UsageFormat.tokens($0) + UsageFormat.usd($0) + UsageFormat.count($0) + UsageFormat.percent($0) }
     check(printed.count == odd.count, "formatters survive infinities, NaN and absurd magnitudes")
 }
+usageChecks27()
 
 // Days and hours (spec 03 §10.5, usageFormat.test.ts "hourly usage formatting").
-do {
+func usageChecks28() {
     let utc = TimeZone(identifier: "UTC")!
     let newYork = TimeZone(identifier: "America/New_York")!
     let kathmandu = TimeZone(identifier: "Asia/Kathmandu")!
@@ -6421,9 +6454,10 @@ do {
     check(UsageFormat.uses12HourClock(Locale(identifier: "en_US")), "clock: a US locale reads 12-hour")
     check(!UsageFormat.uses12HourClock(Locale(identifier: "en_GB")), "clock: a British locale reads 24-hour")
 }
+usageChecks28()
 
 // Period lists (spec 03 §5.3, §17 item 1).
-do {
+func usageChecks29() {
     let week = UsageFormat.enumerateDays(since: "2026-11-13", until: "2026-11-19")
     check(week.count == 7 && week.first == "2026-11-13" && week.last == "2026-11-19",
           "days: 7 days on 2026-11-19 list the 13th to the 19th")
@@ -6451,9 +6485,10 @@ do {
     check(UsageFormat.enumerateHourStarts(since: "1970-01-01T00:00:00.000Z", until: "2026-08-11T12:37:00.000Z").isEmpty,
           "hours: a corrupted bound does not allocate half a million labels")
 }
+usageChecks29()
 
 // summary.json: the four periods, read and reduced.
-do {
+func usageChecks30() {
     let near = { (a: Double, b: Double) in abs(a - b) < 1e-9 }
     let parse = { (text: String) -> [String: Any] in
         (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any] ?? [:]
@@ -6744,9 +6779,10 @@ do {
           "90 days chart: while loading with nothing to show there are five unlabelled grid lines")
     check(summary.period(14).buckets.isEmpty && summary.period(14).periodKeys.isEmpty, "summary: a period nobody wrote is empty")
 }
+usageChecks30()
 
 // T3 usageMerge.test.ts, the vectors that survive on one machine.
-do {
+func usageChecks31() {
     let bucket = { (overrides: [String: Any]) -> [String: Any] in
         var base: [String: Any] = [
             "day": "2026-08-07", "provider": "claude", "model": "claude-fable-5",
@@ -6828,9 +6864,10 @@ do {
           "ranking: models follow the tab's metric the same way")
     check(ranked.providers.map { $0.provider } == ["codex", "claude"], "ranking: the provider totals themselves are by cost")
 }
+usageChecks31()
 
 // Model dialog numbers (usageBreakdown.test.ts, UsageModelDialog.browser.test.tsx) and share bars.
-do {
+func usageChecks32() {
     let mixedTokens = UsageTokenTotals(uncachedInputTokens: 1_000_000, cachedInputTokens: 1_000_000,
                                        cacheCreationTokens: 2_000_000, outputTokens: 0, reasoningTokens: 0)
     let mixed = UsageModelTotals(model: "mixed", provider: "codex", costUsd: 6, totalTokens: 4_000_000, tokens: mixedTokens,
@@ -6886,9 +6923,10 @@ do {
             && cost.segments[4].ink.light == 0x8e8e90 && speed.segments[1].ink.dark == 0x8c8c8c,
           "share bar: segments carry T3's light and dark inks")
 }
+usageChecks32()
 
 // Chart maths (UsageProviderChart.tsx, UsageProviderChart.test.ts, spec 03 §7).
-do {
+func usageChecks33() {
     let near = { (a: Double, b: Double) in abs(a - b) < 1e-9 }
 
     // "keeps band values absolute rather than cumulative"
@@ -6976,9 +7014,10 @@ do {
             && UsageChart.axisLabels(["2026-11-19"], hourly: false, timeZone: TimeZone(identifier: "UTC")!, hour12: true)
                 == ["NOV 19", "NOV 19", "NOV 19"], "axis: one period fills all three labels, none has no labels")
 }
+usageChecks33()
 
 // Source warnings (usageFormat.test.ts "usage source messages", reduced to one machine).
-do {
+func usageChecks34() {
     let source = { (provider: String, status: String, malformed: Int, message: Any) -> [String: Any] in
         ["provider": provider, "status": status, "scannedFiles": 1, "skippedFiles": 3, "malformedRecords": malformed,
          "distinctSessions": 1, "message": message]
@@ -7017,9 +7056,10 @@ do {
           "warnings: skipped compressed files are not given a number, skippedFiles also counts files without usage")
     check(warnings([source("codex", "ok", 0, "zstd_unavailable")]).isEmpty, "warnings: a source that reports ok is not a warning")
 }
+usageChecks34()
 
 // English copy with T3's quirks (spec 03 §6.1, §6.2, §8.3).
-do {
+func usageChecks35() {
     check(UsageCopy.sessionsCaption(1, metric: .tokens) == "1 sessions", "copy: the headline caption reads sessions even for one, as T3's does")
     check(UsageCopy.sessionsCaption(1234, metric: .cost) == "1,234 sessions · API estimate", "copy: on the Cost tab the caption adds API estimate")
     check(UsageCopy.providerSessions(1) == "1 session" && UsageCopy.providerSessions(12) == "12 sessions"
@@ -7045,9 +7085,10 @@ do {
           "palette: a colour is also available as three fractions")
     check(UsageTotals.providerOrder == ["claude", "codex"], "palette: the provider order is Claude, then Codex")
 }
+usageChecks35()
 
 // status.json.
-do {
+func usageChecks36() {
     let scanning = UsageScanStatus(json: ["ts": 1_795_112_308, "state": "scanning", "detail": "", "done": 120, "total": 7501])
     check(scanning.ts == 1_795_112_308 && scanning.state == "scanning" && scanning.detail.isEmpty && scanning.done == 120
             && scanning.total == 7501, "status: a scan in progress is read")
@@ -7072,9 +7113,10 @@ do {
     let over = UsageScanStatus(json: ["state": "scanning", "done": 12, "total": 0])
     check(over.progressText(busy: true, hasSummary: false) == "Scanning…", "status: progress without a total has no numbers")
 }
+usageChecks36()
 
 // Broken summary.json: wrong types degrade, nothing traps.
-do {
+func usageChecks37() {
     let parse = { (text: String) -> [String: Any] in
         (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any] ?? [:]
     }
@@ -7164,11 +7206,12 @@ do {
         + wild.warnings().joined() + wildChart.scale.ticks.map { UsageChart.tickLabel($0, metric: .tokens) }.joined()
     check(!wildText.isEmpty && wildChart.periods.count == 24, "broken: and they can be printed and charted")
 }
+usageChecks37()
 
 // Added by the independent verifier. Every expected value below was printed by T3 Code's own
 // sources (commit 803f21f) run under Node, not derived from this model; the T3 file and line of
 // the rule is named in each check.
-do {
+func usageChecks38() {
     let bucket = { (overrides: [String: Any]) -> [String: Any] in
         // usageMerge.test.ts:17-37, the fixture every merge test starts from.
         var base: [String: Any] = [
@@ -7254,8 +7297,9 @@ do {
     check(tied.models(by: .tokens).map { $0.model } == ["b", "c", "a", "d"],
           "T3 usageBreakdown.ts:13-17: on the Tokens tab equal tokens are ordered by cost, larger first")
 }
+usageChecks38()
 
-do {
+func usageChecks39() {
     // usageFormat.ts:106-110 — rounding can carry into the next digit count, and trim() then drops
     // the fraction that carry left behind ("100.0" reads "100").
     let tokens: [(Double, String)] = [
@@ -7320,8 +7364,9 @@ do {
         check(false, "the Berlin and New York time zones are known to this Mac")
     }
 }
+usageChecks39()
 
-do {
+func usageChecks40() {
     // UsageProviderChart.tsx:165 — a step sitting exactly on 1, 2 or 5 keeps that step.
     let scales: [(Double, Double, [Double])] = [
         (4, 4, [0, 1, 2, 3, 4]), (8, 8, [0, 2, 4, 6, 8]), (20, 20, [0, 5, 10, 15, 20]), (1, 1, [0, 0.5, 1]),
@@ -7349,8 +7394,9 @@ do {
                                    plotWidth: 200, plotHeight: 100) == UsageChartPoint(x: 0, y: 0),
           "T3 UsageProviderChart.tsx:329-330: a flipped tooltip never starts left of or above the plot")
 }
+usageChecks40()
 
-do {
+func usageChecks41() {
     // usageFormat.test.ts "usage source messages". T3 passes the server text through; this app
     // maps a category word to its own sentence, so the wording differs and the selection must not.
     let source = { (provider: String, status: String, malformed: Int, message: Any) -> [String: Any] in
@@ -7377,10 +7423,11 @@ do {
                 "3 malformed or inconsistent usage record(s) were skipped; usage may be incomplete."],
           "T3 usageFormat.test.ts:101-117: a missing source listed twice is counted once")
 }
+usageChecks41()
 
 // Added by the independent verifier after its own mutation probes: six rules of T3 that the model
 // follows but no check above would have noticed breaking. Expected values are T3's own output.
-do {
+func usageChecks42() {
     let bucket = { (overrides: [String: Any]) -> [String: Any] in
         var base: [String: Any] = [
             "day": "2026-08-07", "provider": "claude", "model": "claude-fable-5",
@@ -7443,8 +7490,9 @@ do {
     check(loadingWithData.scale.labeled && loadingWithData.scale.max == 10 && loadingWithData.scale.ticks == [0, 5, 10],
           "T3 UsageProviderChart.tsx:184: a chart that is loading but already has figures keeps its real, labelled scale")
 }
+usageChecks42()
 
-do {
+func usageChecks43() {
     // UsageProviderChart.tsx:92-96 — where the line turns, the tangent is flat even when the two
     // slopes are unequal (4 up, 1 down), so the curve does not rise past the turning point.
     let point = { (x: Double, y: Double) in UsageChartPoint(x: x, y: y) }
@@ -7460,13 +7508,14 @@ do {
             && near(spike[2].c1, point(70.0 / 3, 242)) && near(spike[2].c2, point(80.0 / 3, 240)),
           "T3 UsageProviderChart.tsx:78-143: a spike keeps T3's control points and never leaves the plot")
 }
+usageChecks43()
 
 // Custom model prices and "Map to" (Sources/Model/UsagePricesModel.swift).
 // Vectors come from T3 Code's usagePriceForm.test.ts, usagePriceTable.test.ts,
 // usagePriceTargets.test.ts, settings.test.ts and usageAggregation.test.ts (commit 803f21f).
 
 // usagePriceForm.test.ts: reading the four cells of one row.
-do {
+func usageChecks44() {
     let parsed = UsagePrice(cells: [.input: "2", .output: "8", .cacheRead: "0", .cacheWrite: " "])
     check(parsed?.rates == [.input: 2, .output: 8, .cacheRead: 0],
           "prices: an explicit 0 is a free cache rate and a blank one is left out")
@@ -7494,9 +7543,10 @@ do {
     check(UsagePrice(cells: [.input: "2"]) == nil && UsagePrice(cells: [.output: "8"]) == nil,
           "prices: input and output are both required")
 }
+usageChecks44()
 
 // usagePriceForm.test.ts: what may be typed into a price cell.
-do {
+func usageChecks45() {
     let edit = UsagePrice.acceptsEdit
     check(edit("", "2,5") && edit("", ",5"), "typing: a decimal comma is allowed")
     check(!edit("", "1,2,3") && !edit("1,2", "1,2.3"), "typing: a second decimal mark is refused")
@@ -7520,11 +7570,12 @@ do {
     check(!edit("12", "1x") && !edit("12", "x2") && edit("12", "1") && edit("12", "2"),
           "typing: a same-length or shorter replacement only passes when it is a pure deletion")
 }
+usageChecks45()
 
 // The chosen normalisation: a rate is shown exactly as JavaScript's Number.prototype.toString
 // prints it (values below were printed by node 26), so a cell nobody touched reads back as the
 // saved value and the file carries the same number text T3's settings.json would.
-do {
+func usageChecks46() {
     let vectors: [(Double, String)] = [
         (0, "0"), (2, "2"), (8, "8"), (3.5, "3.5"), (0.075, "0.075"), (2.5, "2.5"), (0.1, "0.1"),
         (0.1 + 0.2, "0.30000000000000004"), (1e-7, "1e-7"), (1.5e-7, "1.5e-7"), (0.000001, "0.000001"),
@@ -7547,9 +7598,10 @@ do {
             && UsagePrice.text(-.infinity) == "-Infinity",
           "number text: non-numbers print without a crash")
 }
+usageChecks46()
 
 // usagePriceTable.test.ts: turning the edited rows into changes.
-do {
+func usageChecks47() {
     let price = UsagePrice([.input: 2, .output: 8])!
     func settings(_ prices: [String: UsagePrice], _ aliases: [String: String] = [:]) -> UsagePriceSettings {
         var settings = UsagePriceSettings()
@@ -7649,9 +7701,10 @@ do {
     check(UsagePricePlan(saved: mapped, drafts: [namelessMapping]).errors == ["new:4": "Enter a model ID."],
           "plan: a mapping without a model ID is refused")
 }
+usageChecks47()
 
 // usagePriceTable.test.ts: mappings must not form a cycle after the whole batch is applied.
-do {
+func usageChecks48() {
     func settings(_ aliases: [String: String]) -> UsagePriceSettings {
         var settings = UsagePriceSettings()
         settings.aliases = aliases
@@ -7710,9 +7763,10 @@ do {
     check(accepted.errors.isEmpty && after.resolvedAliases == ["a": "c", "b": "c", "x": "z", "y": "z"],
           "resolution: every mapping the plan accepts is in effect after saving")
 }
+usageChecks48()
 
 // usagePriceTargets.test.ts and serverSettings.test.ts, for the one file of this machine.
-do {
+func usageChecks49() {
     let price = UsagePrice([.input: 2, .output: 8])!
     var saved = UsagePriceSettings()
     saved.prices = ["example": price]
@@ -7732,9 +7786,10 @@ do {
     check(merged.prices == ["a": price, "b": price] && merged.aliases == ["older": "b"],
           "apply: a new price replaces the whole entry, a removal deletes it, the rest stays")
 }
+usageChecks49()
 
 // Reading usage/prices.json with T3's schema rules.
-do {
+func usageChecks50() {
     func parse(_ text: String) -> UsagePriceSettings { UsagePriceSettings(data: Data(text.utf8)) }
     let brief = parse("""
         {"usagePriceOverrides": {"glm-5.3": {"inputCostPerMillionTokens": 2, "outputCostPerMillionTokens": 8,
@@ -7800,9 +7855,10 @@ do {
     many += "}}"
     check(parse(many).prices.count == 20_000, "file: a very large table is read in full")
 }
+usageChecks50()
 
 // Writing usage/prices.json: T3's key names, a fixed order, numbers as JavaScript prints them.
-do {
+func usageChecks51() {
     var settings = UsagePriceSettings()
     settings.prices = [
         "glm-5.3": UsagePrice([.input: 2, .output: 8, .cacheRead: 0])!,
@@ -7867,9 +7923,10 @@ do {
           "disk: a failed save reports the error and leaves the file alone")
     try? FileManager.default.removeItem(atPath: folder)
 }
+usageChecks51()
 
 // The editor: rows, cells and entry points (spec 05 §13.2–13.5).
-do {
+func usageChecks52() {
     let price = UsagePrice([.input: 2, .output: 8])!
     var saved = UsagePriceSettings()
     saved.prices = ["zeta": price, "Alpha": UsagePrice([.input: 0, .output: 8, .cacheRead: 1e-7])!]
@@ -7993,9 +8050,10 @@ do {
     check(editor.aliasSuggestions(seen: ["claude-fable-5", "zeta", "gpt-6"]) == ["Alpha", "claude-fable-5", "gpt-6"],
           "editor: any known model that is not itself mapped away is suggested as a target")
 }
+usageChecks52()
 
 // The editor: "Set price" from an unpriced model, and saving (spec 05 §13.2, §13.7).
-do {
+func usageChecks53() {
     let price = UsagePrice([.input: 2, .output: 8])!
     let folder = NSTemporaryDirectory() + "acb-usage-editor-\(ProcessInfo.processInfo.processIdentifier)/"
     try? FileManager.default.removeItem(atPath: folder)
@@ -8057,11 +8115,12 @@ do {
           "save: resetting the last row leaves an empty, valid file")
     try? FileManager.default.removeItem(atPath: folder)
 }
+usageChecks53()
 
 // Verifier: a long number literal must come back from the file as the double that was written.
 // JSONSerialization hands such literals over as NSDecimalNumber, whose doubleValue can be one
 // unit in the last place off (found by writing and re-reading 85193 doubles printed by node).
-do {
+func usageChecks54() {
     let rates: [Double] = [0.002251941003853357, 0.00004244548459430076, 0.000002658841935363292,
                            0.0002310239046594789, 0.00009278559843078256, 0.0013014852537543515]
     var settings = UsagePriceSettings()
@@ -8078,11 +8137,12 @@ do {
     check(long.prices["m"]?.cells == [.input: "123456789012345680000", .output: "0.1"],
           "file: a literal longer than a double can hold is rounded to the nearest double, as JavaScript does")
 }
+usageChecks54()
 
 // Verifier: branches of T3's usagePriceTableChanges (usagePriceTable.ts, commit 803f21f) that the
 // vectors above do not reach. Every expected value was printed by T3's own function run under
 // node and then reduced to one machine (no "on {target}").
-do {
+func usageChecks55() {
     let price = UsagePrice([.input: 2, .output: 8])!
     func settings(_ prices: [String: UsagePrice], _ aliases: [String: String] = [:]) -> UsagePriceSettings {
         var settings = UsagePriceSettings()
@@ -8164,10 +8224,11 @@ do {
     check(touchedLoop.changes.isEmpty && touchedLoop.errors == ["model:a": cycle],
           "cycles (usagePriceTable.ts:158-171): touching a row inside a saved loop without fixing it is refused")
 }
+usageChecks55()
 
 // Verifier: the two regular expressions and the deletion rule of usagePriceForm.ts, with answers
 // printed by T3's own parseUsagePriceForm and isUsagePriceEdit under node.
-do {
+func usageChecks56() {
     let read: [(String, Double?)] = [("1,", 1), (",5e2", 50), ("1,e3", 1000), (",", nil), (".", nil), ("1.", 1),
                                      ("5E+2", 500), ("0,0", 0), ("007", 7), ("1e0005", 100_000)]
     let misread = read.filter { UsagePrice(cells: [.input: $0.0, .output: "8"])?.rates[.input] != $0.1 }.map(\.0)
@@ -8192,9 +8253,10 @@ do {
     check(wrongPairs.isEmpty,
           "typing (usagePriceForm.ts:30-33): from a text that is not a number only the removal of one run is allowed \(wrongPairs)")
 }
+usageChecks56()
 
 // Verifier: T3's settings tests for these two tables, on the one file of this machine.
-do {
+func usageChecks57() {
     func parse(_ text: String) -> UsagePriceSettings { UsagePriceSettings(data: Data(text.utf8)) }
     func bytes(_ path: String) -> String { String(decoding: FileManager.default.contents(atPath: path) ?? Data(), as: UTF8.self) }
     let prices = UsagePrice([.input: 2, .output: 8])!
@@ -8263,9 +8325,10 @@ do {
             && UsagePriceSettings(data: slashed.serialized()) == slashed,
           "write (UsageService.test.ts:1275): model IDs with a vendor prefix are written as they are")
 }
+usageChecks57()
 
 // Verifier: UsagePriceOverrides.tsx behaviour of the table that the vectors above do not reach.
-do {
+func usageChecks58() {
     let price = UsagePrice([.input: 2, .output: 8])!
 
     // UsagePriceOverrides.tsx:464-466 — the message is gated on a model ID or any typed character.
@@ -8322,11 +8385,12 @@ do {
     check(repair.canSave && repair.afterSave.resolvedAliases == ["a": "c", "b": "c"],
           "editor (usagePriceTable.ts:152-172): redirecting one model of the loop makes both mappings effective")
 }
+usageChecks58()
 
 // MARK: Usage window — how long its commands may run, and the forced limits polls
 // Which script runs them is not a question of the command any more: every command runs the copy
 // inside the app, and an older plugin copy is only the fallback (BackendCommand.backend, above).
-do {
+func usageChecks59() {
     check(BackendCommand.usage(refresh: false).deadline == 600 && BackendCommand.usage(refresh: true).deadline == 600,
           "a usage scan that hung is stopped, so it cannot hold the refresh button for ever")
     // The one command with no deadline: a redemption cut short would leave nobody knowing whether
@@ -8340,10 +8404,11 @@ do {
     check(unbounded.end == .exited(0),
           "and a run without a deadline is waited for until it ends: \(unbounded.end)")
 }
+usageChecks59()
 
 // The Usage window's refresh button asks for limits now, whatever the sixty-second debounce says —
 // but never beside a request that is already on its way.
-do {
+func usageChecks60() {
     let now = 1_795_112_308.0
     var poll = CodexLimitsPoll()
     check(poll.begin(now: now), "forced poll: the first request starts")
@@ -8355,10 +8420,11 @@ do {
     check(!poll.begin(now: now + 61), "a forced request restarts the debounce for the ordinary ones")
     check(poll.begin(now: now + 62), "and they resume sixty seconds after it")
 }
+usageChecks60()
 
 // Claude has no poll object of its own (its debounce is the controller's lastLimitsPoll), so the
 // rule the Usage window added to it is pinned here: one request at a time, whoever asks.
-do {
+func usageChecks61() {
     let now = 1_795_112_308.0
     check(ClaudeLimitsPoll.mayStart(now: now, lastStart: 0, running: false, force: false),
           "claude poll: the first request starts")
@@ -8384,13 +8450,14 @@ do {
     codex.finish()
     check(!codex.inFlight, "codex poll: and lands")
 }
+usageChecks61()
 
 // MARK: Usage window — the rules that are not about a file format
 // Sources/Model/UsageWindowModel.swift: what the window remembers, its keys, the picture it
 // draws from plain inputs, and its two rules about time.
 
 // The window's keys are matched by physical key and exact modifiers.
-do {
+func usageChecks62() {
     let bare: NSEvent.ModifierFlags = []
     check(UsageShortcut.match(keyCode: 8, modifiers: bare) == .tab(.cost), "C selects Cost")
     check(UsageShortcut.match(keyCode: 17, modifiers: bare) == .tab(.tokens), "T selects Tokens")
@@ -8414,9 +8481,10 @@ do {
     check(UsageTab.allCases.map(\.key) == ["C", "T", "L"] && UsageTab.limits.metric == nil,
           "the tabs name their keys, and Limits is not a metric")
 }
+usageChecks62()
 
 // Preferences: T3's three fields, validated as one object.
-do {
+func usageChecks63() {
     let suite = "usage-preferences-check-" + UUID().uuidString
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
@@ -8450,9 +8518,10 @@ do {
     defaults.removeObject(forKey: UsagePreferences.hiddenKey)
     check(UsagePreferences(defaults: defaults).filter == .all, "a save from before the hidden list is valid")
 }
+usageChecks63()
 
 // When the window rescans and when its frozen clock moves.
-do {
+func usageChecks64() {
     let now = 1_795_091_862.0
     check(UsageClock.summaryIsStale(readAt: nil, now: now), "no summary is a stale one")
     check(!UsageClock.summaryIsStale(readAt: now - 299, now: now), "a summary under five minutes old is kept")
@@ -8460,9 +8529,10 @@ do {
     check(!UsageClock.minuteChanged(frozen: 120, wall: 179.9), "the frozen clock stands still inside a minute")
     check(UsageClock.minuteChanged(frozen: 179.9, wall: 180), "and moves when the wall clock enters the next")
 }
+usageChecks64()
 
 // The notices box: T3's sentences, shown when the panel's own rule says there is something to explain.
-do {
+func usageChecks65() {
     let now = 1_795_091_862.0
     let status = { (state: String, ts: Double) in LimitsStatus(json: ["state": state, "ts": ts, "detail": "URLError"]) }
     let figures = LimitsSet(provider: "claude", windows: [], source: "oauth", ts: now - 600, plan: nil)
@@ -8487,9 +8557,10 @@ do {
     check(notice("claude", UsageLimitsInput(set: figures, status: status("failed", now - 3600)), true) == nil,
           "figures newer than the failure stand, as in the panel")
 }
+usageChecks65()
 
 // The snapshot builder: the same picture for the app and the render mode.
-do {
+func usageChecks66() {
     let now = 1_795_091_862.0
     var inputs = UsageInputs(now: now, providers: ["claude", "codex"])
     check(UsageSnapshot(inputs).usagePhase == .unavailable, "no summary and no scan is neither loading nor ready")
@@ -8588,10 +8659,11 @@ do {
         json: ["ts": now - 10, "resetCredits": ["availableCount": 1]], provider: "codex")
     check(allowed(inputs) == [true], "codex: until a poll rewrites its account file")
 }
+usageChecks66()
 
 // The rules are the model's; these hold the places that have to ask them. A spent credit cannot
 // be given back, so the controller refuses by the same rule that disables the buttons.
-do {
+func usageChecks67() {
     let source = appSources.joined(separator: "\n")
     let redeem = source.range(of: "func redeemUsageReset(").map { source[$0.upperBound...] } ?? ""
     let beforeSpawn = redeem.range(of: "runQuietCommand(.resetCredit").map { redeem[..<$0.lowerBound] } ?? ""
@@ -8608,9 +8680,10 @@ do {
     check(!source.contains("Int(snapshot.now)") && source.contains("now \\(snapshot.now.clampedInt)"),
           "the render mode prints its clock through clampedInt")
 }
+usageChecks67()
 
 // Added by the verifier: a redemption command that ended without a result still ends in a sentence.
-do {
+func usageChecks68() {
     let now = 1_795_091_862.0
     var inputs = UsageInputs(now: now, providers: ["claude", "codex"])
     inputs.resetNewsSince = now - 600
@@ -8629,19 +8702,21 @@ do {
           "a new attempt in flight replaces the line")
     check(!UsageProviderState.resetRefreshHint.isEmpty, "the refresh-first hint has words for the Limits tab")
 }
+usageChecks68()
 
 // The popover's target is plain data the store can compare.
-do {
+func usageChecks69() {
     check(UsagePopoverTarget(provider: "codex", row: "primary") == UsagePopoverTarget(provider: "codex", row: "primary")
             && UsagePopoverTarget(provider: "codex", row: "primary") != UsagePopoverTarget(provider: "claude", row: "primary"),
           "a popover is identified by its provider and its row")
 }
+usageChecks69()
 
 // MARK: Usage window — one clock with the panel
 // The line on the panel's bars (NamedWindow) and the tick on the Usage window's (UsageLimitRow)
 // are read off the same limits file, so the same window must get the same place and the same
 // verdict in both.
-do {
+func usageChecks70() {
     let now = 1_795_112_308.0
     func window(_ key: String, _ minutes: Int, used: Int, resetsIn: Double) -> NamedWindow {
         NamedWindow(key: key, title: key, badge: nil, minutes: minutes,
@@ -8661,6 +8736,7 @@ do {
               "the Usage window's tick and the panel's line agree on \(panel.key): \(row?.evenPacePercent ?? -1)% left, \(row?.pace ?? "-")")
     }
 }
+usageChecks70()
 
 // MARK: Usage window — the files the real Python writers produced
 // The same border as the limits seams above, for the Usage window's five files: written by the
