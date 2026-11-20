@@ -40,6 +40,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -792,13 +793,19 @@ class ScanCache:
         if not os.path.exists(path):
             os.close(os.open(path, os.O_WRONLY | os.O_CREAT, core.SECURE_FILE))
         self.db = sqlite3.connect(path, timeout=30)
-        if self.db.execute("PRAGMA user_version").fetchone()[0] != CACHE_VERSION:
-            for table in ("files", "records"):
-                self.db.execute("DROP TABLE IF EXISTS %s" % table)
-            for statement in _SCHEMA:
-                self.db.execute(statement)
-            self.db.execute("PRAGMA user_version = %d" % CACHE_VERSION)
-            self.db.commit()
+        try:
+            if self.db.execute("PRAGMA user_version").fetchone()[0] != CACHE_VERSION:
+                for table in ("files", "records"):
+                    self.db.execute("DROP TABLE IF EXISTS %s" % table)
+                for statement in _SCHEMA:
+                    self.db.execute(statement)
+                self.db.execute("PRAGMA user_version = %d" % CACHE_VERSION)
+                self.db.commit()
+        except sqlite3.Error:
+            # Испорченный файл открывается, а падает первый же запрос: вызывающему закрывать нечего,
+            # и соединение держало бы файл, который он сейчас удалит.
+            self.db.close()
+            raise
 
     def index(self):
         return {row[0]: Entry(*row[1:9], _load(row[9], row[0]), _load(row[10], row[0]))
@@ -1284,6 +1291,10 @@ def _fetch_rates(url, accept):
                 if len(body) > RATES_MAX_BYTES or time.monotonic() > deadline:
                     return None
         document = json.loads(body.decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        # Ответ с ошибкой — открытый файл: незакрытый, он уходит сборщику мусора с ResourceWarning.
+        error.close()
+        return None
     except Exception:
         return None
     table = parse_rate_table(document)
