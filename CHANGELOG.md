@@ -7,7 +7,7 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
-## [Unreleased]
+## [0.30.2] - 2026-11-20
 
 ### Fixed
 - A limits refresh counts against an unsettled reset request only once that request can no
