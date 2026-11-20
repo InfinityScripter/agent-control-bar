@@ -7,6 +7,31 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.30.1] - 2026-11-20
+
+### Changed
+- The panel, the menu bar icon and the Usage window show a blocked session the same way. When
+  the weekly limit is used up, the 5-hour session reads 0% left with no pace line everywhere,
+  and its time is the weekly reset, or none when that is unknown. A Codex window of unknown
+  length gets no pace tick in the Usage window, and a figure outside 0–100% gets the same
+  ahead, on or under verdict in both places.
+- The Claude history list names where a chat ran as CLI, IDE, APP or T3, like the Codex list
+  and the live rows, and search finds chats by these words.
+
+### Fixed
+- No second reset credit while the first one's outcome is unknown. After "That credit was
+  already redeemed." without fresh limits, every credit on the Limits tab waits for a limits
+  refresh. After an interrupted request, even one stopped mid-retry, only a retry of the same
+  credit stays available until the next refresh.
+- After an unconfirmed reset the line under the cards asks for a refresh once, not twice.
+- An MCP switch stays where you clicked it. A check that started before the click no longer
+  flips the row back; the row keeps the new position until a later check confirms it, shows
+  the real state if that check disagrees, and goes back at once beside its reason if the
+  switch was not applied.
+- A huge custom price no longer breaks the Usage window. A price above 100000000 per million
+  tokens, the same ceiling as the downloaded rate table, is ignored like any other invalid
+  price, and the price editor refuses it before saving.
+
 ## [0.30.0] - 2026-11-20
 
 ### Added
@@ -87,7 +112,7 @@ from, and are kept so the history reads continuously.
   hooks. It used to say "Hooks approved".
 - When **Approve** gets no answer from Codex, "Codex did not answer — try again" appears under
   the button, in the panel and in Settings. Before, the button turned back without a word.
-- **Settings > About** says "Codex hooks weren't written", with the reason, when
+- **Settings > About** says "Codex hooks weren’t written", with the reason, when
   `~/.codex/hooks.json` cannot be read or written. It used to say "Installed".
 - On a Homebrew install, **Settings > About** shows the `brew upgrade` command only once
   Homebrew's cask has the release, and says so while it does not. Before, the page offered the

@@ -57,10 +57,12 @@ struct UsagePrice: Equatable {
     }
 
     /// The typed cells of one row. Blank cells are left out, so a blank required one fails.
+    /// `mcpbar.py usage` drops a price above its rate-table ceiling, 100 USD per token, so
+    /// a typed rate above 100000000 per million tokens is refused here as well.
     init?(cells: [UsagePriceField: String]) {
         var rates: [UsagePriceField: Double] = [:]
         for (field, text) in cells where !text.trimmed.isEmpty {
-            guard let rate = Self.number(text) else { return nil }
+            guard let rate = Self.number(text), rate <= 100_000_000 else { return nil }
             rates[field] = rate
         }
         self.init(rates)
@@ -306,7 +308,7 @@ struct UsagePricePlan: Equatable {
             }) {
                 errors[draft.id] = "\(missing.label) is required."
             } else {
-                errors[draft.id] = "Use non-negative numbers for prices."
+                errors[draft.id] = "Use non-negative numbers up to 100000000 for prices."
             }
         }
         // Checked on the result of the whole batch, so clearing one mapping and reversing it in

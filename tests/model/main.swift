@@ -741,9 +741,9 @@ do {
     let history = try JSONDecoder().decode(ClaudeHistory.self, from: Data(json.utf8))
     let first = history.threads[0], second = history.threads[1]
     check(history.hasMore && second.title == "Other" && second.sourceLabel.isEmpty
-          && first.sourceLabel == "Claude app" && first.opensInDesktop && !second.opensInDesktop,
+          && first.sourceLabel == "APP" && first.opensInDesktop && !second.opensInDesktop,
           "Claude history keeps the page boundary, names an untitled chat by its folder and labels the client")
-    check(history.matching("reparer SEARCH claude", excluding: []).map(\.id) == [first.id]
+    check(history.matching("reparer SEARCH app", excluding: []).map(\.id) == [first.id]
           && history.matching("feature", excluding: [first.id]).isEmpty
           && history.matching("  ", excluding: []).count == 3,
           "Claude history searches every word and keeps live chats out of the list")
@@ -762,6 +762,30 @@ do {
 } catch {
     check(false, "Claude history payload decodes: \(error)")
 }
+
+// Both history lists and the Live rows name a client with one set of words, and a Claude chat is
+// found by the word its row shows.
+func claudeHistoryLabelChecks() {
+    func thread(_ source: String) -> ClaudeHistory.Thread? {
+        try? JSONDecoder().decode(ClaudeHistory.Thread.self, from: Data("""
+        {"id":"chat","name":"","cwd":"","updatedAt":1,"branch":"","source":"\(source)"}
+        """.utf8))
+    }
+    let live = ["cli": "cli", "app": "claude-desktop", "ide": "claude-vscode"]
+    check(live.allSatisfy { source, entrypoint in
+        let label = thread(source)?.sourceLabel
+        return label != nil && label == SessionFormat.surfaceTag(Session(json: ["entrypoint": entrypoint], id: "x"))
+    }, "Claude history names a terminal, app and editor chat with the Live row's word")
+    check(thread("t3")?.sourceLabel == "T3" && thread("t3")?.sourceLabel == SessionFormat.surfaceLabel("t3"),
+          "Claude history names a T3 Code chat as the Codex history does")
+    let history = ClaudeHistory(threads: ["cli", "ide", "t3"].compactMap(thread), hasMore: false)
+    check(history.matching("cli", excluding: []).map(\.source) == ["cli"]
+          && history.matching("ide", excluding: []).map(\.source) == ["ide"]
+          && history.matching("t3", excluding: []).map(\.source) == ["t3"]
+          && history.matching("terminal", excluding: []).isEmpty,
+          "Claude history search finds a chat by its client's short word")
+}
+claudeHistoryLabelChecks()
 check(Session(json: ["entrypoint": "claude-desktop"], id: "d").hasFocusTarget
       && Session(json: ["entrypoint": "t3-code", "t3_thread": "thread"], id: "t").hasFocusTarget
       && Session(json: ["term_bundle": "com.apple.Terminal"], id: "b").hasFocusTarget
@@ -4765,15 +4789,181 @@ check(mcpRefresh.finish("claude"), "the check asked for meanwhile is remembered 
 check(mcpRefresh.begin(["claude"]) == ["claude"] && !mcpRefresh.finish("claude"), "once, not for ever after")
 // A switch written while that agent's check is out: the check read the config before the write
 // (or, for Codex, holds the lock the switch's own re-read then finds busy), so its picture is stale.
-mcpRefresh.switched("claude")
+mcpRefresh.switchStarted("claude")
+_ = mcpRefresh.switchLanded("claude")
 check(mcpRefresh.begin(["claude"]) == ["claude"] && !mcpRefresh.finish("claude"),
       "a switch with no check in flight orders nothing: the command leaves its own file current")
-mcpRefresh.switched("codex")
-check(mcpRefresh.finish("codex"), "a switch during its agent's check has that agent checked once more")
+mcpRefresh.switchStarted("codex")
+// What the controller does with a switch's own re-read it cannot believe: refreshMCP(of:).
+check(!mcpRefresh.switchLanded("codex") && mcpRefresh.begin(["codex"]).isEmpty && mcpRefresh.finish("codex"),
+      "a switch during its agent's check has that agent checked once more")
 check(mcpRefresh.begin(["codex", "claude"]) == ["codex", "claude"], "and both are free again afterwards")
-mcpRefresh.switched("claude")
-check(!mcpRefresh.finish("codex") && mcpRefresh.finish("claude"),
+mcpRefresh.switchStarted("claude")
+check(!mcpRefresh.switchLanded("claude") && mcpRefresh.begin(["claude"]).isEmpty
+        && !mcpRefresh.finish("codex") && mcpRefresh.finish("claude"),
       "the re-check follows the agent whose config was written, not the other one")
+
+// Whether a switch's own re-read can be believed: only when no check of its agent ran beside it.
+// A check out at the click, one started while the switch was on its way, and one still out when it
+// lands may each have read the config before the write. The switch then orders its agent checked
+// again once, as it lands: false from switchLanded, which the controller answers with refreshMCP(of:).
+func mcpSwitchReadChecks() {
+    var poll = MCPRefreshPoll()
+    poll.switchStarted("codex")
+    check(poll.switchLanded("codex") && poll.begin(["codex"]) == ["codex"] && !poll.finish("codex"),
+          "a switch alone: its own re-read is the truth, and no check is ordered for it")
+    _ = poll.begin(["codex"])
+    poll.switchStarted("codex")
+    check(!poll.switchLanded("codex") && poll.begin(["codex"]).isEmpty && poll.finish("codex"),
+          "a check out at the click makes the switch's own re-read suspect, and is followed by another")
+    poll = MCPRefreshPoll()
+    _ = poll.begin(["codex"])
+    poll.switchStarted("codex")
+    check(!poll.finish("codex") && !poll.switchLanded("codex") && poll.begin(["codex"]) == ["codex"]
+            && !poll.finish("codex"),
+          "a check out at the click and back before the switch: the switch's own re-read may have met "
+            + "its lock, so the switch orders one more as it lands")
+    poll = MCPRefreshPoll()
+    poll.switchStarted("codex")
+    _ = poll.begin(["codex"])
+    check(!poll.finish("codex"), "a check started while a switch is on its way orders nothing itself")
+    check(!poll.switchLanded("codex") && poll.begin(["codex"]) == ["codex"],
+          "the switch orders it as it lands, its own re-read being suspect")
+    poll = MCPRefreshPoll()
+    poll.switchStarted("claude")
+    _ = poll.begin(["codex"])
+    check(poll.switchLanded("claude") && !poll.finish("codex"),
+          "a check of the other agent has nothing to do with this switch")
+    poll.switchStarted("codex")
+    poll.switchStarted("codex")
+    _ = poll.begin(["codex"])
+    check(!poll.switchLanded("codex"), "two switches in a row: the crossing check spoils the first")
+    _ = poll.finish("codex")
+    _ = poll.finish("codex")
+    check(!poll.switchLanded("codex"), "and the second, whose re-read may have met the same check")
+    poll.switchStarted("codex")
+    check(poll.switchLanded("codex"), "once both have landed the next switch starts clean")
+
+    // Codex's switch holds codex/refresh.lock for its own re-read, and a check started meanwhile
+    // finds it busy and exits at once. When each of those ordered another, one click spun dozens of
+    // `codex-mcp refresh` runs until the switch came back (and Claude repeated 34 s checks while its
+    // switch queued behind a slow Codex one). Here the controller runs whatever the poll orders.
+    poll = MCPRefreshPoll()
+    var extra = 0
+    _ = poll.begin(["codex"])            // the panel opened
+    poll.switchStarted("codex")          // the click, while that check is out
+    for _ in 0..<50 {
+        while poll.finish("codex") && extra <= 50 { extra += poll.begin(["codex"]).count }
+        _ = poll.begin(["codex"])        // the ten-minute timer, the panel opened again
+    }
+    if !poll.switchLanded("codex") { extra += poll.begin(["codex"]).count }
+    while poll.finish("codex") && extra <= 50 { extra += poll.begin(["codex"]).count }
+    check(extra == 1, "checks coming and going while one switch is on its way order one more check, "
+            + "not one each (got \(extra))")
+}
+mcpSwitchReadChecks()
+
+// A switch clicked in the panel shows its new position at once and keeps it until a re-read that
+// began after the write has landed. In 0.30.0 the row flipped back to the old state as soon as a
+// check that had read the config before the click wrote its file, and stayed there until the
+// check after it finished: half a minute of a switch that looked as if it had not taken.
+func mcpClickChecks() {
+    let folder = NSTemporaryDirectory() + "ccb-mcp-clicks-\(getpid())/"
+    try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+    let file = folder + "codex.json"
+    func write(serverState: String, denied: [String] = []) {
+        let data = try! JSONSerialization.data(withJSONObject: ["checked_at": 1.0, "servers": [
+            ["name": "ctx", "state": serverState, "source": "codex", "provider": "codex",
+             "toolNames": ["a", "b"], "deniedTools": denied],
+            ["name": "other", "state": "ok", "source": "codex", "provider": "codex"],
+        ]])
+        try! data.write(to: URL(fileURLWithPath: file))
+    }
+    func ctx(_ model: MCPModel) -> MCPServer { model.servers.first { $0.name == "ctx" }! }
+    let off = BackendCommand.toggleServer(provider: "codex", name: "ctx", on: false)
+    let on = BackendCommand.toggleServer(provider: "codex", name: "ctx", on: true)
+
+    write(serverState: "ok")
+    let model = MCPModel(path: file)
+    model.reloadIfChanged()
+    model.setServerLocally("ctx", enabled: false)
+    check(ctx(model).state == "off", "a click shows the new position at once")
+    model.reloadIfChanged(force: true)
+    check(ctx(model).state == "off", "a check that read the config before the click does not flip it back")
+    model.switchLanded(off, applied: true, ownRead: false, at: 10)
+    model.reloadIfChanged(force: true)
+    check(ctx(model).state == "off", "nor does the stale file the switch lands on")
+    check(!model.forgetClicks(readStartedAt: 9) && ctx(model).state == "off",
+          "a check that started before the write landed settles nothing")
+    write(serverState: "off")
+    check(model.forgetClicks(readStartedAt: 11), "a check started after the write settles the click")
+    model.reloadIfChanged(force: true)
+    check(ctx(model).state == "off", "and its file, which agrees, is what the row shows")
+
+    model.setServerLocally("ctx", enabled: true)
+    check(ctx(model).state == "pending", "switched back on, the row waits for a new session")
+    model.reloadIfChanged(force: true)
+    check(ctx(model).state == "pending", "an older read of it switched off does not undo the click")
+    model.switchLanded(on, applied: true, ownRead: false, at: 20)
+    check(model.forgetClicks(readStartedAt: 21), "a fresh check settles it")
+    model.reloadIfChanged(force: true)
+    check(ctx(model).state == "off",
+          "and when it says the server is off after all, the row believes it: a later change is not hidden")
+
+    write(serverState: "ok")
+    model.reloadIfChanged(force: true)
+    model.setServerLocally("ctx", enabled: false)
+    let refusal = off.refusal(HookInstall.Run(end: .exited(2), output: "refused: no codex\n"))
+    model.switchLanded(off, applied: false, ownRead: false, at: 30)
+    model.reloadIfChanged(force: true)
+    check(ctx(model).state == "ok" && refusal?.reason == "no codex",
+          "a switch that was not applied goes back to the real state, beside its reason")
+
+    model.setServerLocally("ctx", enabled: false)
+    write(serverState: "ok")
+    model.switchLanded(off, applied: true, ownRead: true, at: 40)
+    model.reloadIfChanged(force: true)
+    check(ctx(model).state == "ok",
+          "a switch whose own re-read met no check is settled by it, even when that read disagrees")
+
+    model.setServerLocally("ctx", enabled: false)
+    model.setServerLocally("ctx", enabled: true)
+    model.switchLanded(off, applied: true, ownRead: true, at: 50)
+    write(serverState: "off")
+    model.reloadIfChanged(force: true)
+    check(ctx(model).state == "pending", "the first of two quick clicks landing does not settle the second")
+    model.switchLanded(on, applied: true, ownRead: false, at: 51)
+    check(!model.forgetClicks(readStartedAt: 50.5) && model.forgetClicks(readStartedAt: 52),
+          "the second is settled by a read that began after its own write")
+
+    write(serverState: "ok")
+    model.reloadIfChanged(force: true)
+    model.setToolLocally(server: "ctx", tool: "a", enabled: false)
+    model.reloadIfChanged(force: true)
+    check(ctx(model).tools.first { $0.name == "a" }?.enabled == false && ctx(model).enabledTools == 1,
+          "a tool click survives a stale re-read too")
+    let tool = BackendCommand.toggleTool(provider: "codex", server: "ctx", tool: "a", prefix: "ctx", on: false)
+    model.switchLanded(tool, applied: true, ownRead: false, at: 60)
+    check(model.forgetClicks(readStartedAt: 61), "and is settled by a fresh check")
+    model.reloadIfChanged(force: true)
+    check(ctx(model).tools.first { $0.name == "a" }?.enabled == true,
+          "whose answer the row then shows as it is")
+    check(model.servers.first { $0.name == "other" }?.state == "ok", "servers nobody clicked are untouched")
+
+    // Claude's servers go through the same model and the same calls: one code path for both agents.
+    let claudeFile = folder + "claude.json"
+    try! JSONSerialization.data(withJSONObject: ["servers": [["name": "wiki", "state": "ok"]]])
+        .write(to: URL(fileURLWithPath: claudeFile))
+    let claude = MCPModel(path: claudeFile)
+    claude.reloadIfChanged()
+    claude.setServerLocally("wiki", enabled: false)
+    claude.switchLanded(.toggleServer(provider: "claude", name: "wiki", on: false),
+                        applied: true, ownRead: false, at: 70)
+    claude.reloadIfChanged(force: true)
+    check(claude.servers.first?.state == "off", "a Claude server click is held the same way")
+    try? FileManager.default.removeItem(atPath: folder)
+}
+mcpClickChecks()
 
 
 // Version order, used both to offer an update and to pick the newest nvm node.
@@ -5562,7 +5752,8 @@ func usageChecks08() {
           "the Free plan's primary slot without a length is the Monthly row")
     let fallback = codex([("primary", nil), ("secondary", nil)], "plus")
     check(fallback.map(\.kind) == ["session", "weekly"], "slots without a length fall back to 5 hours and a week")
-    check(fallback.first?.evenPacePercent == 20, "the fallback length also feeds the pace clock")
+    check(fallback.first?.evenPacePercent == nil && fallback.first?.pace == nil,
+          "the fallback length only names the row: like the panel, no pace tick without a reported length")
 
     let extras = UsageAccount(json: [
         "ts": now, "provider": "codex", "planType": "promax", "email": " user@example.com ",
@@ -7542,6 +7733,10 @@ func usageChecks44() {
           "prices: a number too small to store is zero, as in JavaScript")
     check(UsagePrice(cells: [.input: "2"]) == nil && UsagePrice(cells: [.output: "8"]) == nil,
           "prices: input and output are both required")
+    // mcpbar_usage.py drops a custom price above its rate-table ceiling (100 USD per token).
+    check(UsagePrice(cells: [.input: "1e8", .output: "100000000"])?.rates == [.input: 1e8, .output: 1e8]
+            && ["100000001", "1e9", "1e308"].allSatisfy { UsagePrice(cells: [.input: "2", .output: "8", .cacheWrite: $0]) == nil },
+          "prices: a rate above 100000000 per million tokens is rejected, as the usage script does")
 }
 usageChecks44()
 
@@ -7648,8 +7843,11 @@ func usageChecks47() {
             == ["model:example": "Input is required."],
           "plan: the first missing required rate is named")
     check(UsagePricePlan(saved: settings([:]), drafts: [draft([.input: "x", .output: "8"])]).errors
-            == ["model:example": "Use non-negative numbers for prices."],
+            == ["model:example": "Use non-negative numbers up to 100000000 for prices."],
           "plan: a rate that is not a number is reported as such")
+    check(UsagePricePlan(saved: settings([:]), drafts: [draft([.input: "1e9", .output: "8"])]).errors
+            == ["model:example": "Use non-negative numbers up to 100000000 for prices."],
+          "plan: a rate above the ceiling is reported with the same message")
 
     var mapping = draft([:])
     mapping.alias = " example-model "
@@ -8704,6 +8902,98 @@ func usageChecks68() {
 }
 usageChecks68()
 
+// While the outcome of a redemption is unknown no second grant may be offered: an answer the
+// re-poll could not confirm, a key left by a command that died before writing how it ended. And
+// the line under the cards asks for a refresh once.
+func usageChecks71() {
+    let now = 1_795_091_862.0
+    var inputs = UsageInputs(now: now, providers: ["claude"])
+    inputs.resetNewsSince = now - 600
+    let sidecar = { (ts: Double) in
+        UsageAccount(json: ["ts": ts, "resetCredits": ["availableCount": 3, "options": [
+            ["creditId": "weekly_a", "kind": "weekly", "availableCount": 2] as [String: Any],
+            ["creditId": "session_a", "kind": "session", "availableCount": 1] as [String: Any],
+        ]] as [String: Any]], provider: "claude")
+    }
+    inputs.files.accounts["claude"] = sidecar(now - 120)
+    let allowed = { (inputs: UsageInputs) -> [Bool] in
+        let state = UsageSnapshot(inputs).limits[0]
+        return state.limits.resetChoices(now: now).map { state.mayRedeem(creditId: $0.creditId) }
+    }
+    let line = { (inputs: UsageInputs) in UsageSnapshot(inputs).limits[0].resetStatus }
+    let ended = { (ts: Double, outcome: Any, error: Any, confirmed: Bool) in
+        UsageResetResult(json: ["ts": ts, "creditId": "weekly_a", "outcome": outcome, "error": error,
+                                "confirmed": confirmed], provider: "claude")
+    }
+    let hint = " " + UsageProviderState.resetRefreshHint
+
+    inputs.files.resetResults["claude"] = ended(now - 60, "alreadyRedeemed", NSNull(), false)
+    check(allowed(inputs) == [false, false],
+          "an already-redeemed answer the re-poll could not confirm blocks every credit: the count on screen predates it")
+    check(line(inputs) == "That credit was already redeemed." + hint, "and its line asks for the refresh")
+    inputs.files.resetResults["claude"] = ended(now - 60, "alreadyRedeemed", NSNull(), true)
+    check(allowed(inputs) == [true, true] && line(inputs) == "That credit was already redeemed.",
+          "a confirmed one is settled")
+
+    inputs.files.resetResults["claude"] = ended(now - 60, "reset", NSNull(), false)
+    check(line(inputs) == "The reset was applied, but Claude could not confirm the new limits. Refresh to check.",
+          "an unconfirmed reset asks for a refresh once, in T3's words: \(line(inputs) ?? "nil")")
+    inputs.files.resetResults["claude"] = ended(now - 60, NSNull(), "requestFailed", false)
+    check(line(inputs) == "Claude could not redeem the reset." + hint, "an open attempt's line ends in the hint")
+
+    // The command saved its key and died: the result on disk is last week's, the run wrote none.
+    inputs.files.resetResults["claude"] = UsageResetResult(
+        json: ["ts": now - 3600, "creditId": "session_a", "outcome": "reset", "confirmed": true], provider: "claude")
+    inputs.resetUnanswered = ["claude"]
+    let key = { (ts: Double) in
+        (UsageResetResult(json: ["ts": ts, "creditId": "weekly_a", "error": "requestFailed"], provider: "claude"), ts)
+    }
+    inputs.files.resetPending["claude"] = key(now - 60)
+    check(allowed(inputs) == [true, false],
+          "a key left on disk is an open attempt: only its grant may be retried, with that key")
+    check(line(inputs) == "Could not use the reset credit." + hint, "and the line says why the others wait")
+    inputs.resetUnanswered = []
+    inputs.files.resetResults["claude"] = UsageResetResult(
+        json: ["ts": now - 30, "creditId": "weekly_a", "error": "cliUnavailable"], provider: "claude")
+    check(allowed(inputs) == [true, false], "a later run that sent nothing does not close the attempt the key stands for")
+    inputs.files.resetResults["claude"] = ended(now - 30, "reset", NSNull(), false)
+    check(allowed(inputs) == [false, false], "a reset nobody confirmed still blocks them all beside a key")
+    inputs.files.resetResults["claude"] = nil
+    inputs.files.resetPending["claude"] = key(now - 86_400 - 60)
+    inputs.files.accounts["claude"] = sidecar(now - 90_000)
+    check(allowed(inputs) == [true, true], "a key older than a day is forgotten, as the script forgets it")
+    inputs.files.resetPending["claude"] = (key(now - 60).0, now - 86_400 - 60)
+    check(allowed(inputs) == [true, true], "the day counts from the key's making, not from its last send")
+    inputs.files.resetPending["claude"] = key(now - 60)
+    check(allowed(inputs) == [true, false], "a live one is not")
+    inputs.files.accounts["claude"] = sidecar(now - 10)
+    check(!UsageSnapshot(inputs).limits[0].resetNeedsRefresh && allowed(inputs) == [true, true],
+          "an account file written after the key re-enables everything")
+
+    // The seam: the key file as the script really leaves it, read the way the window reads it.
+    var files = UsageFiles()
+    files.reload(root: FileManager.default.currentDirectoryPath + "/build/seam")
+    // A retry of the same grant after a fresh poll, killed mid-request: the key is older than the
+    // account file, its last send is not.
+    let raw = (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath:
+        FileManager.default.currentDirectoryPath + "/build/seam/reset-credit-pending.json")))) as? [String: Any]
+    let created = usageNumber(raw?["createdAt"]) ?? 0, sent = usageNumber(raw?["sentAt"]) ?? 0
+    var retried = UsageInputs(now: sent + 60, providers: ["claude"])
+    retried.files.accounts["claude"] = sidecar(created + 1800)
+    retried.files.resetResults["claude"] = UsageResetResult(
+        json: ["ts": created, "creditId": "weekly_a", "error": "requestFailed"], provider: "claude")
+    retried.files.resetPending = files.resetPending
+    retried.resetUnanswered = ["claude"]
+    check(sent - created >= 3600 && allowed(retried) == [true, false],
+          "a retry killed mid-request after a fresh poll still leaves only its grant: the window reads when it was sent")
+    let seam = files.resetPending["claude"]
+    check(seam?.attempt.creditId == "weekly_a" && seam?.attempt.ts == sent && seam?.createdAt == created && created > 0
+            && seam?.attempt.outcome == nil && seam?.attempt.error == "requestFailed",
+          "pending key seam: build/seam/reset-credit-pending.json reads as an open attempt for its grant "
+            + "(run the python suite first, it writes the file)")
+}
+usageChecks71()
+
 // The popover's target is plain data the store can compare.
 func usageChecks69() {
     check(UsagePopoverTarget(provider: "codex", row: "primary") == UsagePopoverTarget(provider: "codex", row: "primary")
@@ -8737,6 +9027,93 @@ func usageChecks70() {
     }
 }
 usageChecks70()
+
+// The same agreement where the two used to part (the pace harness of 0.30.0): a session blocked by a
+// spent week, a Codex window without a length, a figure outside 0...100, a window without a reset.
+// The panel draws `usable(_:account:now:)` of its windows, so that is what the Usage rows are held to.
+func usageChecks72() {
+    let now = 1_795_112_308.0
+    func window(_ key: String, _ minutes: Int?, used: Int, resetsIn: Double?) -> NamedWindow {
+        NamedWindow(key: key, title: key, badge: nil, minutes: minutes,
+                    window: LimitWindow(used: used, resets: resetsIn.map { now + $0 }))
+    }
+    let words: [LimitPace: String] = [.ahead: "ahead", .on: "on", .under: "under"]
+    func agree(_ set: LimitsSet, _ what: String, account: UsageAccount? = nil) {
+        let rows = UsageProviderLimits(provider: set.provider, set: set, account: account, now: now).rows
+        for panel in set.usable(set.drawable(at: now), account: account, now: now) {
+            let row = rows.first { $0.id == panel.key }
+            let (line, pace) = (panel.timeLeftPercent(at: now), panel.pace(at: now).flatMap { words[$0] })
+            let (reset, rowReset) = (panel.window.resets.map { $0 - now }, row?.resetsAt.map { $0 - now })
+            check(row?.remainingPercent == panel.window.remaining && row?.evenPacePercent == line
+                    && row?.pace == pace && rowReset == reset,
+                  "\(what), \(panel.key): panel \(panel.window.remaining)% left, line \(line ?? -1) \(pace ?? "-") "
+                    + "reset \(reset ?? -1); Usage \(row?.remainingPercent ?? -1)% left, "
+                    + "tick \(row?.evenPacePercent ?? -1) \(row?.pace ?? "-") reset \(rowReset ?? -1)")
+        }
+    }
+    let spentWeek = LimitsSet(provider: "claude", windows: [
+        window("five_hour", 300, used: -20, resetsIn: 18),
+        window("seven_day", 10080, used: 100, resetsIn: 3 * 86400),
+    ], source: "oauth", ts: now - 30, plan: nil)
+    agree(spentWeek, "a session blocked by the spent week")
+    let blocked = spentWeek.usable(spentWeek.drawable(at: now), account: nil, now: now).first
+    check(blocked?.window.remaining == 0 && blocked?.timeLeftPercent(at: now) == nil && blocked?.pace(at: now) == nil
+            && blocked?.window.resets == now + 3 * 86400 && blocked?.title == "five_hour",
+          "the panel shows a blocked session with nothing left, no line and the week's reset, under its own name")
+    agree(LimitsSet(provider: "claude", windows: [
+        window("five_hour", 300, used: -20, resetsIn: 18),
+        window("seven_day", 10080, used: 100, resetsIn: nil),
+    ], source: "oauth", ts: now - 30, plan: nil), "a blocked session when the week's reset is unknown")
+    agree(LimitsSet(provider: "claude", windows: [
+        window("five_hour", 300, used: -20, resetsIn: nil),
+        window("seven_day", 10080, used: 100, resetsIn: nil),
+    ], source: "oauth", ts: now - 30, plan: nil), "a blocked session without reset times")
+    let codexWeek = LimitsSet(provider: "codex", windows: [
+        window("primary", 300, used: 30, resetsIn: 7200),
+        window("secondary", 10080, used: 100, resetsIn: 86400),
+        window("reserve:primary", 300, used: 10, resetsIn: 7200),
+    ], source: "app-server", ts: now - 30, plan: "plus")
+    agree(codexWeek, "a Codex session blocked by the spent week")
+    check(codexWeek.usable(codexWeek.drawable(at: now), account: nil, now: now).map(\.window.remaining) == [0, 0, 90],
+          "the Reserve pool is not blocked by the ordinary week")
+    // limits.json without a plan, account.json with Free or Go: the slot without a length is the
+    // Monthly row there, so it is not a session and the spent week does not block it on either side.
+    let noPlan = LimitsSet(provider: "codex", windows: [
+        window("primary", nil, used: 30, resetsIn: 3600),
+        window("secondary", nil, used: 100, resetsIn: 86400),
+    ], source: "app-server", ts: now - 30, plan: nil)
+    for plan in ["free", "go", "plus"] {
+        agree(noPlan, "a plan only account.json knows (\(plan))",
+              account: UsageAccount(json: ["provider": "codex", "planType": plan], provider: "codex"))
+    }
+    agree(LimitsSet(provider: "codex", windows: [
+        window("primary", nil, used: 30, resetsIn: 1200),
+        window("secondary", nil, used: -20, resetsIn: 604.8),
+    ], source: "app-server", ts: now - 30, plan: "plus"), "Codex windows without a length")
+    agree(LimitsSet(provider: "claude", windows: [
+        window("five_hour", 300, used: 101, resetsIn: 810),
+        window("seven_day", 10080, used: -20, resetsIn: 586_656),
+    ], source: "oauth", ts: now - 30, plan: nil), "figures outside 0...100")
+
+    // The menu bar icon draws the same windows: a blocked session is a full bar with no line, and a
+    // Codex bar keeps the label of the length its writer reported.
+    let claudeIcon = LimitsBoard(claude: spentWeek, codex: nil).gauge(at: now)
+    check(claudeIcon.fiveHour == 1 && claudeIcon.timeLeft.0 == nil && claudeIcon.sevenDay == 1,
+          "the icon draws Claude's blocked session as spent, without a line: "
+            + "\(claudeIcon.fiveHour ?? -1) line \(claudeIcon.timeLeft.0 ?? -1)")
+    let codexIcon = LimitsBoard(claude: nil, codex: codexWeek).gauge(at: now)
+    check(codexIcon.fiveHour == 1 && codexIcon.timeLeft.0 == nil && codexIcon.sevenDay == 1
+            && codexIcon.labels == ("5h", "7d"),
+          "the icon draws Codex's blocked session as spent, without a line, still labelled 5h: "
+            + "\(codexIcon.fiveHour ?? -1) line \(codexIcon.timeLeft.0 ?? -1) \(codexIcon.labels)")
+    let open = LimitsBoard(claude: nil, codex: LimitsSet(provider: "codex", windows: [
+        window("primary", 300, used: 30, resetsIn: 7200),
+        window("secondary", 10080, used: 99, resetsIn: 86400),
+    ], source: "app-server", ts: now - 30, plan: "plus")).gauge(at: now)
+    check(open.fiveHour == 0.3 && open.timeLeft.0 != nil,
+          "a week with room leaves the session's own bar and line in the icon")
+}
+usageChecks72()
 
 // MARK: Usage window — the files the real Python writers produced
 // The same border as the limits seams above, for the Usage window's five files: written by the

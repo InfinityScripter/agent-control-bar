@@ -1021,9 +1021,12 @@ _CONTEXT_TIER_KEY = re.compile(r"^input_cost_per_token_above_(\d{1,7})k_tokens(?
 
 
 def _finite(value):
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return value
+    try:
+        return value if math.isfinite(value) else None
+    except OverflowError:  # целое из сотен цифр не переводится во float
+        return None
 
 
 def _token_rate(value):
@@ -1312,11 +1315,12 @@ def _write_quietly(name, data):
 # ──────────────────────────────────────────────────────────── цены и «Map to» пользователя
 
 def _price(prices, name, required):
-    """Цена за миллион токенов: конечное число не меньше нуля. → (значение | None, годна ли запись)."""
+    """Цена за миллион токенов: конечное число от нуля до потолка таблицы. → (значение | None, годна ли запись)."""
     if name not in prices:
         return None, not required
     value = _finite(prices[name])
-    return value, value is not None and value >= 0
+    # Потолок тот же, что у чужой таблицы: без него 1e308 даёт бесконечную стоимость и срывает просмотр.
+    return value, value is not None and 0 <= value <= MAX_TOKEN_RATE * 1e6
 
 
 def read_price_settings():

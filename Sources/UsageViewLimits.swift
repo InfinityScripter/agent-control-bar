@@ -501,10 +501,8 @@ private struct UsageResetStatusLine: View {
     private var sentence: Text {
         let title = state.limits.title
         let rest = status.hasPrefix(title + " ") ? String(status.dropFirst(title.count + 1)) : status
-        // Only a poll that re-publishes the credits makes the next press safe to send.
-        let hint = state.resetNeedsRefresh && !state.resetBusy ? " " + UsageProviderState.resetRefreshHint : ""
         let name: Text = Text(title).fontWeight(.medium).foregroundColor(UsageTheme.foreground)
-        let tail: Text = Text(" " + rest + hint).foregroundColor(UsageTheme.mutedForeground)
+        let tail: Text = Text(" " + rest).foregroundColor(UsageTheme.mutedForeground)
         return name + tail
     }
 }

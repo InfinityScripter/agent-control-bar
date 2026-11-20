@@ -20,15 +20,7 @@ struct ClaudeHistory: Decodable, Equatable {
 
         var workspace: String { (cwd as NSString).lastPathComponent }
 
-        var sourceLabel: String {
-            switch source {
-            case "app": return "Claude app"
-            case "t3": return "T3 Code"
-            case "cli": return "Terminal"
-            case "ide": return "Editor"
-            default: return ""
-            }
-        }
+        var sourceLabel: String { SessionFormat.surfaceLabel(source) }
 
         /// Only the desktop app can be sent to a conversation by its id; T3 Code and the editor
         /// extension need a thread or a window that only a live session records.

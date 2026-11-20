@@ -25,8 +25,12 @@ struct LimitsBoard {
     /// Built first and tested for emptiness, rather than asking whether Claude has limits at all:
     /// a plan that reports only its Fable window has limits and still draws no bars here, and that
     /// used to leave the icon blank while Codex figures sat unused below.
+    ///
+    /// The windows are the panel's `usable(_:account:now:)` ones, so a session the spent week blocks
+    /// is a full bar without a line here too. No account: the plan only names a Codex window
+    /// without a length, and the icon draws none of those.
     func gauge(at now: Double) -> Gauge {
-        let drawn = claude?.drawable(at: now) ?? []
+        let drawn = claude.map { $0.usable($0.drawable(at: now), account: nil, now: now) } ?? []
         let (five, seven) = (drawn.first { $0.key == "five_hour" }, drawn.first { $0.key == "seven_day" })
         let pair = Gauge(fiveHour: five?.window.fraction, sevenDay: seven?.window.fraction,
                          timeLeft: (Self.timeLeft(five, at: now), Self.timeLeft(seven, at: now)))
@@ -36,9 +40,9 @@ struct LimitsBoard {
         let live = codexBarWindows(at: now)
         guard let first = live.first else { return Gauge() }
         let second = live.count > 1 ? live.last : nil
-        return Gauge(fiveHour: first.window.fraction, sevenDay: second?.window.fraction,
-                     labels: (first.shortTitle ?? "", second?.shortTitle ?? ""),
-                     timeLeft: (Self.timeLeft(first, at: now), Self.timeLeft(second, at: now)))
+        return Gauge(fiveHour: first.window.window.fraction, sevenDay: second?.window.window.fraction,
+                     labels: (first.label, second?.label ?? ""),
+                     timeLeft: (Self.timeLeft(first.window, at: now), Self.timeLeft(second?.window, at: now)))
     }
 
     /// Where the bar's line goes. From the whole percent, like the panel's line, so the icon is
@@ -47,10 +51,16 @@ struct LimitsBoard {
         window?.timeLeftPercent(at: now).map { Double($0) / 100 }
     }
 
-    /// Reserve is a separate pool, not a second ordinary window. Never mix it into a pair.
-    func codexBarWindows(at now: Double) -> [NamedWindow] {
-        let labelled = (codex?.drawable(at: now) ?? []).filter { $0.shortTitle != nil }
-        let ordinary = labelled.filter { !$0.key.hasPrefix("reserve:") }
+    /// Reserve is a separate pool, not a second ordinary window. Never mix it into a pair. Each
+    /// window comes as the account can use it, with the label of the length its writer reported:
+    /// a session the spent week blocks loses its clock in `usable`, not its name.
+    func codexBarWindows(at now: Double) -> [(window: NamedWindow, label: String)] {
+        guard let codex else { return [] }
+        let drawn = codex.drawable(at: now)
+        let labelled = zip(codex.usable(drawn, account: nil, now: now), drawn).compactMap { usable, window in
+            window.shortTitle.map { (window: usable, label: $0) }
+        }
+        let ordinary = labelled.filter { !$0.window.key.hasPrefix("reserve:") }
         return Array((ordinary.isEmpty ? labelled : ordinary).prefix(2))
     }
 

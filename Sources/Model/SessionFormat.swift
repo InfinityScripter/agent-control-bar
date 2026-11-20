@@ -35,10 +35,10 @@ enum SessionFormat {
         return s.entrypoint == "cli" ? surfaceLabel("cli") : ""
     }
 
-    // The word for a surface code, for the whole Sessions tab: the Live rows above and the Codex
-    // history list both ask here, so one chat is not "CLI" while it runs and "Terminal" once it
+    // The word for a surface code, for the whole Sessions tab: the Live rows above and both
+    // history lists ask here, so one chat is not "CLI" while it runs and "Terminal" once it
     // has ended. The pill's short spelling won because a Live row has no room for a longer one.
-    // "t3" is a chat T3 Code started, which only Codex's own history index can name.
+    // "t3" is a chat T3 Code started, which only the history lists can name.
     static func surfaceLabel(_ code: String) -> String {
         switch code {
         case "cli": return "CLI"

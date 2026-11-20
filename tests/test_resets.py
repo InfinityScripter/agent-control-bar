@@ -256,6 +256,54 @@ class ClaudeResetCredit(unittest.TestCase):
         self.assertEqual(self.redeem(), 0)
         self.assertNotEqual(self.server.posts[3]["body"]["request_id"], first, "новая попытка — новый ключ")
 
+    def test_retry_records_when_it_was_sent_and_keeps_the_key_age(self):
+        # Окно сравнивает account.json со временем последней отправки: повтор после свежего опроса,
+        # убитый посреди запроса, иначе выглядел бы заявкой, которую опрос уже учёл.
+        created = int(time.time()) - 3600
+        mcpbar.write_json(self.path("reset-credit-pending.json"),
+                          {"key": "stored-key", "creditId": "weekly_a", "createdAt": created})
+        seen = []
+        real = mcpbar.no_redirect_opener
+
+        def opener():
+            seen.append(self.pending())
+            return real()
+
+        self.server.claim = (200, {"result": "unavailable"})
+        started = int(time.time())
+        with mock.patch.object(mcpbar, "no_redirect_opener", opener):
+            self.assertEqual(self.redeem(), 1)
+        self.assertEqual(self.server.posts[0]["body"]["request_id"], "stored-key")
+        self.assertEqual((seen[0]["key"], seen[0]["createdAt"]), ("stored-key", created))
+        self.assertGreaterEqual(seen[0]["sentAt"], started)
+        # Тот же файл оставит процесс, убитый посреди повтора: окно читает его как открытую заявку.
+        os.makedirs(os.path.join(REPO, "build", "seam"), exist_ok=True)
+        shutil.copyfile(self.path("reset-credit-pending.json"),
+                        os.path.join(REPO, "build", "seam", "reset-credit-pending.json"))
+        self.forget()
+        self.redeem()
+        fresh = self.pending()
+        self.assertEqual(fresh["createdAt"], fresh["sentAt"], "у нового ключа обе отметки — первая отправка")
+
+    def test_key_is_dropped_only_after_the_outcome_is_on_disk(self):
+        # Процесс, убитый между удалением ключа и записью исхода, не оставил бы ни того, ни другого.
+        real = mcpbar_resets.write_result
+
+        def write_result(*args):
+            keys.append(self.pending() is not None)
+            return real(*args)
+
+        for claim, written in (((200, {"result": "reset"}), [True, False]),
+                               ((200, {"result": "cooldown"}), [True])):
+            with self.subTest(claim=claim):
+                self.forget()
+                keys = []
+                self.server.claim = claim
+                with mock.patch.object(mcpbar_resets, "write_result", write_result):
+                    self.redeem()
+                self.assertEqual(keys, written)
+                self.assertIsNone(self.pending())
+
     def test_stored_key_expires_after_24_hours(self):
         self.server.claim = (200, {"result": "unavailable"})
         now = time.time()
@@ -546,10 +594,15 @@ class ClaudeResetCredit(unittest.TestCase):
 
     def test_t3_registry_782_answer_survives_a_failed_reprobe(self):
         # ProviderInstanceRegistry.test.ts:782-790 — заявка ничего не изменила, опрос после неё упал.
+        # Здесь ACB сознательно расходится с T3: там `confirmed` остаётся true. `already_used` может
+        # быть ответом на нашу же прошлую заявку с потерянным ответом, тогда сброс потрачен, а
+        # счётчик в account.json старый. С true окно показало бы его с живыми кнопками, и следующее
+        # нажатие ушло бы с новым ключом. Честное false блокирует кнопки до свежего опроса, как после
+        # неподтверждённого `reset`. Остальное в векторе — как у T3.
         self.server.claim, self.server.usage = (200, {"result": "already_used"}), (500, {})
         self.assertEqual(self.redeem(), 0)
         result = self.result()
-        self.assertEqual((result["outcome"], result["error"], result["confirmed"]), ("alreadyRedeemed", None, True))
+        self.assertEqual((result["outcome"], result["error"], result["confirmed"]), ("alreadyRedeemed", None, False))
         self.assertEqual(len(self.server.gets), 1)
 
     def test_t3_source_307_any_2xx_answer_is_read(self):
@@ -712,6 +765,18 @@ class CodexResetCredit(unittest.TestCase):
         self.assertEqual(self.redeem(), 1)
         self.assertEqual(self.result()["error"], "not_installed")
         self.assertEqual(self.calls(), [])
+        self.assertIsNone(self.pending())
+
+    def test_key_is_dropped_only_after_the_outcome_is_on_disk(self):
+        real, keys = mcpbar_resets.write_result, []
+
+        def write_result(*args):
+            keys.append(self.pending() is not None)
+            return real(*args)
+
+        with mock.patch.object(mcpbar_resets, "write_result", write_result):
+            self.assertEqual(self.redeem(), 0)
+        self.assertEqual(keys, [True, False])
         self.assertIsNone(self.pending())
 
     def test_key_survives_failures_and_is_dropped_by_an_outcome(self):

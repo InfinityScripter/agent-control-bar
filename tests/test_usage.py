@@ -959,11 +959,20 @@ class PriceSettings(unittest.TestCase):
             " glm-5.3 ": good, " ": good, "no-output": {"inputCostPerMillionTokens": 2},
             "negative": dict(good, inputCostPerMillionTokens=-1), "text": dict(good, outputCostPerMillionTokens="8"),
             "bool": dict(good, inputCostPerMillionTokens=True), "nan": dict(good, cacheWriteCostPerMillionTokens=float("nan")),
-            "null-cache": dict(good, cacheReadCostPerMillionTokens=None), "list": [2, 8]})
+            "null-cache": dict(good, cacheReadCostPerMillionTokens=None), "list": [2, 8],
+            "huge": dict(good, cacheWriteCostPerMillionTokens=100_000_000.000001),
+            "overflow": dict(good, inputCostPerMillionTokens=10 ** 400)})
         self.assertEqual(list(overrides), ["glm-5.3"])
         self.assertEqual(overrides["glm-5.3"], ((2e-6, 8e-6, 0.0, 2e-6, 2e-6), None, None, []))
         for broken in (None, [], "текст", 5):
             self.assertEqual(usage.parse_price_overrides(broken), {})
+
+    def test_потолок_своей_цены_тот_же_что_у_таблицы(self):
+        # Своя цена — за миллион токенов, потолок таблицы — MAX_TOKEN_RATE долларов за токен.
+        ceiling = usage.MAX_TOKEN_RATE * 1e6
+        overrides = usage.parse_price_overrides({"example-model": {"inputCostPerMillionTokens": ceiling,
+                                                                   "outputCostPerMillionTokens": ceiling}})
+        self.assertEqual(overrides["example-model"][0][:2], (usage.MAX_TOKEN_RATE, usage.MAX_TOKEN_RATE))
 
     def test_цепочки_сводятся_а_циклы_отбрасываются(self):
         resolved = usage.parse_aliases({

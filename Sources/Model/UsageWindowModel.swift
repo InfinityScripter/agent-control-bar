@@ -196,14 +196,19 @@ struct UsageProviderState: Equatable, Identifiable {
     /// The line under the bars ("Using reset credit…", then how it ended), without the provider's
     /// name in front; nil when there is nothing to say or the line was dismissed. Only for a
     /// redemption made since the window was opened. A command that ended without any result
-    /// reads "Could not use the reset credit.".
+    /// reads "Could not use the reset credit.". While `resetNeedsRefresh` holds the line ends in
+    /// `resetRefreshHint`, unless its own sentence already asks for a refresh.
     let resetStatus: String?
-    /// The last attempt may or may not have reached the provider, or it spent a credit and the
-    /// limits could not be read afterwards: the next one has to wait for a limits refresh, which
-    /// is what re-publishes the credits it is checked against. Say
-    /// `UsageProviderState.resetRefreshHint` beside the buttons while this holds, and ask
-    /// `mayRedeem(creditId:)` which of them may still be pressed.
-    let resetNeedsRefresh: Bool
+    /// The attempt that holds the reset buttons until a limits refresh, or nil: the last result
+    /// when it may or may not have reached the provider, or when it changed the credits and the
+    /// limits could not be read afterwards; else a key the redeem command left on disk
+    /// (`UsageFiles.resetPending`). Ask `mayRedeem(creditId:)` which buttons it leaves.
+    let resetOpen: UsageResetResult?
+
+    /// The next redemption has to wait for a limits refresh, which is what re-publishes the
+    /// credits it is checked against. Say `UsageProviderState.resetRefreshHint` beside the
+    /// buttons while this holds.
+    var resetNeedsRefresh: Bool { resetOpen != nil }
 
     var id: String { provider }
 }
@@ -255,6 +260,12 @@ struct UsageFiles {
     var accounts: [String: UsageAccount] = [:]
     /// reset-credit-result.json of each provider, by provider id.
     var resetResults: [String: UsageResetResult] = [:]
+    /// reset-credit-pending.json of each provider, read as the `requestFailed` it stands for: the
+    /// redeem command saves its key there before it sends and drops it after a definite answer, so
+    /// a key on disk is an attempt that may have gone out, even one whose command died before it
+    /// could write a result. The attempt's `ts` is its last send (`sentAt`), `createdAt` when the key
+    /// was made; the key itself is not kept.
+    var resetPending: [String: (attempt: UsageResetResult, createdAt: Double)] = [:]
     /// usage/prices.json. Swift's own file, so there is always a value: no file is no overrides.
     var prices = UsagePriceSettings()
 
@@ -298,6 +309,17 @@ struct UsageFiles {
             case .missing: resetResults[provider] = nil
             case .unchanged: break
             case .changed(let object): resetResults[provider] = UsageResetResult(json: object, provider: provider)
+            }
+            let pending = Self.name("reset-credit-pending.json", of: provider)
+            switch StateFileLook.at(path(pending), gate: &gates[pending]) {
+            case .missing: resetPending[provider] = nil
+            case .unchanged: break
+            case .changed(let object):
+                let created = usageNumber(object["createdAt"]) ?? 0
+                resetPending[provider] = (UsageResetResult(
+                    json: ["ts": usageNumber(object["sentAt"]) ?? created, "creditId": object["creditId"] ?? NSNull(),
+                           "error": "requestFailed"],
+                    provider: provider), created)
             }
         }
 
@@ -392,21 +414,36 @@ extension UsageProviderState {
         notice = Self.notice(provider: provider, input: input, hasRows: !limits.rows.isEmpty, now: inputs.now)
         resetResult = result
         resetBusy = busy
+        let line: String?
         if busy {
-            resetStatus = UsageResetCredit.busyStatus
+            line = UsageResetCredit.busyStatus
         } else if inputs.resetUnanswered.contains(provider) {
             // No result to read a sentence from, so the model's own "no outcome, no category"
             // one: T3's fallback, "Could not use the reset credit.".
-            resetStatus = UsageResetResult(json: [:], provider: provider).message
+            line = UsageResetResult(json: [:], provider: provider).message
         } else {
-            resetStatus = news?.message
+            line = news?.message
         }
-        // Both categories leave the attempt open with its key bound to the grant, and a reset
-        // nobody could confirm has spent a credit the sidecar still lists; only a poll that
-        // re-publishes the credits (it rewrites the sidecar) makes the next press safe.
+        // Both categories leave the attempt open with its key bound to the grant, and an answer
+        // written unconfirmed (a reset, an already redeemed grant) has changed the credits the
+        // sidecar still lists; only a poll that re-publishes the credits (it rewrites the sidecar)
+        // makes the next press safe.
+        let accountTs = account?.ts ?? 0
         let unknown = ["requestFailed", "unconfirmed"].contains(result?.error ?? "")
-            || (result?.outcome == "reset" && result?.confirmed == false)
-        resetNeedsRefresh = unknown && (account?.ts ?? 0) <= (result?.ts ?? 0)
+            || (result?.outcome != nil && result?.confirmed == false)
+        var open = unknown && accountTs <= (result?.ts ?? 0) ? result : nil
+        // A saved key outranks the result file: the command may have died before writing one, or
+        // a later run that sent nothing may have written over it. Only its grant's retry reuses
+        // the key, and only for a day from its making (the script's KEY_TTL), after which the
+        // script forgets it. A poll counts only if it came after the key's last send.
+        if open?.outcome == nil, let pending = inputs.files.resetPending[provider],
+           inputs.now - pending.createdAt < 86_400, accountTs <= pending.attempt.ts {
+            open = pending.attempt
+        }
+        resetOpen = open
+        // The sentence of a reset nobody confirmed already ends in "Refresh to check.".
+        let hint = open != nil && !busy && line?.hasSuffix("Refresh to check.") == false
+        resetStatus = hint ? line.map { $0 + " " + Self.resetRefreshHint } : line
     }
 
     /// What to say beside the reset buttons while `resetNeedsRefresh` holds. Not a T3 sentence:
@@ -417,16 +454,16 @@ extension UsageProviderState {
     /// the confirmation's, and what the controller asks again before it starts the command —
     /// a spent credit cannot be given back.
     ///
-    /// While `resetNeedsRefresh` holds, the only press that is safe is the retry of an attempt
-    /// left open, for the same grant: it sends the stored key again, so the provider answers for
-    /// the first request instead of spending a second credit. Any other grant would start a new
-    /// request beside one that may have gone through. After a reset nobody could confirm there is
-    /// no such retry: the credit is gone and the list on screen predates that. Codex names no
+    /// While `resetOpen` holds, the only press that is safe is the retry of an attempt left open,
+    /// for the same grant: it sends the stored key again, so the provider answers for the first
+    /// request instead of spending a second credit. Any other grant would start a new request
+    /// beside one that may have gone through. After an answer nobody could confirm there is no
+    /// such retry: the credits changed and the list on screen predates that. Codex names no
     /// grant (nil on both sides), so its single choice is that retry.
     func mayRedeem(creditId: String?) -> Bool {
         guard !resetBusy else { return false }
-        guard resetNeedsRefresh, let result = resetResult else { return true }
-        return result.outcome == nil && result.creditId == creditId
+        guard let open = resetOpen else { return true }
+        return open.outcome == nil && open.creditId == creditId
     }
 
     /// A provider's line in the notices box, in T3's words: "Claude: Could not read limits.".
