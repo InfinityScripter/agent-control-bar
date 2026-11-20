@@ -743,6 +743,16 @@ class PriceFile(UsageCase):
         self.assertEqual((bucket["model"], bucket["records"], bucket["totals"]["outputTokens"]), ("claude-fable-5", 2, 12))
         self.assertAlmostEqual(bucket["costUsd"], 20 * 1e-5 + 12 * 5e-5, places=12)
 
+    def test_цена_выше_потолка_таблицы_отбрасывается_и_не_срывает_просмотр(self):
+        # 1e308 за миллион на десяти миллионах токенов давали бесконечную стоимость и scan_failed.
+        self.put("claude/projects/app/s1.jsonl", claude_line("m1", 10_000_000, NOW - HOUR, model="example-model"),
+                 age=HOUR)
+        self.prices(usagePriceOverrides={"example-model": {"inputCostPerMillionTokens": 2,
+                                                           "outputCostPerMillionTokens": 1e308}})
+        self.run_usage()
+        (bucket,) = self.period(7)["buckets"]
+        self.assertEqual((bucket["costSource"], bucket["unpricedRecords"]), ("unpriced", 1))
+
     def test_файл_не_той_формы_значит_без_своих_цен(self):
         self.put("claude/projects/app/s1.jsonl", claude_line("m1", 5, NOW - HOUR), age=HOUR)
         for content in ("[1, 2]", "{не json", '{"usagePriceOverrides": [], "usageModelAliases": "x"}'):

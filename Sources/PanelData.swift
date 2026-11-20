@@ -116,8 +116,11 @@ extension StatusController {
             let agent = Provider.named(entry.set.provider)
             // Account windows first, the model's own window last: 5h and 7d are what every plan
             // has, Fable is a slice of the week only some plans carry. A window the writer did not
-            // report is skipped, not zeroed — the model hands over only the windows it read.
-            let rows = entry.windows.map { window in
+            // report is skipped, not zeroed — the model hands over only the windows it read. A
+            // session the spent week blocks reads as the Usage window shows it: empty, no line,
+            // the week's reset. The account is the one that window last read, for the same plan.
+            let account = usage.files.accounts[entry.set.provider]
+            let rows = entry.set.usable(entry.windows, account: account, now: now).map { window in
                 PanelLimit(title: window.title, badge: window.badge, used: window.window.used,
                            resets: window.window.resets.flatMap { $0 > now ? Self.until($0) : nil },
                            remaining: window.window.remaining,

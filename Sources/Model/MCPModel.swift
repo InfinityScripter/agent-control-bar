@@ -151,6 +151,20 @@ private struct MCPSnapshot {
     }
 }
 
+/// One switch in the panel: a server's, or one of its tools'.
+private struct MCPClick: Hashable {
+    let server: String
+    let tool: String?
+}
+
+private struct MCPClickState {
+    let enabled: Bool
+    /// Switch commands for it not yet back. Only the last one to come back settles the position.
+    var unanswered: Int
+    /// When the last of them came back applied; nil while one is still on its way.
+    var writtenAt: Double?
+}
+
 final class MCPModel {
     /// How long a change stays visible in the menu after it happened.
     static let changeWindow: TimeInterval = 45
@@ -170,6 +184,13 @@ final class MCPModel {
     private let path: String
     private var mtime: Date?
     private var previous: MCPSnapshot?
+
+    /// Switches clicked in the panel that the file cannot be trusted to show yet, by server and,
+    /// for a tool, by tool name. A re-read does not undo them: a check that read the config before
+    /// the write lands after it and would put the old position back for as long as the check
+    /// behind it takes. They go once a read that began after the write has landed, or the switch
+    /// failed.
+    private var clicks: [MCPClick: MCPClickState] = [:]
 
     init(path: String) { self.path = path }
 
@@ -206,6 +227,7 @@ final class MCPModel {
         waitingAuth = root["auth"] as? [String] ?? []
         error = root["error"] as? String
         servers = (root["servers"] as? [[String: Any]] ?? []).map(Self.server(from:))
+        for (click, state) in clicks { show(click, enabled: state.enabled) }
 
         let snapshot = MCPSnapshot(
             states: Dictionary(servers.map { ($0.name, $0.state) }, uniquingKeysWith: { a, _ in a }),
@@ -223,13 +245,10 @@ final class MCPModel {
 
     /// Answer the click now, before the backend has caught up. Flipping a tool means rewriting
     /// ~/.claude/settings.json and re-deriving the whole picture, and until that lands the menu
-    /// would keep showing the old counts — which reads as "the switch did nothing". The backend's
-    /// own result overwrites this a moment later; if it disagrees, its version wins.
+    /// would keep showing the old counts — which reads as "the switch did nothing". Held over
+    /// re-reads until one from after the write lands (`clicks`); if that one disagrees, it wins.
     func setToolLocally(server: String, tool: String, enabled: Bool) {
-        guard let s = servers.firstIndex(where: { $0.name == server }),
-              let t = servers[s].tools.firstIndex(where: { $0.name == tool }) else { return }
-        servers[s].tools[t].enabled = enabled
-        revision += 1
+        click(MCPClick(server: server, tool: tool), enabled: enabled)
     }
 
     /// Whether this server's row should show a spinner instead of a state.
@@ -244,12 +263,66 @@ final class MCPModel {
     }
 
     func setServerLocally(_ name: String, enabled: Bool) {
-        guard let s = servers.firstIndex(where: { $0.name == name }) else { return }
-        // Not "ok": switching a server back on does not reconnect it. The list of servers is
-        // assembled when a session starts, so the truthful state until then is "pending".
-        servers[s].state = enabled ? "pending" : "off"
-        servers[s].status = enabled ? "on in a new session" : "disabled"
+        click(MCPClick(server: name, tool: nil), enabled: enabled)
+    }
+
+    /// The switch command for a click has come back. `ownRead` is whether the file it leaves
+    /// behind was read after its write with no check of the agent beside it
+    /// (MCPRefreshPoll.switchLanded): then that file is the answer to every click already written.
+    /// A switch that was not applied drops its click, so the next re-read shows the real state.
+    func switchLanded(_ command: BackendCommand, applied: Bool, ownRead: Bool, at now: Double) {
+        let key: MCPClick
+        switch command {
+        case .toggleServer(_, let name, _): key = MCPClick(server: name, tool: nil)
+        case .toggleTool(_, let server, let tool, _, _): key = MCPClick(server: server, tool: tool)
+        default: return
+        }
+        guard var state = clicks[key] else { return }
+        state.unanswered -= 1
+        // A later click on the same switch is still on its way: its position stays on screen.
+        if state.unanswered > 0 {
+            clicks[key] = state
+        } else if applied {
+            state.writtenAt = now
+            clicks[key] = state
+            if ownRead { forgetClicks(readStartedAt: now) }
+        } else {
+            clicks[key] = nil
+        }
+    }
+
+    /// A read that began at `start` has landed: the clicks written before it are now in the file,
+    /// which re-reading shows as it is. True when any was dropped and the caller has to re-read.
+    @discardableResult
+    func forgetClicks(readStartedAt start: Double) -> Bool {
+        let held = clicks.count
+        clicks = clicks.filter { $0.value.writtenAt.map { $0 > start } ?? true }
+        return clicks.count != held
+    }
+
+    private func click(_ click: MCPClick, enabled: Bool) {
+        guard servers.contains(where: { $0.name == click.server }) else { return }
+        clicks[click] = MCPClickState(enabled: enabled,
+                                      unanswered: (clicks[click]?.unanswered ?? 0) + 1)
+        show(click, enabled: enabled)
         revision += 1
+    }
+
+    private func show(_ click: MCPClick, enabled: Bool) {
+        guard let s = servers.firstIndex(where: { $0.name == click.server }) else { return }
+        if let tool = click.tool {
+            if let t = servers[s].tools.firstIndex(where: { $0.name == tool }) {
+                servers[s].tools[t].enabled = enabled
+            }
+        } else if !enabled {
+            servers[s].state = "off"
+            servers[s].status = "disabled"
+        } else if servers[s].state == "off" {
+            // Not "ok": switching a server back on does not reconnect it. The list of servers is
+            // assembled when a session starts, so the truthful state until then is "pending".
+            servers[s].state = "pending"
+            servers[s].status = "on in a new session"
+        }
     }
 
     /// The one door into the parser for the model checks: the reader half of the python→swift
@@ -341,12 +414,16 @@ func mcpTint(_ state: String) -> NSColor {
 struct MCPRefreshPoll {
     private var running: Set<String> = []
     private var again: Set<String> = []
+    /// Switch commands of each agent on their way, and the agents whose check ran beside one.
+    private var switching: [String: Int] = [:]
+    private var crossed: Set<String> = []
 
     /// The agents whose check starts now. One still being checked is remembered instead.
     mutating func begin(_ providers: Set<String>) -> Set<String> {
         again.formUnion(providers.intersection(running))
         let starting = providers.subtracting(running)
         running.formUnion(starting)
+        cross(starting)
         return starting
     }
 
@@ -356,11 +433,31 @@ struct MCPRefreshPoll {
         return again.remove(provider) != nil
     }
 
-    /// A switch wrote this agent's config. With no check of that agent out there is nothing to
-    /// order — the command leaves its own file current. One in flight read the config before the
-    /// write, or holds the lock the switch's own re-read then finds busy, so the picture it is
-    /// about to write is already stale and the agent is checked once more after it.
-    mutating func switched(_ provider: String) {
-        if running.contains(provider) { again.insert(provider) }
+    /// A switch of this agent is on its way: clicked, queued or running.
+    mutating func switchStarted(_ provider: String) {
+        switching[provider, default: 0] += 1
+        cross([provider])
+    }
+
+    /// The switch has come back. True when no check of its agent ran beside it, so the file it
+    /// leaves behind was read after its write and is the truth. Otherwise it is not: the check
+    /// read the config before the write, or held the lock the switch's own re-read then found
+    /// busy, and the caller checks the agent once more (`refreshMCP(of:)`, which waits for a check
+    /// still out).
+    mutating func switchLanded(_ provider: String) -> Bool {
+        cross([provider])
+        let alone = !crossed.contains(provider)
+        switching[provider, default: 1] -= 1
+        if switching[provider] == 0 { crossed.remove(provider) }
+        return alone
+    }
+
+    /// A check and a switch of the same agent out at once — at the click, started while the
+    /// switch waits or runs, or still out when it lands — and the picture that check writes may be
+    /// from before the write. Only marked here; the one check more is ordered as the switch lands.
+    /// A check started meanwhile ordering it instead spun: Codex's finds the lock held by the
+    /// switch's own re-read, exits at once, and ordered the next, until the switch came back.
+    private mutating func cross(_ providers: Set<String>) {
+        crossed.formUnion(providers.filter { running.contains($0) && switching[$0, default: 0] > 0 })
     }
 }

@@ -19,11 +19,9 @@ extension StatusController {
         backendRunning += 1
         mcpBusy = true
         let switched = command.switchProvider
-        // Told about the switch twice, now and when the write has landed (below). Landing is the
-        // one that matters: a check that began after the click can still have read the config
-        // before the write. This one is for the check that lands in the instant between the
-        // script exiting and that block running — by then it no longer looks in flight.
-        if let switched { mcpRefresh.switched(switched) }
+        // From the click, not from when the queue gets to it: a check of this agent that runs at
+        // any point until the switch has landed may write a picture from before the write.
+        if let switched { mcpRefresh.switchStarted(switched) }
         (switched == nil ? backendQueue : switchQueue).async { [weak self] in
             guard let self else { return }
             let run = self.spawnBackend(command)
@@ -35,7 +33,13 @@ extension StatusController {
                     // Not kept for a panel closed meanwhile: it would greet the next open, hours
                     // later, as if it were about something just clicked.
                     self.mcpSwitchRefusal = self.panelIsOpen ? command.refusal(run) : nil
-                    self.mcpRefresh.switched(switched)
+                    // The clicked position stays on screen until a read from after the write
+                    // lands: this switch's own, when no check ran beside it, or the check after.
+                    let ownRead = self.mcpRefresh.switchLanded(switched)
+                    self.model(of: switched).switchLanded(
+                        command, applied: run.succeeded, ownRead: ownRead,
+                        at: ProcessInfo.processInfo.systemUptime)
+                    if !ownRead { self.refreshMCP(of: [switched]) }
                 }
                 self.mcp.reloadIfChanged(force: true)
                 // Both models, or the promise in the comment below holds for one agent only.
@@ -67,9 +71,10 @@ extension StatusController {
         let wanted = codexServers && codexInstalled ? providers : providers.subtracting(["codex"])
         let starting = mcpRefresh.begin(wanted)
         guard !starting.isEmpty else { return }
+        let started = ProcessInfo.processInfo.systemUptime
         if starting.contains("codex") {
             runQuietCommand(.mcpRefresh(provider: "codex")) { [weak self] _ in
-                self?.finishRefresh(of: "codex")
+                self?.finishRefresh(of: "codex", startedAt: started)
             }
         }
         // Asked on the same occasions, and not gated on either Codex switch: this one explains an
@@ -87,12 +92,19 @@ extension StatusController {
         }
         if starting.contains("claude") {
             runBackend(.mcpRefresh(provider: "claude")) { [weak self] in
-                self?.finishRefresh(of: "claude")
+                self?.finishRefresh(of: "claude", startedAt: started)
             }
         }
     }
 
-    private func finishRefresh(of provider: String) {
+    /// The clicks written before this check began are in its file now, which is shown as it is —
+    /// including a position someone changed outside the app since.
+    private func finishRefresh(of provider: String, startedAt: Double) {
+        if model(of: provider).forgetClicks(readStartedAt: startedAt) {
+            model(of: provider).reloadIfChanged(force: true)
+            notifyMCPChange()
+            refreshCounts()
+        }
         if mcpRefresh.finish(provider) { refreshMCP(of: [provider]) }
     }
 

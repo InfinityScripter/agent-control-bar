@@ -12,7 +12,7 @@ import Foundation
 
 /// A JSON number, or nil. A boolean is an NSNumber too, and `true` where a percentage belongs is a
 /// damaged file, not 1%.
-private func usageNumber(_ value: Any?) -> Double? {
+func usageNumber(_ value: Any?) -> Double? {
     guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
     let double = number.doubleValue
     return double.isFinite ? double : nil
@@ -335,6 +335,9 @@ private struct UsageWindowFacts {
     /// When the figure was measured.
     let ts: Double
     let reserve: Bool
+    /// The panel's own figure for a window it draws, not held to 0...100: the panel's pace verdict
+    /// reads it that way, so the row's does too. Nil for the sidecar's rows.
+    var paceUsed: Double? = nil
 }
 
 extension UsageProviderLimits {
@@ -349,10 +352,8 @@ extension UsageProviderLimits {
             ? UsagePlan.codexLabel(limitsPlan: set?.plan, accountPlan: account?.planType)
             : UsagePlan.claudeLabel(account?.subscriptionType)
 
-        var windows = (set?.drawable(at: now) ?? []).compactMap { window in
-            provider == "codex"
-                ? UsageWindowFacts(codex: window, plan: set?.plan ?? account?.planType, recordTs: set?.ts ?? 0)
-                : UsageWindowFacts(claude: window, recordTs: set?.ts ?? 0)
+        var windows = (set?.drawable(at: now) ?? []).compactMap {
+            UsageWindowFacts($0, provider: provider, plan: set?.plan ?? account?.planType, recordTs: set?.ts ?? 0)
         }
         // The panel's files win: a row the sidecar repeats would otherwise be drawn twice, with
         // two figures for one window.
@@ -378,7 +379,37 @@ extension UsageProviderLimits {
     }
 }
 
+extension LimitsSet {
+    /// `drawn` as the account can use them, which is how the panel and the icon show them: a session
+    /// window the spent week blocks has nothing left, no pace to judge and the week's reset,
+    /// whatever it used itself. Built by the Usage window's own rule (`UsageWindowFacts.blocked`),
+    /// with the plan it reads, so the two never show one window two ways. The name stays the
+    /// session's own. `account` is the provider's account.json, nil when it has not been read.
+    func usable(_ drawn: [NamedWindow], account: UsageAccount?, now: Double) -> [NamedWindow] {
+        let ordinary = drawn.compactMap {
+            UsageWindowFacts($0, provider: provider, plan: plan ?? account?.planType, recordTs: ts)
+        }.filter { !$0.reserve }
+        return drawn.map { window in
+            guard let facts = ordinary.first(where: { $0.id == window.key }),
+                  facts.spentWeek(among: ordinary, provider: provider) != nil else { return window }
+            let shown = facts.blocked(among: ordinary, provider: provider, now: now).window
+            // Without a length there is no clock, so no line and no pace, as on the Usage row.
+            return NamedWindow(key: window.key, title: window.title, badge: window.badge, minutes: nil,
+                               ts: window.ts, window: LimitWindow(used: 100, resets: shown.resetsAt))
+        }
+    }
+}
+
 extension UsageWindowFacts {
+    /// One of the panel's windows; nil for a Claude window the tab does not list.
+    init?(_ window: NamedWindow, provider: String, plan: String?, recordTs: Double) {
+        if provider == "codex" {
+            self.init(codex: window, plan: plan, recordTs: recordTs)
+        } else {
+            self.init(claude: window, recordTs: recordTs)
+        }
+    }
+
     /// Claude's rows come from a fixed list. limits.json also carries per-model and codename
     /// windows that T3 does not show, and a row made from "every key in the file" would.
     init?(claude window: NamedWindow, recordTs: Double) {
@@ -386,18 +417,22 @@ extension UsageWindowFacts {
                      "seven_day_fable": ("weekly", "Weekly · Fable")]
         guard let (kind, label) = known[window.key] else { return nil }
         self.init(id: window.key, kind: kind, label: label, used: usageClampPercent(Double(window.window.used)),
-                  resetsAt: window.window.resets, minutes: window.minutes, ts: recordTs, reserve: false)
+                  resetsAt: window.window.resets, minutes: window.minutes, ts: recordTs, reserve: false,
+                  paceUsed: Double(window.window.used))
     }
 
     init(codex window: NamedWindow, plan: String?, recordTs: Double) {
         let reserve = window.key.hasPrefix("reserve:")
         // No guessed length for the Reserve pool: the slot fallbacks describe the ordinary pair.
-        let minutes = window.minutes
+        // A guessed length only names the row. The clock keeps the real one, so a window of unknown
+        // length has no pace tick here, as it has no line on the panel.
+        let assumed = window.minutes
             ?? (reserve ? nil : UsageLimitMath.codexFallbackMinutes(slot: window.key, plan: plan))
-        let kind = minutes.map(UsageLimitMath.codexKind) ?? "other"
+        let kind = assumed.map(UsageLimitMath.codexKind) ?? "other"
         self.init(id: window.key, kind: kind, label: reserve ? "Reserve" : UsageWindowFacts.label(kind: kind),
                   used: usageClampPercent(Double(window.window.used)), resetsAt: window.window.resets,
-                  minutes: minutes, ts: window.ts ?? recordTs, reserve: reserve)
+                  minutes: window.minutes, ts: window.ts ?? recordTs, reserve: reserve,
+                  paceUsed: Double(window.window.used))
     }
 
     init(extra: UsageExtraWindow, provider: String, ts: Double, now: Double) {
@@ -428,11 +463,7 @@ extension UsageWindowFacts {
     /// that model); for Codex it is whichever ordinary window is a week long.
     func blocked(among ordinary: [UsageWindowFacts], provider: String, now: Double)
         -> (window: UsageWindowFacts, refill: Double) {
-        guard kind == "session",
-              let weekly = ordinary.first(where: {
-                  $0.used >= 100 && (provider == "claude" ? $0.id == "seven_day" : $0.kind == "weekly")
-              })
-        else { return (self, used) }
+        guard let weekly = spentWeek(among: ordinary, provider: provider) else { return (self, used) }
         var shown = self
         shown.used = 100
         shown.resetsAt = nil
@@ -456,6 +487,15 @@ extension UsageWindowFacts {
         }
         return (shown, refill)
     }
+
+    /// The spent week that blocks this window, or nil when this is not a session or the week has
+    /// room. The panel asks the same question through `LimitsSet.usable(_:account:now:)`.
+    func spentWeek(among ordinary: [UsageWindowFacts], provider: String) -> UsageWindowFacts? {
+        guard kind == "session" else { return nil }
+        return ordinary.first {
+            $0.used >= 100 && (provider == "claude" ? $0.id == "seven_day" : $0.kind == "weekly")
+        }
+    }
 }
 
 extension UsageLimitRow {
@@ -469,7 +509,7 @@ extension UsageLimitRow {
         self.usedPercent = usageRound(window.used)
         self.remainingPercent = remaining
         self.resetsAt = window.resetsAt
-        self.pace = elapsed.map { UsageLimitMath.paceClass(usedPercent: window.used, elapsed: $0) }
+        self.pace = elapsed.map { UsageLimitMath.paceClass(usedPercent: window.paceUsed ?? window.used, elapsed: $0) }
         self.evenPacePercent = UsageLimitMath.evenPacePercent(resetsAt: window.resetsAt,
                                                               windowMinutes: window.minutes, now: now)
         self.refillPercent = entry.refill

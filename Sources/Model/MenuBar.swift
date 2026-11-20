@@ -70,7 +70,7 @@ struct MenuBarAgent {
                 mood: CrabMood.display(forEffectiveStates: own.map(\.eff), leadState: lead?.eff),
                 working: own.filter { isWorkingState($0.eff) }.count,
                 gauge: limits.gauge(at: now),
-                reserve: provider == .codex && limits.codexBarWindows(at: now).first?.title == "Reserve",
+                reserve: provider == .codex && limits.codexBarWindows(at: now).first?.window.title == "Reserve",
                 signedOut: provider == .claude
                     && !hiddenServices.contains(.anthropic)
                     && LimitsStatus.signedOutShown(claudeStatus, oauthLimits: oauthLimits, figuresTs: claude?.ts),

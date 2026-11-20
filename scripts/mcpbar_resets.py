@@ -76,38 +76,42 @@ def account_lock(root):
 def pending_key(root, credit_id):
     """Ключ идемпотентности попытки: сохранённый, пока он годен, иначе новый.
 
-    Новый ложится на диск до отправки запроса: процесс, убитый посреди вызова, не должен
-    забыть ключ заявки, которая могла дойти. Сохранённый годен сутки и только для того же
-    гранта — старый ключ с другим грантом был бы новой заявкой под чужим именем.
+    Ключ ложится на диск до отправки запроса: процесс, убитый посреди вызова, не должен
+    забыть ключ заявки, которая могла дойти. Сохранённый годен сутки от `createdAt` и только для
+    того же гранта — старый ключ с другим грантом был бы новой заявкой под чужим именем.
+    `sentAt` — время этой отправки: окно сравнивает с ним account.json, и повтор после свежего
+    опроса остаётся открытой заявкой, даже если процесс убит посреди запроса.
     """
     path = os.path.join(root, "reset-credit-pending.json")
     stored, now = read_json(path, {}), time.time()
     key, created = stored.get("key"), stored.get("createdAt")
-    if (isinstance(key, str) and REQUEST_ID.fullmatch(key) and stored.get("creditId") == credit_id
+    if not (isinstance(key, str) and REQUEST_ID.fullmatch(key) and stored.get("creditId") == credit_id
             and finite(created) and 0 <= now - created < KEY_TTL):
-        return key
-    key = str(uuid.uuid4())
-    write_json(path, {"key": key, "creditId": credit_id, "createdAt": int(now)}, mode=SECURE_FILE)
+        key, created = str(uuid.uuid4()), int(now)
+    write_json(path, {"key": key, "creditId": credit_id, "createdAt": created, "sentAt": int(now)},
+               mode=SECURE_FILE)
     return key
 
 
 def drop_key(root):
-    # Ключ убирают после определённого ответа сервиса, и сбой удаления этот ответ не отменяет:
-    # сброс уже потрачен, исход обязан дойти до файла. Уцелевший ключ безопасен — повтор с ним
-    # назовёт ту же заявку, а не новую.
+    # Ключ убирают после определённого ответа сервиса, когда тот уже записан в файл исхода, и сбой
+    # удаления этот ответ не отменяет. Уцелевший ключ безопасен — повтор с ним назовёт ту же
+    # заявку, а не новую.
     try:
         os.unlink(os.path.join(root, "reset-credit-pending.json"))
     except OSError:
         pass
 
 
-def redeem(provider, root, credit_id, failure, attempt, limits_are_fresh):
+def redeem(provider, root, credit_id, failure, unsettled, attempt, limits_are_fresh):
     """Одна попытка под замком аккаунта → (исход, ошибка). Файл исхода пишется при любом завершении,
     кроме одного: запуск, ничего не отправивший, не стирает запись о заявке, оставшейся открытой.
 
     `attempt()` возвращает (исход, ошибка, был ли вызов сервиса). После вызова, давшего
     исход, лимиты перечитываются здесь же: приложение ждёт конца команды и свежих цифр.
-    Не подтверждённый `reset` — всё равно исход: сброс потрачен, не обновились только цифры.
+    Ключ заявки удаляется только после записи определённого ответа, то есть ответа без ошибки
+    из `unsettled`: процесс, убитый между двумя шагами, оставляет ключ, а не пустое место.
+    Не подтверждённый `reset` или `alreadyRedeemed` — всё равно исход: не обновились только цифры.
     """
     outcome, error, confirmed, called = None, failure, False, True
     try:
@@ -116,11 +120,15 @@ def redeem(provider, root, credit_id, failure, attempt, limits_are_fresh):
                 error, called = "busy", False
             else:
                 outcome, error, called = attempt()
-                confirmed = outcome is not None and outcome != "reset"
+                # Сброс тратит грант, а `alreadyRedeemed` бывает ответом на нашу же заявку с
+                # потерянным ответом: после обоих список сбросов в account.json устарел, и пока
+                # опрос его не перечитал, приложение не даёт нажать никакой сброс.
+                confirmed = outcome in ("nothingToReset", "noCredit")
                 if outcome and called:
                     # Исход на диск до перечитывания: оно длится секунды, а процесс, убитый
                     # за это время, иначе унёс бы с собой знание о потраченном сбросе.
                     write_result(root, provider, credit_id, outcome, None, confirmed)
+                    drop_key(root)
                     try:
                         confirmed = limits_are_fresh(outcome) or confirmed
                     except Exception:  # noqa: BLE001 — исход уже есть, сбой чтения его не отменяет
@@ -133,6 +141,8 @@ def redeem(provider, root, credit_id, failure, attempt, limits_are_fresh):
         if (called or outcome or left.get("error") not in CLAIM_UNSETTLED
                 or not os.path.exists(os.path.join(root, "reset-credit-pending.json"))):
             write_result(root, provider, credit_id, outcome, error, confirmed)
+        if called and not outcome and error not in unsettled:
+            drop_key(root)  # отказ сервиса без исхода, например остывание: заявка закрыта
     return outcome, error
 
 
@@ -237,8 +247,6 @@ def claude_attempt(credit_id):
         return None, "signedOut", False
     outcome, error = claude_claim(organization, token, version, credit_id,
                                   pending_key(core.ROOT, credit_id))
-    if error not in CLAIM_UNSETTLED:
-        drop_key(core.ROOT)
     return outcome, error, True
 
 
@@ -252,7 +260,7 @@ def claude_limits_are_fresh(outcome):
 def redeem_claude(credit_id):
     os.makedirs(core.ROOT, mode=SECURE_DIR, exist_ok=True)
     return redeem("claude", core.ROOT, credit_id if core.GRANT_ID.fullmatch(credit_id) else None,
-                  "requestFailed", lambda: claude_attempt(credit_id), claude_limits_are_fresh)
+                  "requestFailed", CLAIM_UNSETTLED, lambda: claude_attempt(credit_id), claude_limits_are_fresh)
 
 
 # ──────────────────────────────────────────────────────────── Codex
@@ -276,7 +284,6 @@ def codex_attempt():
     outcome = result.get("outcome")
     if not isinstance(outcome, str) or outcome not in OUTCOMES:
         return None, "invalid_reply", True
-    drop_key(codex.CODEX_ROOT)
     return outcome, None, True
 
 
@@ -295,7 +302,8 @@ def codex_limits_are_fresh(outcome):
 
 def redeem_codex():
     codex.secure_codex_root()
-    return redeem("codex", codex.CODEX_ROOT, None, "rpc_error", codex_attempt, codex_limits_are_fresh)
+    return redeem("codex", codex.CODEX_ROOT, None, "rpc_error", codex.CODEX_RPC_ERRORS, codex_attempt,
+                  codex_limits_are_fresh)
 
 
 def command(word, argv):
