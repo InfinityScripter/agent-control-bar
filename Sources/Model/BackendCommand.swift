@@ -26,6 +26,13 @@ enum BackendCommand {
     case claudeLogin
     case toggleServer(provider: String, name: String, on: Bool)
     case toggleTool(provider: String, server: String, tool: String, prefix: String, on: Bool)
+    /// Scan the transcripts and rewrite usage/summary.json for the Usage window. `refresh` is the
+    /// user's own press of the refresh button: it also lets the script refetch the price table.
+    case usage(refresh: Bool)
+    /// Spend one banked reset credit; the script answers in the provider's reset-credit-result.json.
+    /// Claude redeems the grant named here. Codex's backend picks the next credit itself, so its
+    /// command takes no id.
+    case resetCredit(provider: String, creditId: String?)
 
     /// Which mcpbar.py to run, and with which interpreter; an empty script when there is none.
     ///
@@ -73,6 +80,15 @@ enum BackendCommand {
         // A Codex switch ends in that same full re-read; Claude's only patches its own file.
         case .toggleServer(provider: "codex", _, _), .toggleTool(provider: "codex", _, _, _, _):
             return 600
+        // Far past a first full scan (under a minute for 20 GB of transcripts). A scan that hung
+        // — a stuck price download, an unreadable volume — would otherwise hold the Usage
+        // window's refresh button until the app was restarted.
+        case .usage:
+            return 600
+        // Never stopped from outside: a redemption cut short would leave nobody knowing whether
+        // the credit was spent. The script bounds each of its own waits.
+        case .resetCredit:
+            return .infinity
         default:
             return 120
         }
@@ -124,6 +140,11 @@ enum BackendCommand {
             }
             return ["toggle-tool", MCPServer.fullToolName(prefix: prefix, tool: tool),
                     "--server", server, "--tool", tool, flag]
+        case .usage(let refresh):
+            return refresh ? ["usage", "--refresh"] : ["usage"]
+        case .resetCredit(let provider, let creditId):
+            if provider == "codex" { return ["codex-reset-credit"] }
+            return ["claude-reset-credit"] + (creditId.map { [$0] } ?? [])
         }
     }
 }

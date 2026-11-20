@@ -7,6 +7,9 @@ Agent Control Bar is a fork of
 animations, the self-launching lifecycle, the DMG pipeline and most of the Swift the app is
 built on are his work.
 
+The Usage window is a port of **[T3 Code](https://github.com/pingdotgg/t3code)**'s Usage page;
+see "T3 Code" at the end of this file for what was ported and its licence.
+
 Everyone credited below contributed to that upstream project; their work is in this one too.
 
 ---
@@ -29,3 +32,71 @@ Claude Status Bar's multi-session support grew out of several community contribu
 - **[@szhu](https://github.com/szhu)**, [homebrew-cask PR #274337](https://github.com/Homebrew/homebrew-cask/pull/274337): submitted Claude Status Bar to Homebrew unprompted, waited out the repo-age rule, and carried the cask through review to merge. `brew install --cask claude-status-bar` exists because of this.
 
 Thanks as well to everyone who opened issues and pull requests along the way.
+
+---
+
+## T3 Code
+
+The Usage window (Cost, Tokens, Limits) and the reset-credit flow are ported from
+**[T3 Code](https://github.com/pingdotgg/t3code)** by T3 Tools Inc., at commit `803f21f`:
+rewritten in Swift and Python for one Mac with one account per provider, with T3's own test
+vectors carried over into this project's checks. What was ported, by T3 file:
+
+- **Reading usage from transcripts and pricing it** (`scripts/mcpbar_usage.py`):
+  `apps/server/src/usage/claudeUsage.ts`, `codexUsage.ts`, `usageTranscriptReader.ts`,
+  `usageAggregation.ts` (merging copies of one request, model aliases), `usagePricing.ts`
+  (LiteLLM rates, long-context and speed tiers, cache prices) and `UsageService.ts` (the
+  periods and the price-refresh cadence).
+- **The Cost and Tokens tabs** (`Sources/Model/UsageSummaryModel.swift`, `Sources/UsageView*.swift`):
+  `packages/shared/src/usageMerge.ts`, `usageFormat.ts` and `usageFormatCopy.ts`;
+  `apps/web/src/components/usage/UsagePage.tsx`, `UsageModelDialog.tsx`,
+  `UsageProviderChart.tsx` (nice scale, monotone curve, hover and tooltip placement),
+  `UsageShareBar.tsx`, `usageBreakdown.ts` and `usageProviders.ts`.
+- **Custom model prices and "Map to"** (`Sources/Model/UsagePricesModel.swift`,
+  `Sources/UsageViewPrices.swift`): `apps/web/src/components/usage/usagePriceForm.ts`,
+  `usagePriceTable.ts`, `usagePriceTargets.ts` and `UsagePriceOverrides.tsx`; the settings
+  schema in `packages/contracts/src/settings.ts`; `resolveModelAliases` in `usageAggregation.ts`.
+- **The Limits tab** (`Sources/Model/UsageLimitsModel.swift`, `Sources/UsageViewLimits.swift`):
+  `packages/shared/src/usageLimits.ts` (elapsed share, even pace, pace class, the weekly-exhausted
+  suppression, restores) and `usageLimitsCopy.ts`; `apps/web/src/timestampFormat.ts`;
+  `apps/web/src/components/usage/UsageLimits.tsx` and `UsageLimitsPooled.tsx` (bar, hatch, pace
+  mark, popover rows, the stand-in shown for a hidden e-mail address);
+  `apps/server/src/provider/ClaudeProvider.ts` and `CodexProvider.ts` (plan labels),
+  `claudeUsageLimits.ts` and `codexUsageLimits.ts` (window kinds and labels).
+- **Account details and reset credits** (`scripts/mcpbar.py`, `scripts/mcpbar_codex.py`,
+  `scripts/mcpbar_resets.py`): `apps/server/src/provider/claudeResetCredits.ts`,
+  `resetCreditCoordinator.ts` (one idempotency key until a definite answer, the re-read of
+  limits after a redemption), `Drivers/ClaudeDriver.ts`, `Drivers/CodexDriver.ts`,
+  `apps/server/src/usage/cliproxyApi.ts` and
+  `packages/provider-core/src/server/snapshotProbe.ts`.
+
+T3 Code is released under the MIT license:
+
+> MIT License
+>
+> Copyright (c) 2026 T3 Tools Inc.
+>
+> Permission is hereby granted, free of charge, to any person obtaining a copy
+> of this software and associated documentation files (the "Software"), to deal
+> in the Software without restriction, including without limitation the rights
+> to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+> copies of the Software, and to permit persons to whom the Software is
+> furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in all
+> copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+> IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+> FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+> AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+> LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+> SOFTWARE.
+
+The three pace glyphs on the Limits tab (trending up, gauge, trending down) are drawn from the
+coordinates of **[Lucide](https://lucide.dev)**'s icons, which T3 Code uses; Lucide is released
+under the ISC license, copyright (c) Lucide Contributors 2022, with portions copyright (c) Cole
+Bemis 2013-2022 (Feather, MIT). The price table the Usage window downloads is
+**[LiteLLM](https://github.com/BerriAI/litellm)**'s `model_prices_and_context_window.json`;
+it is fetched at run time and not shipped with the app.

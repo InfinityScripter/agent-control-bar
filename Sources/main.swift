@@ -70,6 +70,13 @@ final class StatusController: NSObject, NSWindowDelegate {
     var settingsWindow: NSWindow?
     /// Built on the first open. It stores nothing itself — only bindings back to this object.
     lazy var settingsStore = SettingsStore(controller: self)
+    /// The Usage window (Cost, Tokens, Limits), kept between opens like Settings. Its behaviour is
+    /// in UsageWindow.swift and its picture in UsageData.swift; only the state lives here.
+    var usageWindow: NSWindow?
+    lazy var usageStore = UsageStore(controller: self)
+    var usage = UsageRuntime()
+    /// The key monitor behind the window's shortcuts; alive only while the window is open.
+    var usageKeyMonitor: Any?
     /// The dropdown. Kept between opens so the chosen tab survives closing it.
     var panelWindow: PanelHostWindow?
     /// Watches for a click outside the panel, which is how a window of our own gets the one menu
@@ -150,6 +157,7 @@ final class StatusController: NSObject, NSWindowDelegate {
     var limitsNoticeSent = false        // the signed-out banner goes out once per launch
     let launchedAt = Date().timeIntervalSince1970  // the signed-out banner counts only polls made after this
     var lastLimitsPoll: Double = 0      // so a rollover cannot bring the next poll forward into a loop
+    var claudeLimitsRunning = false     // a Claude request is out; ClaudeLimitsPoll keeps a second from starting beside it
     var limitsTimer: Timer?             // the five-minute poll; each Claude request pushes it back
     var rolledOverHandled: Double = 0   // the reset stamp that already brought one poll forward
     var codexLimitsStatus: LimitsStatus?
@@ -414,6 +422,11 @@ final class StatusController: NSObject, NSWindowDelegate {
             Timer.scheduledTimer(withTimeInterval: 3, repeats: false) { [weak self] _ in
                 self?.openSettingsWindow()
             }
+        // CONTROL_BAR_DIAGNOSE=usage does the same for the Usage window.
+        } else if ProcessInfo.processInfo.environment["CONTROL_BAR_DIAGNOSE"] == "usage" {
+            Timer.scheduledTimer(withTimeInterval: 3, repeats: false) { [weak self] _ in
+                self?.openUsageWindow()
+            }
         // CONTROL_BAR_DIAGNOSE=toggle answers "does clicking the icon close the panel?" without
         // clicking it — which is the only way to ask, for the same reason CONTROL_BAR_UPDATE_NOW
         // exists: a crowded menu bar parks the status item off-screen, where neither a person nor
@@ -555,6 +568,14 @@ final class StatusController: NSObject, NSWindowDelegate {
 
     var claudeProbedAt: Double = 0
     var claudeWasRunning = false
+}
+
+// CONTROL_BAR_RENDER_USAGE=<dir> draws the Usage window from a directory of fixture files into
+// PNGs and exits. First of all, before the controller exists: a status item, the timers, the
+// hooks check and the backend must not start for a process that is only here to draw — it never
+// reads the real state directory, the network or the Keychain. See UsageRender.swift.
+if let output = ProcessInfo.processInfo.environment["CONTROL_BAR_RENDER_USAGE"] {
+    exit(UsageRender.run(output: output, environment: ProcessInfo.processInfo.environment))
 }
 
 let app = NSApplication.shared

@@ -126,6 +126,17 @@ Claude figures come from Anthropic's usage API using the OAuth token Claude Code
 
 When a Claude poll brings no figures, the panel says why instead of leaving old numbers to look fresh: a block above the limits strip reads **Claude Code is not signed in** or **Limits poll failed: HTTPError**, with how old the figures below it are. The figures stay; the block goes away on the next successful poll. The first signed-out poll after the app starts also sends one macOS notification, and **Settings → General → Limits** shows a **Last poll** line under the switch. When the cause is a sign-out, the block carries a **Sign in to Claude Code** button: it opens Terminal on `claude auth login` (through a small `claude-login.command` file in `~/.claude/control-bar/`), and once you have signed in there the figures come back on the next poll. The menu bar shows the same sign-out without opening the panel: the Claude bars are dimmed with a small mark in their corner, and the tooltip reads **Claude Code is not signed in — open the panel to sign in**.
 
+## Usage window
+
+**Usage** in the panel footer (⌘U) opens a separate window with three tabs. Its design and its maths are a port of the Usage page of [T3 Code](https://github.com/pingdotgg/t3code).
+
+- **Cost** and **Tokens** show what Claude Code and Codex used over the past 24 hours, 7, 30 or 90 days: a chart per provider, totals, cost by type and by speed tier, and a table by model or by day. Click a model for its own chart. Cost is an estimate at API prices from LiteLLM's public price table, not your bill: on a subscription it is what the same tokens would have cost through the API. **Model prices** in the header sets your own price for a model, or maps a model the table does not know to one it does.
+- **Limits** draws each limit window as a bar of what is left, with a mark where an even pace would stand and a hatch for what the next reset gives back. Click a bar for the plan, the account, the reset time and the reset credits banked on the account. **Use reset** spends one banked credit after a confirmation and cannot be undone. Redemption follows T3 Code's implementation and has so far been exercised against test servers only.
+
+The figures are counted on your Mac from both agents' session files (`~/.claude/projects`, `~/.codex/sessions`) of the last 92 days. The first scan can take up to a minute; later ones read only what changed. Codex compresses its older sessions with zstd, which macOS cannot read by itself: run `brew install zstd`, or have Node.js 22.15 or newer installed. Without either those sessions are skipped and the window says so.
+
+Keys: **C**, **T** and **L** switch tabs, **⇧⌘1** to **⇧⌘4** pick the period, **⌘R** refreshes, **Esc** closes.
+
 ## Switch MCP servers and tools
 
 <img src="docs/screenshots/mcp.png" alt="MCP tab with an expanded Claude server and its tool switches, plus a separate Codex server group" width="430">
@@ -207,7 +218,7 @@ Sounds follow the **Show** selection. Both and Hidden cover both agents.
 
 Session state and context figures are read locally. Current Codex limits are requested through Codex using its own authentication; local session snapshots are the fallback. The app does not send your conversations or project paths to the developer. The hooks make no network requests.
 
-The app itself checks for updates, can poll Anthropic for Claude usage and Codex for OpenAI usage, can ask whenreset.app for limit reset odds, and can connect to your configured MCP servers. Its anonymous usage ping is on by default: at most once a day, starting 24 hours after the first launch. It contains the app version, macOS major version, CPU architecture and install channel, with no device identifier. Turn **Anonymous usage ping** off in General, or set `CONTROL_BAR_NO_ANALYTICS` in the app's environment to any value.
+The app itself checks for updates, can poll Anthropic for Claude usage and Codex for OpenAI usage, can ask whenreset.app for limit reset odds, and can connect to your configured MCP servers. The Usage window reads both agents' session files in full to count tokens — the counts stay on your Mac — and downloads LiteLLM's public price table from GitHub. A reset credit is redeemed only when you press **Use reset** and confirm. Its anonymous usage ping is on by default: at most once a day, starting 24 hours after the first launch. It contains the app version, macOS major version, CPU architecture and install channel, with no device identifier. Turn **Anonymous usage ping** off in General, or set `CONTROL_BAR_NO_ANALYTICS` in the app's environment to any value.
 
 [PRIVACY.md](PRIVACY.md) lists the network requests, local files, permissions and debug-log behavior.
 

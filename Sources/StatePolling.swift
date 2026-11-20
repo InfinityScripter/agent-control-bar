@@ -95,6 +95,13 @@ extension StatusController {
                                                    previous: engine.codexAttention)
     }
 
+    /// The files only the Usage window reads: the usage summary and its scan status, both account
+    /// sidecars, both reset results, the saved prices. Each behind its own mtime gate, in
+    /// UsageFiles (UsageData.swift), where the render mode reads fixtures through the same code.
+    func loadUsageFiles() {
+        usage.files.reload(root: root)
+    }
+
     // MARK: state polling
 
     func tick() {
@@ -124,6 +131,9 @@ extension StatusController {
         loadCodexHooks()
         loadCodexAttention()
         pollCodexAttention(now: now)
+        // Only while its window is visible: seven stats a tick for a window most runs never open
+        // would be work for nobody.
+        if usageWindowVisible { tickUsageWindow(wall: now) }
         evaluate()
         // The panel is a live window, not a menu frozen at open time: the per-session clocks, the
         // limit figures and the server states all move under it. The store publishes only when

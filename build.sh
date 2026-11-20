@@ -43,8 +43,15 @@ echo "Compiling universal binary (arm64 + x86_64)…"
 # with the build machine's OS and it refuses to launch on older systems despite LSMinimumSystemVersion.
 # Sources/Model/ is the UI-free half (parsers, state machines, frame data) that CI also compiles
 # on its own against tests/model/main.swift; Sources/ proper is the app.
-swiftc -O -target arm64-apple-macos13.0  Sources/*.swift Sources/Model/*.swift -o "$BIN.arm64"  -framework Cocoa -framework SwiftUI
-swiftc -O -target x86_64-apple-macos13.0 Sources/*.swift Sources/Model/*.swift -o "$BIN.x86_64" -framework Cocoa -framework SwiftUI
+# One compile job per core. Left to itself swiftc runs a single frontend at a time, which went
+# unnoticed while the app was smaller: with the Usage window in, the serial universal build took
+# 277 s on a busy 12-core Mac — past the 240 s at which the plugin channel kills a build
+# (build() in hooks/bootstrap.py), and a killed build is an update that never arrives. In
+# parallel the same sources and flags took 43 to 62 s on that Mac. The objects are the same:
+# without -wmo each file is optimised on its own whichever job it lands in.
+JOBS="$(/usr/sbin/sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+swiftc -O -j"$JOBS" -target arm64-apple-macos13.0  Sources/*.swift Sources/Model/*.swift -o "$BIN.arm64"  -framework Cocoa -framework SwiftUI
+swiftc -O -j"$JOBS" -target x86_64-apple-macos13.0 Sources/*.swift Sources/Model/*.swift -o "$BIN.x86_64" -framework Cocoa -framework SwiftUI
 lipo -create "$BIN.arm64" "$BIN.x86_64" -output "$BIN"
 rm -f "$BIN.arm64" "$BIN.x86_64"
 
@@ -74,8 +81,9 @@ cp hooks/update.js hooks/lifecycle.js hooks/install.js hooks/uninstall.js hooks/
 # The MCP half runs out of the bundle in every channel: this copy is the one built with the
 # binary. The plugin's own (paths.json) is only the fallback for a bundle without it.
 mkdir -p "$STAGE_APP/Contents/Resources/scripts"
-# mcpbar_codex.py too: mcpbar.py imports it from its own directory on every run.
-cp scripts/mcpbar.py scripts/mcpbar_codex.py "$STAGE_APP/Contents/Resources/scripts/"
+# Its modules too: mcpbar.py imports mcpbar_codex from its own directory on every run, and
+# mcpbar_resets and mcpbar_usage when their commands are asked for.
+cp scripts/mcpbar.py scripts/mcpbar_codex.py scripts/mcpbar_resets.py scripts/mcpbar_usage.py "$STAGE_APP/Contents/Resources/scripts/"
 cp assets/AppIcon.icns "$STAGE_APP/Contents/Resources/AppIcon.icns"
 cp CHANGELOG.md "$STAGE_APP/Contents/Resources/CHANGELOG.md"  # the menu's "What's new" reads it
 cp assets/completion.mp3 "$STAGE_APP/Contents/Resources/completion.mp3"

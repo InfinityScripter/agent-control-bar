@@ -99,8 +99,10 @@ private struct GeneralSettings: View {
     // took it, which is how it shipped; the plugin compiles the app on the user's own Mac, with
     // whatever Swift that Mac's Command Line Tools carry, and there `build.sh` simply failed.
     private static let limitsFooter: String = "Polls Anthropic's usage endpoint with your own Claude "
-        + "OAuth token, which is sent to api.anthropic.com and nowhere else. With this off, the 5h "
-        + "and 7d bars only move when a status line happens to write them.\n\n"
+        + "OAuth token, which is sent to api.anthropic.com and nowhere else. The same request "
+        + "brings the plan, the account e-mail and the banked reset credits the Usage window "
+        + "shows; they stay on this Mac. With this off, the 5h and 7d bars only move when a "
+        + "status line happens to write them, and the Usage window has no account details.\n\n"
         + "Limit reset odds asks whenreset.app at most every 15 minutes for its estimate of an early "
         + "Claude or Codex limit reset, built from past vendor announcements. A plain public request "
         + "with no key and nothing about you in it. Off removes the card and stops the request."
@@ -128,7 +130,8 @@ private struct GeneralSettings: View {
 
     private static let codexFooter: String = "Current account limits are requested through Codex every five minutes "
         + "and when the menu-bar panel opens, using Codex's own sign-in. If Codex cannot answer, "
-        + "the latest usable session snapshot is shown with its original measurement time.\n\n"
+        + "the latest usable session snapshot is shown with its original measurement time. Once "
+        + "a day Codex is also asked for the account e-mail the Usage window shows.\n\n"
         + "The second switch lists Codex's own MCP servers in the MCP tab, with the same switches. "
         + "Asking Codex for the tool names starts each configured server, the way Codex itself "
         + "does — so with a slow server, turn this off and the servers stop being asked."

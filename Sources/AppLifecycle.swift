@@ -132,7 +132,7 @@ extension StatusController {
     // short debounced grace (warmup-session churn must not kill us). The debounce is IdleQuit's,
     // under the model check; the two slow probes that get the last word run here.
     func checkLifecycle() {
-        let inUse = settingsWindow?.isVisible == true || panelIsOpen
+        let inUse = settingsWindow?.isVisible == true || usageWindowVisible || panelIsOpen
         let monitorsAccount = ServiceUsageBoard.services.contains {
             !hiddenModelServices.contains($0) && serviceUsage[$0].status.hasKey
         }

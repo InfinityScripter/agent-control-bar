@@ -312,6 +312,7 @@ extension StatusController {
             }
             if let error = snapshot.mcp.error { lines.append("  Check failed: \(error)") }
         }
+        lines.append("Usage…   ⌘U")
         lines.append("Settings…   ⌘,")
         lines.append("Quit   ⌘Q")
         return lines.joined(separator: "\n")

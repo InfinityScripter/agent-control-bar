@@ -22,8 +22,8 @@ import struct
 import time
 
 import mcpbar as core
-from mcpbar import (HOME, SECURE_DIR, SECURE_FILE, STRINGS, Refused, describe_tool, mtime, parse_reset,
-                    read_json, read_json_line, t, tail_lines, write_json)
+from mcpbar import (HOME, SECURE_DIR, SECURE_FILE, STRINGS, Refused, clamp_percent, describe_tool, finite,
+                    mtime, parse_reset, read_json, read_json_line, t, tail_lines, write_json)
 
 
 CODEX_ATTENTION_TIMEOUT = 1.5
@@ -540,6 +540,78 @@ def codex_snapshots():
     return found, seen
 
 
+# Причины сбоя app-server, которым можно лечь в файл состояния: только эти слова, сырой текст
+# сервера — никогда. Один список на опрос лимитов и на погашение сброса.
+CODEX_RPC_ERRORS = ("timeout", "not_installed", "connection_unavailable",
+                    "connection_closed", "invalid_reply", "rpc_error")
+# E-mail — отдельный метод, то есть второй запуск app-server: чаще раза в сутки он того не стоит.
+CODEX_EMAIL_TTL = 24 * 3600
+
+
+def codex_account_record(result, stamp):
+    """Тот же ответ account/rateLimits/read → codex/account.json: тариф, месячный кредитный
+    лимит и накопленные сбросы. Правила — T3 Code (codexUsageLimits.ts); неизвестное не пишется.
+    """
+    limits = result.get("rateLimitsByLimitId")
+    snapshot = limits.get("codex") if isinstance(limits, dict) else None
+    if not isinstance(snapshot, dict):
+        snapshot = result.get("rateLimits")
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    record = {"ts": stamp, "provider": "codex", "extraWindows": []}
+    plan = snapshot.get("planType")
+    if isinstance(plan, str) and plan.strip():
+        record["planType"] = plan.strip()
+    # Одиночный устаревший ответ может оказаться лимитом другой модели: его строка — не строка
+    # обычного пула.
+    individual = snapshot.get("individualLimit") if snapshot.get("limitId") in (None, "", "codex") else None
+    if isinstance(individual, dict) and finite(individual.get("remainingPercent")):
+        # Длительности у этого окна нет и в ответе: без неё Swift не рисует темп, как и T3.
+        window = {"id": "individual", "kind": "monthly", "name": "Monthly credit limit",
+                  "usedPercent": clamp_percent(100 - individual["remainingPercent"])}
+        if finite(individual.get("resetsAt")) and individual["resetsAt"] > 0:
+            window["resetsAt"] = int(individual["resetsAt"])
+        record["extraWindows"].append(window)
+    summary = result.get("rateLimitResetCredits")
+    if isinstance(summary, dict) and finite(summary.get("availableCount")):
+        credits = summary.get("credits")
+        expiries = [credit["expiresAt"] for credit in (credits if isinstance(credits, list) else ())
+                    if isinstance(credit, dict) and credit.get("status") == "available"
+                    and finite(credit.get("expiresAt"))]
+        record["resetCredits"] = {"availableCount": max(0, int(summary["availableCount"]))}
+        if expiries and min(expiries) > 0:
+            record["resetCredits"]["nextExpiresAt"] = int(min(expiries))
+    return record
+
+
+def write_codex_account(result, stamp):
+    """Вспомогательный шаг опроса: к этому моменту лимиты и их статус уже записаны, и сбой
+    здесь оставляет прежний codex/account.json, а не роняет опрос.
+
+    E-mail хранится вместе с моментом последнего вопроса о нём. Спрашиваем не чаще раза в
+    сутки и при неудаче тоже: иначе сломанный account/read стоил бы второго запуска Codex на
+    каждый опрос. Прежний адрес при неудаче остаётся.
+    """
+    path = os.path.join(CODEX_ROOT, "account.json")
+    try:
+        previous = read_json(path, {})
+        record = codex_account_record(result, stamp)
+        email, asked = previous.get("email"), previous.get("emailCheckedAt")
+        if not (finite(asked) and 0 <= stamp - asked < CODEX_EMAIL_TTL):
+            asked = stamp
+            answer, error = codex_rpc("account/read", timeout=10, read_only=True)
+            if not error:
+                account = answer.get("account")
+                email = (account.get("email")
+                         if isinstance(account, dict) and account.get("type") == "chatgpt" else None)
+        if isinstance(email, str) and email.strip():
+            record["email"] = email.strip()
+        record["emailCheckedAt"] = asked
+        write_json(path, record, mode=0o600)
+    except Exception as exc:  # noqa: BLE001 — дрейф формы ответа или диск: лимиты важнее
+        core.note_account_problem(path, exc)
+
+
 def fetch_codex_limits():
     """Текущая квота через Codex; журналы остаются запасным источником со своим возрастом."""
     now = int(time.time())
@@ -552,8 +624,7 @@ def fetch_codex_limits():
             record = codex_limits_record(result, now=now, source="app-server")
             state, detail = ("ok", "") if record else ("empty", "no_windows")
         else:
-            detail = error if error in ("timeout", "not_installed", "connection_unavailable",
-                                        "connection_closed", "invalid_reply", "rpc_error") else "rpc_error"
+            detail = error if error in CODEX_RPC_ERRORS else "rpc_error"
         if record is None:
             steps, _ = codex_snapshots()
             record = previous
@@ -571,6 +642,10 @@ def fetch_codex_limits():
         write_json(CODEX_LIMITS, record)
     write_json(os.path.join(CODEX_ROOT, "limits-status.json"),
                {"ts": int(time.time()), "state": state, "detail": detail}, mode=0o600)
+    # «empty» — тоже ответ app-server, только без обычных окон: у Enterprise с кредитным лимитом
+    # их нет вовсе, и тариф со строкой этого лимита — всё, что о таком аккаунте можно показать.
+    if state in ("ok", "empty"):
+        write_codex_account(result, now)
     if state != "ok":
         return t("codex.absent") if detail == "not_installed" else detail
     windows = ", ".join(f"{w['kind']} {w['used_percentage']}%" for w in record["windows"])
@@ -642,12 +717,19 @@ def codex_mcp_get(name):
     return data if isinstance(data, dict) else {}
 
 
-def codex_rpc(method, params=None, timeout=30, read_only=False, min_version=None):
-    """Один вызов app-server: initialize → initialized → метод → завершение процесса."""
+def codex_rpc(method, params=None, timeout=30, read_only=False, min_version=None,
+              categories=False, capabilities=None):
+    """Один вызов app-server: initialize → initialized → метод → завершение процесса.
+
+    `categories` — причины сбоя словами-категориями и без read-only: погашение сброса пишет
+    исход в файл, куда фразам для человека нельзя, а запускаться read-only ему не положено.
+    `capabilities` уходят в initialize как есть.
+    """
     import subprocess, select
+    plain = read_only or categories
     binary = find_codex()
     if not binary:
-        return None, "not_installed" if read_only else t("codex.nobinary")
+        return None, "not_installed" if plain else t("codex.nobinary")
     try:
         options = ["-c", 'approval_policy="never"', "-c", "features.plugins=false",
                    "-s", "read-only", "-a", "never"] if read_only else []
@@ -664,11 +746,11 @@ def codex_rpc(method, params=None, timeout=30, read_only=False, min_version=None
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return None, "timeout" if read_only else t("codex.timeout")
+                return None, "timeout" if plain else t("codex.timeout")
             if b"\n" not in pending:
                 ready, _, _ = select.select([proc.stdout], [], [], remaining)
                 if not ready:
-                    return None, "timeout" if read_only else t("codex.timeout")
+                    return None, "timeout" if plain else t("codex.timeout")
                 chunk = os.read(proc.stdout.fileno(), 65536)
                 if not chunk:
                     return None, "connection_closed"
@@ -681,14 +763,16 @@ def codex_rpc(method, params=None, timeout=30, read_only=False, min_version=None
             if "error" in reply:
                 return None, "rpc_error"
             if not isinstance(reply.get("result"), dict):
-                return None, "invalid_reply" if read_only else t("codex.badreply")
+                return None, "invalid_reply" if plain else t("codex.badreply")
             return reply["result"], None
 
     try:
+        hello = {"clientInfo": {"name": "claude-control-bar", "title": "Agent Control Bar",
+                                "version": "1"}}
+        if capabilities:
+            hello["capabilities"] = capabilities
         proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
-                                     "params": {"clientInfo": {"name": "claude-control-bar",
-                                                               "title": "Agent Control Bar",
-                                                               "version": "1"}}}) + "\n")
+                                     "params": hello}) + "\n")
         proc.stdin.flush()
         info, error = receive(1)
         if error:

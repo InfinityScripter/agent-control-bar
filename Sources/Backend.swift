@@ -104,13 +104,15 @@ extension StatusController {
         pollServiceUsage(now: Date(timeIntervalSince1970: now))
     }
 
-    func pollCodexLimits(now: Double) {
-        guard codexLimits, codexInstalled, codexLimitsPoll.begin(now: now) else { return }
+    /// `force` is the Usage window's refresh button; see CodexLimitsPoll.begin.
+    func pollCodexLimits(now: Double, force: Bool = false) {
+        guard codexLimits, codexInstalled, codexLimitsPoll.begin(now: now, force: force) else { return }
         codexLimitsTimer?.fireDate = Date(timeIntervalSince1970: now + 300)
         runQuietCommand(.limits(provider: "codex")) { [weak self] _ in
             self?.codexLimitsPoll.finish()
             self?.loadCodexLimits()
             self?.loadCodexLimitsStatus()
+            self?.usageLimitsLanded()
             self?.refreshCounts()
         }
     }
@@ -134,8 +136,14 @@ extension StatusController {
     /// app starts, and the tick 0.4 s later reads a file written before the machine was last
     /// closed, every window in it long since rolled over. Without the minute that is a second
     /// request for the answer already coming.
+    ///
+    /// The minute is asked the way pollClaudeLimits asks it (ClaudeLimitsPoll.mayStart), not
+    /// counted here: a rollover is marked as handled only when its poll really starts. A request
+    /// in flight for more than a minute passes a bare minute and is still refused there, and the
+    /// rollover marked meanwhile was never asked for again.
     func pollLimitsIfRolledOver(now: Double) {
-        guard oauthLimits, now - lastLimitsPoll >= 60,
+        guard oauthLimits, ClaudeLimitsPoll.mayStart(now: now, lastStart: lastLimitsPoll,
+                                                     running: claudeLimitsRunning, force: false),
               let newest = limits?.set.rolledOver(since: rolledOverHandled, at: now)
         else { return }
         rolledOverHandled = newest
@@ -144,11 +152,21 @@ extension StatusController {
 
     /// Ask Anthropic now and push the five-minute timer back to count from this question, so a
     /// poll made on opening the panel is not followed seconds later by the timer's own.
-    func pollClaudeLimits(now: Double) {
-        guard oauthLimits, now - lastLimitsPoll >= 60 else { return }
+    ///
+    /// `force` is the Usage window's refresh button: it skips the minute, never a request that is
+    /// already on its way (ClaudeLimitsPoll). The file is still picked up by the tick's mtime
+    /// gate; the completion only clears the flag and tells the Usage window, if there is one.
+    func pollClaudeLimits(now: Double, force: Bool = false) {
+        guard oauthLimits, ClaudeLimitsPoll.mayStart(now: now, lastStart: lastLimitsPoll,
+                                                     running: claudeLimitsRunning, force: force)
+        else { return }
         lastLimitsPoll = now
+        claudeLimitsRunning = true
         limitsTimer?.fireDate = Date(timeIntervalSince1970: now + 300)
-        runQuietCommand(.limits(provider: "claude"))
+        runQuietCommand(.limits(provider: "claude")) { [weak self] _ in
+            self?.claudeLimitsRunning = false
+            self?.usageLimitsLanded()
+        }
     }
 
     /// Run one backend command for the file it writes and nothing else. Not routed through runBackend:
@@ -226,7 +244,7 @@ extension StatusController {
             // stopped answering would add a line to that file each time for as long as it lasts.
             NSLog("ClaudeControlBar: Codex attention poll exceeded its deadline")
         } else if run.end == .timedOut {
-            logProblem("mcpbar.py \(words) was stopped after \(Int(command.deadline)) s without finishing")
+            logProblem("mcpbar.py \(words) was stopped after \(command.deadline.clampedInt) s without finishing")
         } else if !run.succeeded {
             NSLog("ClaudeControlBar: mcpbar.py \(words) \(HookInstall.describe(run)):"
                   + " \(run.output.suffix(2000))")
@@ -241,6 +259,7 @@ extension StatusController {
     func refreshCounts() {
         if panelIsOpen { panelStore.refresh() }
         if settingsWindow?.isVisible == true { settingsStore.refresh() }
+        if usageWindowVisible { usageStore.refresh() }
     }
 
     /// Which model holds a provider's servers. One place, so a new provider cannot be half-wired.

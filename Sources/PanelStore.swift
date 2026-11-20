@@ -173,6 +173,7 @@ final class PanelStore: ObservableObject {
     func openSettingsJSON() { controller?.closePanel(); controller?.openSettingsJSON() }
     func openConfig(of provider: String) { controller?.closePanel(); controller?.openConfig(of: provider) }
     func openSettings() { controller?.closePanel(); controller?.openSettingsWindow() }
+    func openUsage() { controller?.closePanel(); controller?.openUsageWindow() }
     func openFilesPrivacySettings() { controller?.closePanel(); controller?.openFilesPrivacySettings() }
     func showWhatsNew() { controller?.closePanel(); controller?.showWhatsNewLatest() }
     func quit() { controller?.quit() }

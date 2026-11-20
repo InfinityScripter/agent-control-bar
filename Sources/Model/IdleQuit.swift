@@ -25,11 +25,11 @@ struct IdleQuit {
 
     init(launchedAt: Date) { self.launchedAt = launchedAt }
 
-    /// One look. `inUse` is an open Settings window or panel; `needed` is a session file on disk
-    /// or the desktop app running.
+    /// One look. `inUse` is an open Settings window, Usage window or panel; `needed` is a session
+    /// file on disk or the desktop app running.
     mutating func step(now: Date, inUse: Bool, needed: Bool) -> Verdict {
         if now.timeIntervalSince(launchedAt) < Self.launchGrace { return .stay }
-        // An open Settings window or panel is someone using the app right now. Without this the
+        // An open window or panel is someone using the app right now. Without this the
         // idle quit fires three seconds after the last session ends and closes what they are
         // looking at under their hands — which the panel made reachable in a way the menu did not:
         // a menu ran a modal tracking loop that the timer could not interrupt, a window does not.
