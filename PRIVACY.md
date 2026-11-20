@@ -102,7 +102,10 @@ Mac, and all of it is listed here rather than left to be discovered.
   is computed from the token counts the transcript records, since Claude Code hands that figure
   to a `statusLine` command and to nothing else. And the last few KB are parsed for the interrupt
   marker Claude Code writes when a turn is cut short, which is how the app notices a turn that
-  ended without an event. Both read the file; neither copies it anywhere.
+  ended without an event. Both read the file; neither copies it anywhere. Opening **Claude** history
+  reads up to 64 KB at each end of the 200 most recent transcripts for their title, folder, branch
+  and client, and reads further into one only to confirm it holds a message when neither end
+  does. What it keeps is listed under **Claude history** below, and never a message.
 - **The `statusLine` payload**, if you installed the limits capture. The wrapper receives the JSON
   Claude Code hands your status line command — which includes your usage limits and the model
   name — takes the two percentages and the context window size, and passes the bytes on unchanged.
@@ -166,7 +169,10 @@ Everything of its own lives under `~/.claude/control-bar/`. The complete list:
 - **The MCP picture:** `mcp.json`, `codex/mcp.json` for Codex's servers, the per-server
   descriptions cache `descriptions.json`, and the model-to-context-window table
   `model-windows.json`.
-- **Codex history:** opening or refreshing **Codex history** requests up to 50 recent thread
+- **Claude history:** opening or refreshing **Claude** history writes the private `history.json`
+  snapshot of up to 50 recent chats: session IDs, titles Claude Code stored for them, directories,
+  branches, client labels and update times. Prompts and replies are excluded.
+- **Codex history:** opening or refreshing **Codex** history requests up to 50 recent thread
   summaries from Codex's local index. The private `codex/history.json` snapshot stores IDs,
   titles, directories, branches, host and model service labels, update times, and profile path.
   Prompts, replies, and credentials are excluded from the snapshot.

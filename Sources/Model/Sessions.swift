@@ -49,6 +49,12 @@ struct Session {
     var provider: String = "claude"
     private let reportedModelService: String?
     var modelService: ModelService { ModelService(reported: reportedModelService, agent: provider) }
+    /// Whether opening this Claude session can reach anything: the desktop app, its T3 Code
+    /// thread, or the app hosting its terminal. A pre-upgrade CLI file records none of them, and
+    /// a click on it would do nothing while looking like it worked.
+    var hasFocusTarget: Bool {
+        entrypoint == "claude-desktop" || !t3Thread.isEmpty || !termBundle.isEmpty || !termProgram.isEmpty
+    }
     // Where a Codex session runs: "cli", "ide", "app", "exec", or "" when its rollout named an
     // originator we do not know. Claude's equivalent is inferred from entrypoint + TERM_PROGRAM
     // instead, because Claude Code does not state it.

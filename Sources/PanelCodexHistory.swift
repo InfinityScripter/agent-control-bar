@@ -16,42 +16,20 @@ struct PanelCodexHistory: View {
 
     var body: some View {
         VStack(spacing: 7) {
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
-                TextField("Search Codex history", text: _controls.projectedValue.query)
-                    .textFieldStyle(.plain)
-                    .onChange(of: controls.query) { _ in controls.visibleCount = 8 }
-                if !controls.query.isEmpty {
-                    Button { controls.query = "" } label: { Image(systemName: "xmark.circle.fill") }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Clear filter")
-                }
-                Button { refresh() } label: { Image(systemName: "arrow.clockwise") }
-                    .buttonStyle(.plain)
-                    .disabled(store.snapshot.codexHistory == .loading)
-                    .help("Refresh Codex history")
-                    .accessibilityLabel("Refresh Codex history")
-            }
-            .font(.system(size: 11))
-            .padding(8)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 7))
-
+            PanelHistorySearchField(prompt: "Search Codex history", refreshLabel: "Refresh Codex history",
+                                    query: _controls.projectedValue.query,
+                                    refreshing: store.snapshot.codexHistory == .loading, refresh: refresh)
+                .onChange(of: controls.query) { _ in controls.visibleCount = 8 }
             if let actionError = controls.actionError {
-                message(actionError)
+                PanelHistoryMessage(text: actionError)
             }
             switch store.snapshot.codexHistory {
             case .idle, .loading:
-                HStack(spacing: 7) {
-                    ProgressView().controlSize(.small)
-                    Text("Loading Codex history…").font(.system(size: 11))
-                }
-                .padding(.vertical, 12)
+                PanelHistoryLoading(text: "Loading Codex history…")
             case .failed(let upgradeRequired):
-                message(upgradeRequired
-                        ? "Update to a stable Codex version 0.168 or later to browse its history."
-                        : "Couldn't load Codex history. Use Refresh to try again.")
+                PanelHistoryMessage(text: upgradeRequired
+                                    ? "Update to a stable Codex version 0.168 or later to browse its history."
+                                    : "Couldn't load Codex history. Use Refresh to try again.")
             case .loaded(let history, let canOpenInCodex):
                 results(history, canOpenInCodex: canOpenInCodex)
             }
@@ -66,9 +44,9 @@ struct PanelCodexHistory: View {
         let matches = history.matching(controls.query, excluding: shownLive, hiding: store.snapshot.hiddenModelServices)
         let visibleCount = controls.visibleCount
         if matches.isEmpty {
-            message(controls.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    ? "No recent Codex chats match the current view."
-                    : "No matches in recent Codex chats.")
+            PanelHistoryMessage(text: controls.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                ? "No recent Codex chats match the current view."
+                                : "No matches in recent Codex chats.")
         } else {
             PanelCard {
                 VStack(spacing: 0) {
@@ -84,11 +62,7 @@ struct PanelCodexHistory: View {
             }
         }
         if history.hasMore {
-            Text("Search covers the \(history.threads.count) most recent entries.")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 4)
+            PanelHistoryPageNote(count: history.threads.count)
         }
     }
 
@@ -157,15 +131,6 @@ struct PanelCodexHistory: View {
         return [live ? "Live" : "", thread.workspace, thread.branch, source, date.formatted(.relative(presentation: .named))]
             .filter { !$0.isEmpty }
             .joined(separator: " · ")
-    }
-
-    private func message(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 11))
-            .foregroundStyle(.secondary)
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
     }
 
     private func refresh() {

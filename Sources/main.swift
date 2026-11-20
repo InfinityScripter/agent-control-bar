@@ -32,6 +32,7 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// must not report the first when it means the second.
     var codexHooksAnswered = false
     var codexHistory: CodexHistoryState = .idle
+    var claudeHistory: ClaudeHistoryState = .idle
     var serviceUsage = ServiceUsageBoard()
     var mcpBusy = false
     var recheckTimer: Timer?

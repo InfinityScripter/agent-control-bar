@@ -100,7 +100,9 @@ Click a row to return to its terminal or editor. Codex desktop sessions open the
 
 **Live** groups sessions into **Needs you**, **Working**, and **Idle**. An unanswered Codex question appears at the top even while Codex keeps working. The amber count on **Sessions** is the number of conversations that need your attention.
 
-When Codex is enabled, select **Codex history** to search up to 50 recent, unarchived local chats by title, project, branch, client, model service, or ID. Recognized T3 Code chats show their client when the service uses OpenAI. Use the arrow to open a saved chat in ChatGPT, or the terminal button to copy its `codex resume` command with the original directory and Codex profile. Chats shown in **Live** are omitted from history. An older chat still running can be focused from history.
+Select **Claude** next to **Live** to search up to 50 recent Claude Code chats by title, project, branch, client, or ID. The list comes from the newest transcripts in `~/.claude/projects`, leaving out SDK automation and subagents. Use the arrow to open a Claude app chat in the app, or the terminal button to copy a `claude --resume` command that starts in the chat's original directory. Chats shown in **Live** are omitted, and an older chat still running can be focused from history. Chats run through T3 Code or an editor have no link that opens them by id, so they offer only the resume command.
+
+When Codex is enabled, select **Codex** to search up to 50 recent, unarchived local chats by title, project, branch, client, model service, or ID. Recognized T3 Code chats show their client when the service uses OpenAI. Use the arrow to open a saved chat in ChatGPT, or the terminal button to copy its `codex resume` command with the original directory and Codex profile. Chats shown in **Live** are omitted from history. An older chat still running can be focused from history.
 
 History is loaded on demand through Codex 0.168 or later. It reads local thread metadata and respects the current account for chats that have account metadata. Opening in ChatGPT requires the desktop app and the default local Codex profile.
 
