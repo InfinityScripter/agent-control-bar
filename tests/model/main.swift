@@ -615,6 +615,47 @@ do {
 } catch {
     check(false, "Codex history payload decodes: \(error)")
 }
+
+do {
+    let json = """
+    {"threads":[
+        {"id":"33333333-3333-4333-8333-333333333333","name":"Réparer limits","cwd":"/tmp/O'Neil project",
+         "updatedAt":1234,"branch":"feature/search","source":"app"},
+        {"id":"44444444-4444-4444-8444-444444444444","name":"","cwd":"/tmp/Other",
+         "updatedAt":1000,"branch":"main","source":"future"},
+        {"id":"not-a-session","name":"Broken","cwd":"","updatedAt":900,"branch":"","source":"cli"}
+    ],"hasMore":true}
+    """
+    let history = try JSONDecoder().decode(ClaudeHistory.self, from: Data(json.utf8))
+    let first = history.threads[0], second = history.threads[1]
+    check(history.hasMore && second.title == "Other" && second.sourceLabel.isEmpty
+          && first.sourceLabel == "Claude app" && first.opensInDesktop && !second.opensInDesktop,
+          "Claude history keeps the page boundary, names an untitled chat by its folder and labels the client")
+    check(history.matching("reparer SEARCH claude", excluding: []).map(\.id) == [first.id]
+          && history.matching("feature", excluding: [first.id]).isEmpty
+          && history.matching("  ", excluding: []).count == 3,
+          "Claude history searches every word and keeps live chats out of the list")
+    check(first.resumeCommand == "cd '/tmp/O'\"'\"'Neil project' && claude --resume \(first.id)"
+          && history.threads[2].resumeCommand == nil,
+          "Claude resume enters the original folder with shell-safe quoting and needs a real session id")
+    let homeless = try JSONDecoder().decode(ClaudeHistory.Thread.self, from: Data("""
+    {"id":"55555555-5555-4555-8555-555555555555","name":"","cwd":"","updatedAt":1,"branch":"","source":"cli"}
+    """.utf8))
+    let injected = try JSONDecoder().decode(ClaudeHistory.Thread.self, from: Data("""
+    {"id":"66666666-6666-4666-8666-666666666666","name":"","cwd":"/tmp/x\\ny","updatedAt":1,"branch":"","source":"cli"}
+    """.utf8))
+    check(homeless.resumeCommand == "claude --resume \(homeless.id)" && homeless.title == "Claude session"
+          && injected.resumeCommand == nil,
+          "Claude resume without a folder lets Claude find the chat, and a multiline folder is refused")
+} catch {
+    check(false, "Claude history payload decodes: \(error)")
+}
+check(Session(json: ["entrypoint": "claude-desktop"], id: "d").hasFocusTarget
+      && Session(json: ["entrypoint": "t3-code", "t3_thread": "thread"], id: "t").hasFocusTarget
+      && Session(json: ["term_bundle": "com.apple.Terminal"], id: "b").hasFocusTarget
+      && Session(json: ["term_program": "iTerm.app"], id: "p").hasFocusTarget
+      && !Session(json: ["entrypoint": "cli"], id: "c").hasFocusTarget,
+      "a running chat offers focus from history only when its row click has somewhere to go")
 // The string is interpolated into `if tty of t is "…"` in an AppleScript. A quote closes the
 // literal and leaves the rest as script, and the state file is one a user is invited to read and
 // can edit — so "our own hook wrote it" is not a guarantee about its contents.
@@ -4305,6 +4346,9 @@ do {
           "Codex limits use the current bundle even when paths.json selects an older plugin")
     check(BackendCommand.limits(provider: "codex").backend(normal: oldBackend, bundledScript: nil).script.isEmpty,
           "missing bundled limits code cannot silently run an old plugin")
+    let claudeHistoryBackend = BackendCommand.claudeHistory.backend(normal: oldBackend, bundledScript: bundleScript)
+    check(claudeHistoryBackend.python == "/usr/bin/python3" && claudeHistoryBackend.script == bundleScript,
+          "Claude history uses the current bundle, since an older plugin script has no such command")
     for command: BackendCommand in [.mcpRefresh(provider: "claude"), .limits(provider: "claude"), .codexHooks,
                                     .codexHooksApprove, .statuslineHeal, .claudeLogin,
                                     .toggleServer(provider: "codex", name: "wiki", on: true)] {
@@ -4344,6 +4388,7 @@ let backendGolden: [(BackendCommand, [String])] = [
     (.codexHooksApprove, ["codex-hooks", "approve"]),
     (.statuslineHeal, ["statusline", "--heal"]),
     (.claudeLogin, ["claude-login"]),
+    (.claudeHistory, ["claude-history"]),
     (.toggleServer(provider: "claude", name: "wiki", on: false), ["toggle-server", "wiki", "--off"]),
     (.toggleServer(provider: "codex", name: "wiki", on: true),
      ["codex-mcp", "toggle-server", "wiki", "--on"]),

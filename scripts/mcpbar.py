@@ -15,6 +15,7 @@ MCP-картину ведёт этот скрипт (mcp.json), рисует в�
     statusline       перехват лимитов: --install / --uninstall / --heal (перенацелить мёртвую обёртку) / без флага — статус
     limits           спросить лимиты аккаунта у эндпоинта и переписать limits.json
     claude-login     открыть Terminal с `claude auth login` — кнопка «Sign in» в панели
+    claude-history   прочитать последние разговоры Claude Code и переписать history.json
     codex-limits     получить текущую квоту Codex; rollout — запасной источник
     codex-attention  снять живое ожидание разрешения Codex и переписать codex/attention.json
     codex-history    прочитать последние сессии Codex и переписать codex/history.json
@@ -1715,6 +1716,133 @@ def tail_lines(path, nbytes=2_000_000):
     return chunk.split(b"\n")
 
 
+CLAUDE_HISTORY_LIMIT = 50
+CLAUDE_HISTORY_SCAN = 200
+# Claude Code's own /resume list reads the same 64 KB at each end of a transcript.
+CLAUDE_HISTORY_WINDOW = 65536
+# How far into a transcript with no message in either window a message is searched for.
+CLAUDE_HISTORY_PROBE = 16 * 1024 * 1024
+CLAUDE_HISTORY_CLIENTS = {"cli": "cli", "claude-desktop": "app", "t3-code": "t3", "claude-vscode": "ide"}
+CLAUDE_AUTOMATION = {"sdk-cli", "sdk-ts", "sdk-py"}
+# Last one wins within a priority, the first priority present wins overall — the order Claude
+# Code's /resume picker uses. The prompt fallback it adds after these is deliberately missing:
+# the snapshot never holds what the user typed.
+CLAUDE_TITLE_FIELDS = (("agent-name", "agentName"), ("custom-title", "customTitle"),
+                       ("ai-title", "aiTitle"), ("summary", "summary"))
+CLAUDE_SESSION_ID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def is_conversation_record(record):
+    return record.get("type") in ("user", "assistant")
+
+
+def json_records(lines):
+    return [r for r in map(read_json_line, lines) if isinstance(r, dict)]
+
+
+def transcript_ends(path):
+    """Записи из начала и конца транскрипта, по окну с каждой стороны, в порядке файла.
+
+    Если ни в одном окне нет сообщения — а у длинной служебной шапки или хвоста так бывает, —
+    между ними добавляется первое сообщение из середины: без него живой разговор выглядел бы
+    служебным файлом и пропадал из истории.
+    """
+    window = CLAUDE_HISTORY_WINDOW
+    with open(path, "rb") as fh:
+        size = fh.seek(0, os.SEEK_END)
+        fh.seek(0)
+        if size <= 2 * window:
+            return json_records(fh.read(size).split(b"\n"))
+        # Both reads stop at the size measured above: a session still writing must not stretch
+        # the tail. The head's last line is cut by the window; the tail's first line is whole only
+        # when the byte before the window ends a line.
+        head = json_records(fh.read(window).split(b"\n")[:-1])
+        fh.seek(size - window - 1)
+        tail = json_records(fh.read(window + 1).split(b"\n")[1:])
+        middle = []
+        if not any(map(is_conversation_record, head + tail)):
+            # From the top again, so the lines each window cut in half are searched too.
+            fh.seek(0)
+            limit = min(size - window, CLAUDE_HISTORY_PROBE)
+            while fh.tell() < limit:
+                line = fh.readline()
+                # A cheap filter before parsing; spacing differs between JSON writers.
+                if b'"user"' in line or b'"assistant"' in line:
+                    record = read_json_line(line)
+                    if isinstance(record, dict) and is_conversation_record(record):
+                        middle = [record]
+                        break
+    return head + middle + tail
+
+
+def claude_history_thread(path):
+    session = os.path.splitext(os.path.basename(path))[0]
+    if not CLAUDE_SESSION_ID.match(session):
+        return None
+    records = transcript_ends(path)
+
+    def last(kind, field):
+        found = [r.get(field) for r in records if r.get("type") == kind]
+        found = [value for value in found if isinstance(value, str) and value.strip()]
+        return found[-1] if found else None
+
+    def first(field):
+        return next((r[field] for r in records if isinstance(r.get(field), str) and r[field]), "")
+
+    if not any(map(is_conversation_record, records)):
+        return None
+    entrypoint = first("entrypoint")
+    if entrypoint in CLAUDE_AUTOMATION:
+        return None
+    name = next(filter(None, (last(kind, field) for kind, field in CLAUDE_TITLE_FIELDS)), "")
+    branches = [r["gitBranch"] for r in records if isinstance(r.get("gitBranch"), str) and r["gitBranch"]]
+    return {
+        "id": session, "name": " ".join(name.split())[:200],
+        "cwd": last("relocated", "relocatedCwd") or first("cwd"),
+        "updatedAt": int(os.path.getmtime(path)),
+        "branch": branches[-1] if branches else "",
+        "source": CLAUDE_HISTORY_CLIENTS.get(entrypoint, ""),
+    }
+
+
+def fetch_claude_history():
+    """Последние разговоры Claude Code для панели: только метаданные, без текста переписки.
+
+    У Claude Code нет индекса разговоров, как `thread/list` у Codex, поэтому список собирается
+    из самих транскриптов: самые свежие по mtime, от каждого только оба конца. Верхний уровень
+    папок проекта — подагенты лежат глубже, а папки не с `-` в начале не закодированный cwd.
+    """
+    projects = os.path.join(CLAUDE, "projects")
+    try:
+        os.listdir(projects)
+    except FileNotFoundError:
+        pass  # no Claude Code transcripts yet: an empty history, not a failure
+    candidates = []
+    for path in glob.glob(os.path.join(glob.escape(projects), "-*", "*.jsonl")):
+        if not CLAUDE_SESSION_ID.match(os.path.splitext(os.path.basename(path))[0]):
+            continue
+        try:
+            candidates.append((os.path.getmtime(path), path))
+        except OSError:
+            continue
+    candidates.sort(reverse=True)
+    threads, seen, examined = [], set(), 0
+    for _, path in candidates[:CLAUDE_HISTORY_SCAN]:
+        if len(threads) == CLAUDE_HISTORY_LIMIT:
+            break
+        examined += 1
+        try:
+            thread = claude_history_thread(path)
+        except OSError:
+            continue
+        # A session copied into a second project folder keeps its id; the newer copy wins.
+        if thread and thread["id"] not in seen:
+            seen.add(thread["id"])
+            threads.append(thread)
+    write_json(os.path.join(ROOT, "history.json"),
+               {"threads": threads, "hasMore": examined < len(candidates)}, mode=SECURE_FILE)
+
+
 def usable_assistant_record(record):
     if record.get("type") != "assistant" or record.get("isSidechain"):
         return False
@@ -2127,6 +2255,12 @@ def main(argv):
         print(codex.fetch_codex_limits())
     elif command == "codex-attention":
         print(codex.fetch_codex_attention())
+    elif command == "claude-history":
+        try:
+            fetch_claude_history()
+        except OSError:
+            print("Could not refresh Claude history", file=sys.stderr)
+            return 1
     elif command == "codex-history":
         try:
             codex.fetch_codex_history()

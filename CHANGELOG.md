@@ -7,6 +7,17 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [Unreleased]
+
+### Added
+- **Claude history** sits beside Live and Codex in the Sessions tab. Search the 50 most recent
+  Claude Code chats by title, project, branch, client, or ID, open a Claude app chat in the app,
+  or copy a `claude --resume` command that starts in the chat's directory. The list is built
+  from transcript metadata; prompts and replies are never stored.
+
+### Changed
+- The Sessions picker reads **Live | Claude | Codex**; **Codex history** is now **Codex**.
+
 ## [0.29.0] - 2026-11-19
 
 ### Changed
