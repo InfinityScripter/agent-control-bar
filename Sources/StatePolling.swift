@@ -95,7 +95,7 @@ extension StatusController {
                                                    previous: engine.codexAttention)
     }
 
-    /// The files only the Usage window reads: the usage summary and its scan status, both account
+    /// The files the Usage window reads: the usage summary and its scan status, both account
     /// sidecars, both reset results, the saved prices. Each behind its own mtime gate, in
     /// UsageFiles (UsageData.swift), where the render mode reads fixtures through the same code.
     func loadUsageFiles() {
@@ -128,6 +128,9 @@ extension StatusController {
         pollLimitsIfRolledOver(now: now)
         loadCodexLimits()
         loadCodexLimitsStatus()
+        // The panel's rows need the plan the account sidecars carry (Codex Free and Go name a
+        // slot without a length by it), also before the Usage window has ever opened.
+        usage.files.reloadAccounts(root: root)
         loadCodexHooks()
         loadCodexAttention()
         pollCodexAttention(now: now)
