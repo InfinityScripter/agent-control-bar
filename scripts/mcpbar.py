@@ -13,10 +13,13 @@ MCP-картину ведёт этот скрипт (mcp.json), рисует в�
     toggle-server    выключить/включить сервер целиком
     toggle-tool      выключить/включить отдельный инструмент
     statusline       перехват лимитов: --install / --uninstall / --heal (перенацелить мёртвую обёртку) / без флага — статус
-    limits           спросить лимиты аккаунта у эндпоинта и переписать limits.json
+    limits           спросить лимиты аккаунта у эндпоинта и переписать limits.json и account.json
     claude-login     открыть Terminal с `claude auth login` — кнопка «Sign in» в панели
     claude-history   прочитать последние разговоры Claude Code и переписать history.json
-    codex-limits     получить текущую квоту Codex; rollout — запасной источник
+    claude-reset-credit <id>  потратить накопленный сброс лимитов Claude; исход — в reset-credit-result.json
+    codex-limits     получить текущую квоту Codex и codex/account.json; rollout — запасной источник
+    codex-reset-credit        потратить накопленный сброс лимитов Codex; исход — в codex/reset-credit-result.json
+    usage            пересчитать историю расхода (стоимость и токены) в usage/summary.json; --refresh — по кнопке
     codex-attention  снять живое ожидание разрешения Codex и переписать codex/attention.json
     codex-history    прочитать последние сессии Codex и переписать codex/history.json
     codex-mcp        серверы MCP Codex: refresh | toggle-server | toggle-tool
@@ -24,9 +27,11 @@ MCP-картину ведёт этот скрипт (mcp.json), рисует в�
     doctor           проверить окружение и показать, что откуда берётся
 """
 
+import calendar
 import glob
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -1440,15 +1445,26 @@ def claude_login():
 # Токен — тот, что Claude Code сам положил в Keychain. Он не печатается, не логируется и не
 # уходит никуда, кроме api.anthropic.com. Чаще раза в 3 минуты спрашивать нельзя (community-
 # консенсус: агрессивный rate limit), приложение ходит раз в 5.
-USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+#
+# cedar_ember=1 просит в том же ответе блок накопленных сбросов. Параметр стоит в самой
+# константе, а не дописывается к ней при запросе: на опрос приходится ровно один запрос, и
+# второго адреса, который мог бы от него отстать, нет.
+USAGE_URL = "https://api.anthropic.com/api/oauth/usage?cedar_ember=1"
 KEYCHAIN_SERVICE = "Claude Code-credentials"
 CREDENTIALS_FILE = os.path.join(CLAUDE, ".credentials.json")
+
+# Несекретная половина той же записи: тариф и ступень лимитов для account.json либо отметка
+# «запись есть, но не читается» для погашения сброса. Заполняет её oauth_token(), а не отдельная
+# функция: второе чтение — это второй запуск `security` на каждый опрос, а вернуть всё одним
+# значением нельзя — токен отсюда уходит только строкой и только в заголовок Authorization.
+OAUTH_FACTS = {}
 
 
 def oauth_token():
     """Access token Claude Code: Keychain на macOS, файл на Linux/Windows. None — не настроен."""
     import subprocess
 
+    OAUTH_FACTS.clear()
     raw = ""
     try:
         raw = subprocess.run(
@@ -1462,18 +1478,30 @@ def oauth_token():
         try:
             with open(CREDENTIALS_FILE) as fh:
                 raw = fh.read()
+        except FileNotFoundError:
+            return None
         except OSError:
+            OAUTH_FACTS["unreadable"] = True
             return None
     try:
-        creds = json.loads(raw).get("claudeAiOauth") or {}
+        parsed = json.loads(raw)
     except ValueError:
+        parsed = None
+    creds = parsed.get("claudeAiOauth", {}) if isinstance(parsed, dict) else None
+    if not isinstance(creds, dict):
+        OAUTH_FACTS["unreadable"] = True
         return None
     # expiresAt в миллисекундах; просроченный токен вернёт 401, но честнее не ходить вовсе —
     # CLI сам обновит запись при следующем запуске.
     expires = creds.get("expiresAt")
     if isinstance(expires, (int, float)) and expires / 1000 < time.time():
         return None
-    return creds.get("accessToken") or None
+    token = creds.get("accessToken") or None
+    if token:
+        for key in ("subscriptionType", "rateLimitTier"):
+            if isinstance(creds.get(key), str) and creds[key].strip():
+                OAUTH_FACTS[key] = creds[key].strip()
+    return token
 
 
 def parse_reset(value):
@@ -1563,6 +1591,260 @@ def write_limits_status(state, detail=""):
                                "state": state, "detail": detail}, mode=SECURE_FILE)
 
 
+# ── account.json: то, чего limits.json не вмещает
+#
+# У limits.json два писателя и закреплённая форма, поэтому тариф, e-mail, окна отдельных
+# моделей, месячный расход и накопленные сбросы лежат рядом, в своём файле с одним писателем.
+# Правила разбора перенесены из T3 Code (claudeResetCredits.ts, claudeUsageLimits.ts): окно
+# «Usage» обязано показывать то же, что показывает он. В файл идут факты, подписи — дело Swift.
+
+GRANT_ID = re.compile(r"[a-z0-9_-]{1,40}")
+COMPLETE_TIMESTAMP = re.compile(
+    r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})", re.ASCII)
+# Порядок, в котором виды сбросов предлагаются человеку.
+RESET_KINDS = ("session", "weekly", "fable", "full")
+WEEK_MINUTES = 7 * 24 * 60
+
+
+def account_path():
+    """Сосед limits.json, а не файл от ROOT: тесты опроса подменяют именно LIMITS, и путь от
+    ROOT увёл бы их запись в настоящий каталог состояния."""
+    return os.path.join(os.path.dirname(LIMITS), "account.json")
+
+
+def finite(value):
+    """Число из чужого JSON, с которым можно считать: не bool, не NaN, не Infinity."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:  # целое длиннее float: json.loads такие пропускает
+        return False
+
+
+def clamp_percent(value):
+    return float(max(0, min(100, value)))
+
+
+def future_epoch(value, now):
+    """Срок гранта → epoch-секунды, либо None, если это не полная будущая дата.
+
+    Проверка формы идёт раньше разбора: `2026-10-01` разборщик прочёл бы как полночь, и грант
+    с обрезанным сроком оказался бы живым. День сверяется с календарём отдельно — 30 февраля
+    не должно тихо стать 2 марта.
+    """
+    match = COMPLETE_TIMESTAMP.fullmatch(value) if isinstance(value, str) else None
+    if not match:
+        return None
+    year, month, day, hour, minute, second = (int(part) for part in match.group(1, 2, 3, 4, 5, 6))
+    if not (1 <= month <= 12 and hour < 24 and minute < 60 and second < 60):
+        return None
+    zone = match.group(8)
+    offset = 0 if zone == "Z" else int(zone[0] + "1") * (int(zone[1:3]) * 3600 + int(zone[4:6]) * 60)
+    try:
+        if not 1 <= day <= calendar.monthrange(year, month)[1]:
+            return None
+        moment = calendar.timegm((year, month, day, hour, minute, second)) - offset
+    except (ValueError, OverflowError):
+        return None
+    return moment if moment + float(match.group(7) or 0) > now else None
+
+
+def decoded_grant(raw):
+    """Грант целиком в ожидаемой форме, либо None: полусломанный грант не предлагается вовсе."""
+    if not isinstance(raw, dict):
+        return None
+    left = raw.get("resets_left")
+    if not (isinstance(raw.get("id"), str) and GRANT_ID.fullmatch(raw["id"])
+            and finite(left) and left >= 0 and left == int(left)):
+        return None
+    if not (raw.get("ends_at") is None or isinstance(raw["ends_at"], str)):
+        return None
+    if any(key in raw and not isinstance(raw[key], bool)
+           for key in ("paused", "usable_now", "gives_back_weekly")):
+        return None
+    if "clears" in raw and not isinstance(raw["clears"], list):
+        return None
+    return raw
+
+
+def grant_kind(grant):
+    """Группировка самого Claude Code: грант, возвращающий недельный расход, — сброс Fable;
+    иначе объявленный тип; иначе то, какие окна он очищает."""
+    if grant.get("gives_back_weekly"):
+        return "fable"
+    if grant.get("type") in ("session", "weekly", "full"):
+        return grant["type"]
+    clears = grant.get("clears") or []
+    session = "five_hour" in clears
+    other = any(limit != "five_hour" for limit in clears)
+    return "session" if session and not other else "weekly" if other and not session else "full"
+
+
+def claude_reset_credits(block, now):
+    """Блок cedar_ember → resetCredits, либо None, когда блок ничего не сообщает.
+
+    Живой грант — не на паузе, годен сейчас и с будущим сроком (или без срока). Без живого
+    гранта, на который указывает next_grant_id, тратить нечего, даже если гранты есть:
+    availableCount 0 и никаких вариантов. Список options — единственное, что команда
+    погашения согласится отправить (см. mcpbar_resets.py).
+    """
+    if not isinstance(block, dict) or not isinstance(block.get("eligible"), bool):
+        return None
+    grants, next_id = block.get("grants", []), block.get("next_grant_id")
+    if not isinstance(grants, list) or not (next_id is None or isinstance(next_id, str)):
+        return None
+    if not block["eligible"]:
+        return {"eligible": False, "availableCount": 0}
+    live = [grant for grant in map(decoded_grant, grants)
+            if grant and not grant.get("paused") and grant.get("usable_now")
+            and (grant.get("ends_at") is None or future_epoch(grant["ends_at"], now) is not None)]
+    upcoming = next((grant for grant in live if grant["id"] == next_id), None)
+    if upcoming is None:
+        return {"eligible": True, "availableCount": 0}
+
+    def with_expiry(record, key, grant):
+        if grant.get("ends_at") is not None:
+            record[key] = future_epoch(grant["ends_at"], now)
+        return record
+
+    options = []
+    for kind in RESET_KINDS:
+        usable = [grant for grant in live if grant["resets_left"] > 0 and grant_kind(grant) == kind]
+        if usable:
+            options.append(with_expiry({
+                "creditId": usable[0]["id"], "kind": kind,
+                "availableCount": sum(int(grant["resets_left"]) for grant in usable)},
+                "expiresAt", usable[0]))
+    return with_expiry({"eligible": True,
+                        "availableCount": sum(int(grant["resets_left"]) for grant in live),
+                        "nextCreditId": upcoming["id"], "options": options},
+                       "nextExpiresAt", upcoming)
+
+
+def claude_extra_windows(limits):
+    """Недельные окна отдельных моделей из limits[], кроме Fable: то живёт в limits.json."""
+    windows = []
+    for entry in limits if isinstance(limits, list) else ():
+        if not isinstance(entry, dict) or entry.get("kind") != "weekly_scoped":
+            continue
+        scope = entry.get("scope")
+        model = scope.get("model") if isinstance(scope, dict) else None
+        name = model.get("display_name") if isinstance(model, dict) else None
+        if not isinstance(name, str) or not name.strip() or not finite(entry.get("percent")):
+            continue
+        if name.strip().lower() == "fable":
+            continue
+        window = {"id": "seven_day_" + re.sub(r"[^a-z0-9]+", "_", name.lower()), "kind": "weekly",
+                  "name": name, "usedPercent": clamp_percent(entry["percent"]),
+                  "windowMinutes": WEEK_MINUTES}
+        resets = parse_reset(entry.get("resets_at"))
+        if resets is not None:
+            window["resetsAt"] = resets
+        windows.append(window)
+    return windows
+
+
+def claude_spend(payload):
+    """Месячный расход сверх подписки → {enabled, usedPercent?, zeroCap}, либо None.
+
+    Процент — отношение сумм в минорных единицах, когда валюта и масштаб совпадают: готовый
+    spend.percent округлён, по нему не считаем. Иначе — extra_usage. У нулевого потолка
+    процента нет вовсе, это отдельный признак.
+    """
+    spend, extra = payload.get("spend"), payload.get("extra_usage")
+    if not isinstance(spend, dict) and not isinstance(extra, dict):
+        return None
+    spend = spend if isinstance(spend, dict) else {}
+    extra = extra if isinstance(extra, dict) else {}
+
+    def ratio(used, limit):
+        if finite(used) and finite(limit) and used >= 0 and limit > 0:
+            return clamp_percent(used / limit * 100)
+        return None
+
+    def money(value):
+        return (isinstance(value, dict) and isinstance(value.get("currency"), str)
+                and all(finite(value.get(key)) and value[key] >= 0 and value[key] == int(value[key])
+                        for key in ("amount_minor", "exponent")))
+
+    used, limit, percent = spend.get("used"), spend.get("limit"), None
+    if (spend.get("enabled") is True and money(used) and money(limit)
+            and used["currency"].strip() and used["currency"].strip() == limit["currency"].strip()
+            and used["exponent"] == limit["exponent"]):
+        percent = ratio(used["amount_minor"], limit["amount_minor"])
+    extra_enabled = extra.get("is_enabled") is True
+    if percent is None and extra_enabled:
+        percent = ratio(extra.get("used_credits"), extra.get("monthly_limit"))
+        if percent is None and finite(extra.get("utilization")) and extra["utilization"] >= 0:
+            percent = clamp_percent(extra["utilization"])
+    record = {"enabled": spend.get("enabled") is True or extra_enabled,
+              "zeroCap": extra_enabled and finite(extra.get("monthly_limit")) and extra["monthly_limit"] == 0}
+    if percent is not None:
+        record["usedPercent"] = percent
+    return record
+
+
+def claude_account_record(payload, stamp, facts, config):
+    """Ответ эндпоинта, несекретная половина записи входа и ~/.claude.json → account.json.
+
+    Каждый ключ, кроме ts и provider, может отсутствовать: неизвестное не пишется вовсе.
+    organizationUuid сюда не попадает — он нужен только адресу погашения и читается тогда же.
+    """
+    record = {"ts": stamp, "provider": "claude"}
+    for key in ("subscriptionType", "rateLimitTier"):
+        if key in facts:
+            record[key] = facts[key]
+    account = config.get("oauthAccount") if isinstance(config, dict) else None
+    email = account.get("emailAddress") if isinstance(account, dict) else None
+    if isinstance(email, str) and email.strip():
+        record["email"] = email.strip()
+    record["extraWindows"] = claude_extra_windows(payload.get("limits"))
+    for key, value in (("spend", claude_spend(payload)),
+                       ("resetCredits", claude_reset_credits(payload.get("cedar_ember"), stamp))):
+        if value is not None:
+            record[key] = value
+    return record
+
+
+def note_account_problem(path, exc):
+    """Строка в problems.log рядом с несостоявшимся account.json: без неё пустое окно «Usage»
+    при живых лимитах нечем объяснить. Только имя исключения — в его тексте бывают чужие данные."""
+    try:
+        log = os.path.join(os.path.dirname(path), "problems.log")
+        with os.fdopen(os.open(log, os.O_WRONLY | os.O_APPEND | os.O_CREAT, SECURE_FILE), "a") as fh:
+            fh.write(f"could not write {os.path.basename(path)}: {type(exc).__name__}\n")
+    except OSError:
+        pass
+
+
+def write_account(payload, stamp, facts):
+    """Вспомогательный шаг опроса: сбой здесь не имеет права уронить или задержать сам опрос —
+    limits.json и его статус к этому моменту уже на диске, а прежний account.json остаётся."""
+    try:
+        record = claude_account_record(payload, stamp, facts, read_json(CONFIG))
+        write_json(account_path(), record, mode=SECURE_FILE)
+    except Exception as exc:  # noqa: BLE001 — дрейф формы ответа или диск: лимиты важнее
+        note_account_problem(account_path(), exc)
+
+
+def no_redirect_opener():
+    """Открыватель запросов с токеном аккаунта: редиректы запрещены целиком.
+
+    Стандартный обработчик urllib переносит Authorization на новый хост как есть (requests так
+    не делает, urllib делает), поэтому одного 302 — от эндпоинта, прокси или будущего переезда
+    API — хватило бы, чтобы токен аккаунта уехал чужому серверу. Проверять resp.geturl() после
+    запроса поздно: заголовок уже ушёл.
+    """
+    import urllib.request
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+
+    return urllib.request.build_opener(NoRedirect)
+
+
 def fetch_limits():
     """Один опрос: токен → эндпоинт → limits.json. Молчалив при любом сбое — прошлые
     цифры в файле лучше, чем затёртые ошибкой."""
@@ -1570,15 +1852,8 @@ def fetch_limits():
     if not token:
         write_limits_status("no-login", "no token")
         return t("lim.notoken")
+    facts = dict(OAUTH_FACTS)
     import urllib.request
-
-    # Редиректы запрещены целиком. Стандартный обработчик urllib переносит Authorization на
-    # новый хост как есть (requests так не делает, urllib делает), поэтому одного 302 — от
-    # эндпоинта, прокси или будущего переезда API — хватило бы, чтобы токен аккаунта уехал
-    # чужому серверу. Проверять resp.geturl() после запроса поздно: заголовок уже ушёл.
-    class NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, *args, **kwargs):
-            return None
 
     req = urllib.request.Request(USAGE_URL, headers={
         "Authorization": f"Bearer {token}",
@@ -1588,7 +1863,7 @@ def fetch_limits():
         "User-Agent": "claude-control-bar (statusline companion)",
     })
     try:
-        with urllib.request.build_opener(NoRedirect).open(req, timeout=15) as resp:
+        with no_redirect_opener().open(req, timeout=15) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
         # Внутри try, а не после: разбор дрейфующего ответа — такой же сбой опроса, как сеть
         # или 401. Снаружи он однажды и стоял — и массив вместо объекта ронял весь скрипт.
@@ -1602,6 +1877,7 @@ def fetch_limits():
     write_json(LIMITS, record)
     # После limits.json, не до: «ok» рядом с прежними цифрами обещало бы свежесть, которой нет.
     write_limits_status("ok")
+    write_account(payload, record["ts"], facts)
     windows = ", ".join(f"{k} {v['used_percentage']}%" for k, v in record.items()
                         if isinstance(v, dict))
     return t("lim.updated", w=windows)
@@ -2251,6 +2527,16 @@ def main(argv):
         print(fetch_limits())
     elif command == "claude-login":
         print(claude_login())
+    elif command == "usage":
+        # Импорт по требованию: история расхода и погашение сбросов нужны одной команде из
+        # многих, а платить за разбор их модулей каждому refresh незачем.
+        import mcpbar_usage
+
+        return mcpbar_usage.command(rest)
+    elif command in ("claude-reset-credit", "codex-reset-credit"):
+        import mcpbar_resets
+
+        return mcpbar_resets.command(command, rest)
     elif command == "codex-limits":
         print(codex.fetch_codex_limits())
     elif command == "codex-attention":
@@ -2268,7 +2554,15 @@ def main(argv):
             print("Could not save Codex history", file=sys.stderr)
             return 1
     elif command == "codex-hooks":
-        print(codex.approve_codex_hooks() if rest[:1] == ["approve"] else codex.fetch_codex_hooks())
+        # Причина — в stderr и код 2, как у переключателей: приложение не читает stdout, а
+        # stderr пишет в лог только при ненулевом выходе, и по коду кнопка Approve узнаёт,
+        # что Codex не ответил.
+        try:
+            print(codex.approve_codex_hooks() if rest[:1] == ["approve"]
+                  else codex.fetch_codex_hooks())
+        except Refused as exc:
+            print(f"refused: {exc}", file=sys.stderr)
+            return 2
     elif command == "codex-mcp":
         # Своё слово после команды, как у statusline: три действия над одним файлом, и
         # отдельные команды верхнего уровня для них читались бы как отдельные подсистемы.

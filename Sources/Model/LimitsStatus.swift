@@ -134,12 +134,40 @@ struct CodexLimitsPoll {
     private var startedAt = -Double.infinity
     private var running = false
 
-    mutating func begin(now: Double) -> Bool {
-        guard !running, now - startedAt >= 60 else { return false }
+    /// `force` is the Usage window's refresh button: a person asking for limits now is not the
+    /// panel being opened twice in a minute, so it skips the debounce — but never the single
+    /// flight, and it restarts the debounce for everyone else.
+    mutating func begin(now: Double, force: Bool = false) -> Bool {
+        guard !running, force || now - startedAt >= 60 else { return false }
         startedAt = now
         running = true
         return true
     }
 
     mutating func finish() { running = false }
+
+    /// A request is on its way: what the Usage window spins its refresh button on.
+    var inFlight: Bool { running }
+}
+
+/// When a Claude limits request may start. Claude's poll keeps its state on the controller
+/// (`lastLimitsPoll`, which the rollover check and the sign-in action also write), so this is
+/// the rule alone.
+///
+/// The single flight is here because of the Usage window: its refresh button skips the minute,
+/// and without this a press right after the window's own opening poll put two requests on the
+/// same endpoint at once — the one this app is rate limited on.
+enum ClaudeLimitsPoll {
+    /// A request still unanswered after this long is given up on: the single flight must not turn
+    /// one hung process into no polls at all.
+    static let giveUpAfter: Double = 120
+
+    static func inFlight(now: Double, lastStart: Double, running: Bool) -> Bool {
+        running && now - lastStart < giveUpAfter
+    }
+
+    /// `force` is the refresh button: it skips the minute, never a request already on its way.
+    static func mayStart(now: Double, lastStart: Double, running: Bool, force: Bool) -> Bool {
+        !inFlight(now: now, lastStart: lastStart, running: running) && (force || now - lastStart >= 60)
+    }
 }

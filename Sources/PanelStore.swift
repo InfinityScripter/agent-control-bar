@@ -39,6 +39,7 @@ final class PanelStore: ObservableObject {
         let checking: Bool
         let showingChange: Bool
         let agents: AgentDisplay
+        let refusal: SwitchRefusal?
     }
     private var mcpKey: MCPKey?
     private var mcpCache = PanelMCP()
@@ -57,7 +58,8 @@ final class PanelStore: ObservableObject {
         let key = MCPKey(revision: controller.mcp.revision,
                          checking: controller.mcpChecking,
                          showingChange: controller.mcp.freshChange() != nil,
-                         agents: controller.agentDisplay)
+                         agents: controller.agentDisplay,
+                         refusal: controller.mcpSwitchRefusal)
         if mcpKey != key {
             mcpCache = PanelMCP(controller)
             mcpKey = key
@@ -133,12 +135,12 @@ final class PanelStore: ObservableObject {
         if !snapshot.sessions.contains(where: { $0.id == session.id }) { expanded.remove(session.id) }
     }
 
+    /// A row with nowhere to go leaves the panel open: closing it on a click that raises nothing
+    /// looks like the click broke something. The row's tooltip says why.
     func openSession(_ session: PanelSession) {
+        guard session.canOpen else { return }
         controller?.closePanel()
-        controller?.openSession(session.sessionID, threadURL: session.threadURL,
-                                entrypoint: session.entrypoint,
-                                termProgram: session.termProgram, termBundle: session.termBundle,
-                                t3Thread: session.t3Thread, tty: session.tty)
+        controller?.openSession(session.id)
     }
 
     func refreshClaudeHistory() { controller?.refreshClaudeHistory() }
@@ -179,7 +181,9 @@ final class PanelStore: ObservableObject {
     /// leaves the block, button and all, in front of the user.
     func signInClaude() { controller?.signInClaude() }
     func openSettingsJSON() { controller?.closePanel(); controller?.openSettingsJSON() }
+    func openConfig(of provider: String) { controller?.closePanel(); controller?.openConfig(of: provider) }
     func openSettings() { controller?.closePanel(); controller?.openSettingsWindow() }
+    func openUsage() { controller?.closePanel(); controller?.openUsageWindow() }
     func openFilesPrivacySettings() { controller?.closePanel(); controller?.openFilesPrivacySettings() }
     func showWhatsNew() { controller?.closePanel(); controller?.showWhatsNewLatest() }
     func quit() { controller?.quit() }
@@ -304,6 +308,8 @@ struct PanelSnapshot: Equatable {
     var codexHooksUntrusted = 0
     /// True while the block's own Approve is running.
     var codexHooksChecking = false
+    /// The last Approve got no answer out of Codex.
+    var codexApproveFailed = false
     /// What is wrong with this app's own hooks, when something is. Every row in the Sessions tab
     /// comes out of files those hooks write, so without this a failed install looked exactly like
     /// a machine with nothing running on it. Shown whether or not rows are there: a node that broke
@@ -381,15 +387,9 @@ struct PanelSession: Equatable, Identifiable {
     let pct: Int?
     let assumed: Bool
     let tag: String
-    let entrypoint: String
-    let termProgram: String
-    let termBundle: String
-    /// The T3 Code thread hosting the session, which the click opens instead of merely raising
-    /// the app; "" for a session running anywhere else.
-    let t3Thread: String
-    /// The session's controlling terminal. Carried to the click so it can focus that exact window
-    /// and tab; "" for anything not running in one.
-    let tty: String
+    /// Whether a click has a window to bring forward (SessionFormat.canOpen). Where exactly it
+    /// lands is the controller's to work out from the session itself, by this row's `id`.
+    let canOpen: Bool
     /// Where a click should land when the session's own agent can open the conversation itself:
     /// only Codex's desktop app has such a link, and only for sessions it is the right place for.
     /// Nil means the ordinary rules apply — raise the terminal or the editor it runs in.
@@ -511,6 +511,8 @@ struct PanelMCP: Equatable {
     var groups: [PanelServerGroup] = []
     var waitingAuth: [String] = []
     var error: String?
+    /// The last switch the backend did not apply; nil once one takes or the panel is closed.
+    var refusal: SwitchRefusal?
     /// An EPERM error is macOS's network-volume permission in practice, and it has its own fix.
     var errorIsPermission = false
     var checking = false
@@ -604,15 +606,14 @@ extension PanelSnapshot {
             liveCodexIDs = Set(c.sessions.values.lazy.filter { $0.provider == Provider.codex.id }.map(\.id))
         }
         sessionDismissalError = c.sessionDismissalError
-        offerOpenClaude = sessions.isEmpty && c.desktopRunning && c.agentDisplay.inPanel(Provider.claude.id)
-        // Asked of every session this app knows about, not of the rows above: a Codex session that
-        // has simply been resting longer than the hide-idle age is missing from the list too, and
-        // saying "hidden — approve its hooks" about THAT one names the wrong cause entirely. Once
-        // Codex writes down a session at all, its hooks are running, whatever else is unapproved.
-        codexHooksBlocked = c.codexHooksUntrusted > 0 && c.agentDisplay.inPanel(Provider.codex.id)
-            && !c.sessions.values.contains { $0.provider == "codex" }
+        offerOpenClaude = SessionRows.offersOpenClaude(rows: sessions.count, desktopRunning: c.desktopRunning,
+                                                       agents: c.agentDisplay)
+        // Every session the app knows about, not the rows above — SessionRows says why.
+        codexHooksBlocked = SessionRows.codexHooksBlocked(untrusted: c.codexHooksUntrusted, agents: c.agentDisplay,
+                                                          sessions: Array(c.sessions.values))
         codexHooksUntrusted = c.codexHooksUntrusted
         codexHooksChecking = c.codexHooksChecking
+        codexApproveFailed = c.codexApproveFailed
         hooks = c.panelHooks()
         (limitGroups, limitsNote) = c.panelLimitGroups(now: now)
         limitsNotice = c.panelLimitsNotice(now: now)
@@ -653,6 +654,7 @@ extension PanelMCP {
             changeIsBad = !moved.down.isEmpty
         }
         checking = c.mcpChecking
+        refusal = c.mcpSwitchRefusal
         let all = (claudeShown ? c.mcp.servers : []) + (codexShown ? c.codexMCP.servers : [])
         groups = mcpGroups.compactMap { group in
             let servers = all

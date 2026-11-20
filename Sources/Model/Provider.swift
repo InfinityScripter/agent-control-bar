@@ -2,7 +2,10 @@ import Foundation
 
 /// What tells one agent apart from the other, in one place. The id is the string the hooks write
 /// into every file ("claude" or "codex"), and it stays a string on the data itself — see
-/// Session.provider — so a third agent needs a third value here, not a synchronized enum edit.
+/// Session.provider — so a third agent's files need a third value here, not a synchronized enum
+/// edit. The app around them still keeps its state in pairs, and a third agent means an edit in
+/// each: `mcp`/`codexMCP` and `petID`/`codexPetID` (main.swift), `model(of:)` (Backend.swift),
+/// `petID(of:)` (Pets.swift), the pet atlases in PanelStore, BackendCommand's words, AgentDisplay.
 struct Provider: Equatable {
     let id: String
     let title: String

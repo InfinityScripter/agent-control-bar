@@ -128,7 +128,8 @@ final class SessionBoard {
     }
 
     func tick(now: Double, rules: Rules, pidAlive: (Int32) -> Bool,
-              frontmost: () -> String?, owner: (Session) -> RunningProcesses.Presence = { _ in .unknown },
+              frontmost: () -> String?, frontmostHosts: (Session) -> Bool = { _ in false },
+              owner: (Session) -> RunningProcesses.Presence = { _ in .unknown },
               persistReaped: ([String: String]) throws -> Void = { _ in }) -> Tick {
         var out = Tick()
         for key in sessions.keys.sorted() {
@@ -157,10 +158,12 @@ final class SessionBoard {
             let cues = (rules.cues?.contains(s.provider) ?? true)
                 && !rules.hiddenModelServices.contains(s.modelService)
             if completionEdge(s, now: now, threshold: rules.soundThreshold), cues { out.chime = true }
-            // The frontmost-app lookup is a workspace query, so it runs only on a confirmed edge.
+            // The frontmost-app lookup is a workspace query and the ancestor one a walk up the
+            // process table, so both run only on a confirmed edge.
             if rules.needsYou, cues, s.eff == "permission", previousEffective != "permission",
                NeedsYouSound.shouldCue(prevState: previousEffective, effective: s.eff,
-                                       hostBundle: s.termBundle, frontmost: frontmost()) {
+                                       hostBundle: s.termBundle, frontmost: frontmost(),
+                                       frontmostHosts: frontmostHosts(s)) {
                 out.needsYou = true
             }
             prevState[key] = s.state
@@ -239,7 +242,7 @@ final class SessionBoard {
         return edge
     }
 
-    /// Same-named projects (two clones or worktrees of one repo) get a parent-folder qualifier —
+    /// Same-named projects (two clones or worktrees of one repo) get a folder qualifier —
     /// "work/myrepo" vs "tmp/myrepo" — so their rows stay tellable apart. Runs after the reap so
     /// dead sessions cannot force a qualifier onto a now-unique name. Only non-empty cwds count as
     /// locations: a file without one is location-unknown, and counting "" as a place forced a bogus
@@ -250,12 +253,30 @@ final class SessionBoard {
             cwdsByProject[s.project, default: []].insert(s.cwd)
         }
         for (key, s) in sessions {
-            if !s.cwd.isEmpty, (cwdsByProject[s.project]?.count ?? 0) > 1 {
-                let parent = ((s.cwd as NSString).deletingLastPathComponent as NSString).lastPathComponent
-                sessions[key]?.displayName = parent.isEmpty ? s.project : parent + "/" + s.project
+            if !s.cwd.isEmpty, let cwds = cwdsByProject[s.project], cwds.count > 1 {
+                let folder = SessionBoard.cloneQualifier(of: s.cwd, among: cwds)
+                sessions[key]?.displayName = folder.isEmpty ? s.project : folder + "/" + s.project
             } else {
                 sessions[key]?.displayName = s.project
             }
         }
+    }
+
+    /// The nearest folder above the project that is not the same for every clone. The parent alone
+    /// is not enough: two worktrees of one service end in the same `…/frontend/services/<name>`,
+    /// so both rows read "services/<name>" and only got longer. A clone whose path runs out before
+    /// that depth has no folder there and answers "".
+    private static func cloneQualifier(of cwd: String, among cwds: Set<String>) -> String {
+        func foldersUpward(_ path: String) -> [String] {
+            Array((path as NSString).pathComponents.filter { $0 != "/" }.dropLast().reversed())
+        }
+        let own = foldersUpward(cwd)
+        let all = cwds.map(foldersUpward)
+        for depth in 0..<(all.map(\.count).max() ?? 0) {
+            let foldersAtDepth = Set(all.map { depth < $0.count ? $0[depth] : "" })
+            if foldersAtDepth.count > 1 { return depth < own.count ? own[depth] : "" }
+        }
+        // Paths that differ only in spelling ("/a/repo" and "/a/repo/") have no differing folder.
+        return own.first ?? ""
     }
 }

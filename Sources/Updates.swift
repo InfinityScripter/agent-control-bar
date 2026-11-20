@@ -32,6 +32,35 @@ extension StatusController {
             || FileManager.default.fileExists(atPath: "/usr/local/Caskroom/claude-control-bar")
     }
 
+    /// What this copy can be offered right now. The banner, the About page, the notification and
+    /// the Install button all ask here; the rules, and the model check that holds them, are in
+    /// Sources/Model/UpdateOffer.swift.
+    func updateOffer() -> UpdateOffer {
+        let d = UserDefaults.standard
+        return UpdateOffer.resolve(current: currentVersion, latest: d.string(forKey: "latestVersion"),
+                                   onDisk: installedVersion, brewManaged: brewManaged,
+                                   caskVersion: d.string(forKey: "brewCaskVersion"))
+    }
+
+    /// Once per version, ever: the point is "an update exists, the panel explains it", not a
+    /// daily drumbeat. The plugin channel gets this too — it will update itself on its own
+    /// schedule, but a heads-up with readable notes beats a silent swap.
+    ///
+    /// Asked after each of the check's two answers, GitHub's and the cask's: they arrive in
+    /// either order, and a Homebrew install has nothing to announce until the cask's says the
+    /// command will work. Announced from GitHub's alone, the notification landed in exactly the
+    /// window where the panel showed no update, and was never repeated once the cask caught up.
+    func announceUpdateOffer() {
+        let offer = updateOffer()
+        guard let version = offer.announcedVersion,
+              UserDefaults.standard.string(forKey: "updateNotifiedVersion") != version else { return }
+        UserDefaults.standard.set(version, forKey: "updateNotifiedVersion")
+        let body: String
+        if case .brew = offer { body = "The panel has the Homebrew command that installs it." }
+        else { body = "The panel has \u{201C}What\u{2019}s new in \(version)\u{201D} and the update." }
+        notify(title: "\(appName) \(version) is available", body: body)
+    }
+
     // Once/day: cache GitHub's latest release tag in UserDefaults. Nothing sent to us.
     /// `force` is the About page's "Check now": someone who came looking is asking a question the
     /// once-a-day throttle exists to stop us asking on their behalf, and answering "no" to a direct
@@ -71,23 +100,16 @@ extension StatusController {
             } else {
                 UserDefaults.standard.removeObject(forKey: "latestAsset")
             }
-            // Once per version, ever: the point is "an update exists, the menu explains it",
-            // not a daily drumbeat. The plugin channel gets this too — it will update itself
-            // on its own schedule, but a heads-up with readable notes beats a silent swap.
-            if let self, Self.versionIsNewer(ver, than: self.currentVersion),
-               UserDefaults.standard.string(forKey: "updateNotifiedVersion") != ver {
-                UserDefaults.standard.set(ver, forKey: "updateNotifiedVersion")
-                self.notify(title: "\(self.appName) \(ver) is available",
-                            body: "The panel has \u{201C}What\u{2019}s new in \(ver)\u{201D} and the update.")
-            }
+            self?.announceUpdateOffer()
             self?.updateCheckFinished(problem: nil)
         }.resume()
         guard let brewURL = URL(string: brewCaskAPIURL) else { return }
-        URLSession.shared.dataTask(with: URLRequest(url: brewURL)) { data, _, _ in
+        URLSession.shared.dataTask(with: URLRequest(url: brewURL)) { [weak self] data, _, _ in
             guard let data = data,
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let ver = obj["version"] as? String else { return }
             UserDefaults.standard.set(ver, forKey: "brewCaskVersion")
+            self?.announceUpdateOffer()
         }.resume()
     }
 
@@ -255,6 +277,10 @@ extension StatusController {
     @objc func installLatestUpdate() {
         guard !selfUpdating, let latest = UserDefaults.standard.string(forKey: "latestVersion"),
               Self.versionIsNewer(latest, than: currentVersion) else { return }
+        // A newer copy already on disk has nothing left to fetch: "What's new" opened from
+        // Settings still carries the Install button then, and it used to download the release
+        // a second time only to end in this same restart.
+        if case .restart = updateOffer() { return restartIntoInstalledCopy() }
         if let asset = latestAsset { installLatestDMG(latest: latest, asset: asset) }
         else if canBuildFromSource, !UpdateFeed.signingEnforced { selfUpdate(latest: latest) }
         else { openLatestRelease() }
@@ -361,8 +387,14 @@ extension StatusController {
         }
         do { try FileManager.default.createDirectory(at: mount, withIntermediateDirectories: true) }
         catch { return fail("mkdir: \(error)") }
-        if let why = run("/usr/bin/hdiutil", ["attach", dmg.path, "-nobrowse", "-noautoopen", "-readonly",
-                                              "-quiet", "-mountpoint", mount.path]) { return fail("attach: \(why)") }
+        // With a deadline, unlike the steps after it: mounting is the one that waits on something
+        // outside this process, and a mount that never returns would leave selfUpdating true — the
+        // banner on "Installing…" and no second attempt — for as long as the app runs.
+        let attach = HookInstall.run("/usr/bin/hdiutil",
+                                     ["attach", dmg.path, "-nobrowse", "-noautoopen", "-readonly",
+                                      "-quiet", "-mountpoint", mount.path],
+                                     timeout: 120, errorsOnly: true)
+        guard attach.succeeded else { return fail("attach: \(HookInstall.describe(attach))") }
         mounted = true
         // Located by its shape, not its name: the image carries the app and an Applications
         // symlink, and a renamed product must still be found.
@@ -373,6 +405,20 @@ extension StatusController {
         if let why = run("/usr/bin/xattr", ["-cr", stage.path]) { return fail("xattr: \(why)") }
         let staged = Self.bundleVersion(at: stage)
         guard staged == latest else { return fail("the image carries \(staged ?? "no version"), not \(latest)") }
+        // Can it start here? Asked now because the swap below cannot be taken back: the old copy
+        // is deleted before the new one first runs, and a bundle that never starts leaves nothing
+        // in the menu bar to report it. The digest above proves the image is the one released,
+        // not that it launches — macOS kills an arm64 binary whose seal does not verify, and
+        // `open` refuses a bundle that asks for a newer system.
+        if let why = run("/usr/bin/codesign", ["--verify", "--deep", "--strict", stage.path]) {
+            return fail("codesign: \(why)")
+        }
+        let minimum = NSDictionary(contentsOf: stage.appendingPathComponent("Contents/Info.plist"))?[
+            "LSMinimumSystemVersion"] as? String
+        if let why = UpdateFeed.systemProblem(minimum: minimum,
+                                              system: ProcessInfo.processInfo.operatingSystemVersion) {
+            return fail(why)
+        }
         // Rename aside, move in, then delete — not build.sh's rm-then-mv. That runs at a
         // developer's desk with the checkout intact; this runs unattended on a user's machine,
         // where a move that fails after the delete (full disk, a scanner holding the bundle)

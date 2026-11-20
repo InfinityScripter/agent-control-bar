@@ -24,9 +24,15 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// session file — so a count above zero means Codex is writing down less than it would, and
     /// with the whole set unapproved it writes down nothing at all.
     var codexHooksUntrusted = 0
+    /// How many of this app's hooks Codex lists at all, from the same file. Nil when the file was
+    /// written before the count was recorded — see CodexHookTrust.
+    var codexHooksListed: Int?
     /// True while an Approve click is in flight, so the button can say so. Not a general busy
     /// flag: the periodic ask is invisible on purpose and must not flicker a button.
     var codexHooksChecking = false
+    /// The last Approve click got no answer out of Codex. Cleared by the next click and by the
+    /// next answer Codex gives, whoever asked.
+    var codexApproveFailed = false
     /// Whether Codex has ever answered about the hooks on this run. Separate from the count above
     /// because zero has two meanings otherwise — "all approved" and "never asked" — and Settings
     /// must not report the first when it means the second.
@@ -44,19 +50,19 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// Opening the menu rebuilds the picture if it is older than this. Short enough that what is
     /// on screen is worth trusting, long enough that opening the menu repeatedly is free.
     static let mcpOpenStaleAfter: TimeInterval = 120
-    /// Everything the MCP half needs to run: the interpreter and the script. Written by the
-    /// plugin's bootstrap hook so the app survives the plugin moving between versions; falls
-    /// back to the copy inside the app bundle, which is what the brew/DMG channel has.
-    lazy var backend: (python: String, script: String) = {
-        let paths = (root as NSString).appendingPathComponent("paths.json")
-        if let data = FileManager.default.contents(atPath: paths),
-           let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let script = root["script"] as? String, FileManager.default.fileExists(atPath: script) {
-            return (root["python"] as? String ?? "/usr/bin/python3", script)
-        }
-        let bundled = Bundle.main.path(forResource: "mcpbar", ofType: "py", inDirectory: "scripts")
-        return ("/usr/bin/python3", bundled ?? "")
-    }()
+    /// Everything the MCP half needs to run: the interpreter and the script. Asked afresh for
+    /// every run — one stat — rather than remembered: which copy wins is BackendCommand.backend's
+    /// decision, and the paths it chooses between can both move under a process that runs for days.
+    var backend: (python: String, script: String) {
+        let pathsFile = (root as NSString).appendingPathComponent("paths.json")
+        return BackendCommand.backend(
+            bundledScript: Bundle.main.resourceURL?.appendingPathComponent("scripts/mcpbar.py").path,
+            paths: {
+                FileManager.default.contents(atPath: pathsFile)
+                    .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            },
+            exists: FileManager.default.fileExists(atPath:))
+    }
 
     var pollTimer: Timer?
     var animTimer: Timer?
@@ -65,6 +71,13 @@ final class StatusController: NSObject, NSWindowDelegate {
     var settingsWindow: NSWindow?
     /// Built on the first open. It stores nothing itself — only bindings back to this object.
     lazy var settingsStore = SettingsStore(controller: self)
+    /// The Usage window (Cost, Tokens, Limits), kept between opens like Settings. Its behaviour is
+    /// in UsageWindow.swift and its picture in UsageData.swift; only the state lives here.
+    var usageWindow: NSWindow?
+    lazy var usageStore = UsageStore(controller: self)
+    var usage = UsageRuntime()
+    /// The key monitor behind the window's shortcuts; alive only while the window is open.
+    var usageKeyMonitor: Any?
     /// The dropdown. Kept between opens so the chosen tab survives closing it.
     var panelWindow: PanelHostWindow?
     /// Watches for a click outside the panel, which is how a window of our own gets the one menu
@@ -73,6 +86,9 @@ final class StatusController: NSObject, NSWindowDelegate {
     /// When the panel last closed, so the click that closed it cannot also reopen it. See
     /// togglePanel().
     var panelClosedAt: Double = 0
+    /// The app the panel was opened over, for handing the keyboard back. See
+    /// handPanelFocusBack().
+    var panelOpenedOver: NSRunningApplication?
     lazy var panelStore = PanelStore(controller: self)
     struct BarRender {
         var agent: MenuBarAgent
@@ -142,6 +158,7 @@ final class StatusController: NSObject, NSWindowDelegate {
     var limitsNoticeSent = false        // the signed-out banner goes out once per launch
     let launchedAt = Date().timeIntervalSince1970  // the signed-out banner counts only polls made after this
     var lastLimitsPoll: Double = 0      // so a rollover cannot bring the next poll forward into a loop
+    var claudeLimitsRunning = false     // a Claude request is out; ClaudeLimitsPoll keeps a second from starting beside it
     var limitsTimer: Timer?             // the five-minute poll; each Claude request pushes it back
     var rolledOverHandled: Double = 0   // the reset stamp that already brought one poll forward
     var codexLimitsStatus: LimitsStatus?
@@ -337,6 +354,10 @@ final class StatusController: NSObject, NSWindowDelegate {
         // and one where they were switched off keeps them off. Turning a setting off and finding
         // half of it back on after an update is the one outcome this must not produce.
         codexPetID = d.string(forKey: "codexPetID") ?? (petID.isEmpty ? "" : Self.codexDefaultPet)
+        // Saved the first time it is worked out: left unsaved, it was derived from Claude's pet
+        // again on every launch, so switching that one off took the Codex mascot away a restart
+        // later, in a setting nobody had touched.
+        if d.object(forKey: "codexPetID") == nil { d.set(codexPetID, forKey: "codexPetID") }
         if let s = d.string(forKey: "motionLevel"), let m = Motion.Level(rawValue: s) { Motion.level = m }
         // No `statusItem.menu`: with one set, AppKit swallows the click to open the menu and the
         // button's own action never fires. The panel is a window of ours, so the click has to
@@ -401,6 +422,11 @@ final class StatusController: NSObject, NSWindowDelegate {
         } else if ProcessInfo.processInfo.environment["CONTROL_BAR_DIAGNOSE"] == "settings" {
             Timer.scheduledTimer(withTimeInterval: 3, repeats: false) { [weak self] _ in
                 self?.openSettingsWindow()
+            }
+        // CONTROL_BAR_DIAGNOSE=usage does the same for the Usage window.
+        } else if ProcessInfo.processInfo.environment["CONTROL_BAR_DIAGNOSE"] == "usage" {
+            Timer.scheduledTimer(withTimeInterval: 3, repeats: false) { [weak self] _ in
+                self?.openUsageWindow()
             }
         // CONTROL_BAR_DIAGNOSE=toggle answers "does clicking the icon close the panel?" without
         // clicking it — which is the only way to ask, for the same reason CONTROL_BAR_UPDATE_NOW
@@ -505,23 +531,33 @@ final class StatusController: NSObject, NSWindowDelegate {
 
     // MARK: MCP backend — the runs themselves are in Backend.swift
 
-    /// Serial, deliberately. A full check starts every configured MCP server and takes about
-    /// half a minute; on a concurrent queue a toggle during one of those launched a second
-    /// backend over the same servers and the same cache files, and whichever finished first
-    /// cleared mcpBusy while the rest were still running — the menu said "done" mid-flight.
+    /// Full checks, one at a time. A check starts every configured MCP server and takes about
+    /// half a minute, and two of them at once are the same servers started twice.
     let backendQueue = DispatchQueue(
         label: "io.github.infinityscripter.claude-control-bar.backend")
-    /// Operations handed to the queue and not yet finished. A plain Bool could not survive two
-    /// of them: the first to return cleared it.
+    /// Server and tool switches, one at a time, and not behind a check. They used to share the
+    /// queue above, so a click during a check — the usual "open the panel, flip a server" — was
+    /// written to the config only when the check ended, up to half a minute later: the row sprang
+    /// back meanwhile and a session started in that window still loaded the server. Running
+    /// beside a check is safe because the script takes care of what the single queue was for:
+    /// Claude's write is under settings.lock and Codex's is made by Codex itself, and a second
+    /// full check is turned away by the refresh lock each agent's check holds. What a check in
+    /// flight can still do is write the picture it read before the switch, so that agent is
+    /// checked once more (MCPRefreshPoll).
+    let switchQueue = DispatchQueue(
+        label: "io.github.infinityscripter.claude-control-bar.switch")
+    /// Operations handed to the two queues and not yet finished. A plain Bool could not survive
+    /// two of them: the first to return cleared it.
     var backendRunning = 0
 
-    /// True from the moment a full check is asked for until it has finished.
-    var refreshQueued = false
-    /// A check asked for while one was already running. Dropping it outright was wrong: the run
-    /// in flight started BEFORE the toggle and cannot know about it, so a server switched off
-    /// mid-check kept its old row until the ten-minute timer came round — a stale answer that
-    /// reads as the click having done nothing.
-    var refreshAgain = false
+    /// Which agents are being checked, and which are due again. A check asked for while one was
+    /// running is not dropped: the run in flight started BEFORE the toggle and cannot know about
+    /// it, so a server switched off mid-check kept its old row until the ten-minute timer came
+    /// round — a stale answer that reads as the click having done nothing.
+    var mcpRefresh = MCPRefreshPoll()
+    /// The last switch the backend did not apply, for the MCP tab to say why the row sprang back.
+    /// Cleared by the next switch that takes and by closing the panel.
+    var mcpSwitchRefusal: SwitchRefusal?
 
     // MARK: self-quit lifecycle — the decision is in AppLifecycle.swift
 
@@ -533,6 +569,14 @@ final class StatusController: NSObject, NSWindowDelegate {
 
     var claudeProbedAt: Double = 0
     var claudeWasRunning = false
+}
+
+// CONTROL_BAR_RENDER_USAGE=<dir> draws the Usage window from a directory of fixture files into
+// PNGs and exits. First of all, before the controller exists: a status item, the timers, the
+// hooks check and the backend must not start for a process that is only here to draw — it never
+// reads the real state directory, the network or the Keychain. See UsageRender.swift.
+if let output = ProcessInfo.processInfo.environment["CONTROL_BAR_RENDER_USAGE"] {
+    exit(UsageRender.run(output: output, environment: ProcessInfo.processInfo.environment))
 }
 
 let app = NSApplication.shared

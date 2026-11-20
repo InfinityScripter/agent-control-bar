@@ -326,24 +326,64 @@ struct PanelView: View {
         VStack(alignment: .leading, spacing: 5) {
             if stacked { note }
             HStack(spacing: 8) {
-                if !stacked { note }
-                Spacer(minLength: 0)
-                Button { store.openSettings() } label: {
-                    Label("Settings", systemImage: "gearshape")
-                        .labelStyle(PanelIconLabelStyle())
-                }
-                .buttonStyle(PanelButtonStyle())
-                .keyboardShortcut(",", modifiers: .command)
-                Button { store.quit() } label: {
-                    Label("Quit", systemImage: "power")
-                        .labelStyle(PanelIconLabelStyle())
-                }
-                .buttonStyle(PanelButtonStyle())
-                .keyboardShortcut("q", modifiers: .command)
+                // Never cut: with three buttons in the row it is the buttons that give way, one
+                // word at a time, and they can only do that around a note of a known width.
+                if !stacked { note.fixedSize() }
+                PanelFooterButtons(usage: store.openUsage, settings: store.openSettings, quit: store.quit)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
         .padding(.top, 9)
         .padding(.horizontal, 3)
+    }
+}
+
+/// The footer's buttons: Usage (⌘U), Settings (⌘,) and Quit (⌘Q).
+///
+/// All three with their words fit only when the limits note is on a row of its own or absent.
+/// Beside a one-provider note ("Limits · 59 min ago") the row has about 170pt, so the words go
+/// one by one until the row fits: Usage first — the newest button, the one nobody has learned by
+/// its word yet — then Quit, whose power glyph reads alone, and Settings last. A button without
+/// its word keeps its shortcut and says its name as a tooltip.
+struct PanelFooterButtons: View {
+    let usage: () -> Void
+    let settings: () -> Void
+    let quit: () -> Void
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            row(usageWord: true, quitWord: true, settingsWord: true)
+            row(usageWord: false, quitWord: true, settingsWord: true)
+            row(usageWord: false, quitWord: false, settingsWord: true)
+            row(usageWord: false, quitWord: false, settingsWord: false)
+        }
+    }
+
+    private func row(usageWord: Bool, quitWord: Bool, settingsWord: Bool) -> some View {
+        HStack(spacing: 8) {
+            button("Usage", symbol: "chart.bar.xaxis", key: "u", worded: usageWord, action: usage)
+            button("Settings", symbol: "gearshape", key: ",", worded: settingsWord, action: settings)
+            button("Quit", symbol: "power", key: "q", worded: quitWord, action: quit)
+        }
+    }
+
+    private func button(_ title: String, symbol: String, key: KeyEquivalent, worded: Bool,
+                        action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            if worded {
+                Label(title, systemImage: symbol).labelStyle(PanelIconLabelStyle())
+            } else {
+                // The hidden letter keeps the button as tall as its worded neighbours.
+                ZStack {
+                    Text("X").hidden()
+                    Image(systemName: symbol).font(.system(size: 11))
+                }
+            }
+        }
+        .buttonStyle(PanelButtonStyle())
+        .keyboardShortcut(key, modifiers: .command)
+        .help(worded ? "" : title)
+        .accessibilityLabel(title)
     }
 }
 

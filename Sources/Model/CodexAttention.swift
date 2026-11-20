@@ -56,10 +56,17 @@ struct CodexAttentionPoll {
     private var lastPolledAt: Double = 0
     private var inFlight = false
 
-    mutating func begin(now: Double, sessions: [Session], pidAlive: (Int32) -> Bool) -> Bool {
+    /// `socketExists` is asked last, and only when a poll would otherwise start: the script reads
+    /// approvals off the control socket of a Codex service that is already running, and without
+    /// one it can only rewrite attention.json with "socket_unavailable". Sessions hosted by an app
+    /// that keeps Codex alive without that socket (T3 Code) used to cost a Python launch every
+    /// five seconds, around the clock, for that one answer.
+    mutating func begin(now: Double, sessions: [Session], socketExists: () -> Bool,
+                        pidAlive: (Int32) -> Bool) -> Bool {
         guard !inFlight, now - lastPolledAt >= 5,
               sessions.contains(where: { $0.provider == "codex" && $0.started && $0.pid > 0
-                  && !$0.turnID.isEmpty && pidAlive($0.pid) }) else { return false }
+                  && !$0.turnID.isEmpty && pidAlive($0.pid) }),
+              socketExists() else { return false }
         inFlight = true
         lastPolledAt = now
         return true

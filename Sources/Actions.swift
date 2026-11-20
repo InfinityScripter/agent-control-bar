@@ -20,9 +20,7 @@ extension StatusController {
                   desktopAvailable || !session.termBundle.isEmpty || !session.termProgram.isEmpty
             else { completion(false); return }
             closePanel()
-            openSession(session.id, threadURL: url, entrypoint: session.entrypoint,
-                        termProgram: session.termProgram, termBundle: session.termBundle,
-                        t3Thread: session.t3Thread, tty: session.tty)
+            openSession(session.key)
             completion(true)
             return
         }
@@ -61,9 +59,7 @@ extension StatusController {
         if let session = sessions[Provider.claude.id + ":" + thread.id] {
             guard !hiddenModelServices.contains(session.modelService), session.hasFocusTarget else { return false }
             closePanel()
-            openSession(session.id, threadURL: nil, entrypoint: session.entrypoint,
-                        termProgram: session.termProgram, termBundle: session.termBundle,
-                        t3Thread: session.t3Thread, tty: session.tty)
+            openSession(session.key)
             return true
         }
         guard thread.opensInDesktop, let local = DesktopSessions.sessionID(forCLI: thread.id),
@@ -161,8 +157,12 @@ extension StatusController {
     // fallback for a conversation this machine has no record of.
     // CLI session: bring its terminal APP to the front (zero permission). Targeting the exact
     // window/tab needs a one-time Automation grant, deferred to the opt-in build (issue #19).
-    func openSession(_ id: String, threadURL: URL?, entrypoint: String,
-                     termProgram: String, termBundle: String, t3Thread: String, tty: String) {
+    //
+    // Takes the row's key and reads the session here. Where a session runs is this controller's
+    // knowledge, and the next host's extra field should not have to ride through the snapshot the
+    // panel draws only to be handed straight back.
+    func openSession(_ key: String) {
+        guard let s = sessions[key] else { return }
         // T3 Code session: open ITS thread. The recorded bundle id names the app at best — and a
         // launcher wrapped around it at worst — so `open -b` below would raise a window that is
         // showing some other thread, or start the launcher. LaunchServices picks the receiver:
@@ -172,7 +172,7 @@ extension StatusController {
         // Only a session T3 Code runs itself, which its entrypoint says. The thread id alone does
         // not: every descendant of a thread inherits the variable — an editor or a tmux server
         // first started from T3's terminal — and those sessions keep their own window.
-        if entrypoint == "t3-code", let url = T3Sessions.threadURL(threadID: t3Thread),
+        if s.entrypoint == "t3-code", let url = T3Sessions.threadURL(threadID: s.t3Thread),
            NSWorkspace.shared.urlForApplication(toOpen: url) != nil,
            NSWorkspace.shared.open(url) {
             return
@@ -185,13 +185,13 @@ extension StatusController {
         // The app has to actually be installed, checked here rather than left to `open` — a
         // failed `open` reports into a stderr nobody reads, and because this branch returns, a
         // click that quietly went nowhere would have replaced one that used to raise a terminal.
-        if let threadURL, NSWorkspace.shared
+        if let threadURL = SessionFormat.codexThreadURL(s), NSWorkspace.shared
             .urlForApplication(withBundleIdentifier: Self.codexBundleID) != nil {
             openTool(["-b", Self.codexBundleID, threadURL.absoluteString])
             return
         }
-        if entrypoint == "claude-desktop" {
-            guard let local = DesktopSessions.sessionID(forCLI: id),
+        if s.entrypoint == "claude-desktop" {
+            guard let local = DesktopSessions.sessionID(forCLI: s.id),
                   let url = DesktopSessions.focusURL(sessionID: local)
             else { openClaude(); return }
             NSWorkspace.shared.open(url)
@@ -203,8 +203,8 @@ extension StatusController {
         // the panel. The scheme comes from the editor's own Info.plist — Cursor says "cursor",
         // VS Code "vscode" — so no fork catalog; `open -b` pins the receiving app in case two
         // forks claim one scheme. An editor without the handler still comes to the front.
-        if entrypoint == "claude-vscode", !termBundle.isEmpty, let scheme = urlScheme(ofBundle: termBundle) {
-            openTool(["-b", termBundle, "\(scheme)://anthropic.claude-code/open?session=\(id)"])
+        if s.entrypoint == "claude-vscode", !s.termBundle.isEmpty, let scheme = urlScheme(ofBundle: s.termBundle) {
+            openTool(["-b", s.termBundle, "\(scheme)://anthropic.claude-code/open?session=\(s.id)"])
             return
         }
         // Everything past here is a session living in a terminal, and the two steps are "which
@@ -212,8 +212,8 @@ extension StatusController {
         // when the user has asked for it: it sends an Apple Event, which costs a one-time macOS
         // Automation grant, and nobody should be made to answer that prompt for a click they
         // expected to be free.
-        if exactTerminalFocus, !tty.isEmpty {
-            switch focusTerminalTab(termProgram: termProgram, tty: tty) {
+        if exactTerminalFocus, !s.tty.isEmpty {
+            switch focusTerminalTab(termProgram: s.termProgram, tty: s.tty) {
             case .focused:
                 return
             case .denied:
@@ -232,19 +232,19 @@ extension StatusController {
         // TERM_PROGRAM map below cannot: Cursor, Windsurf and VS Code all report "vscode"
         // (so the click opened the wrong editor), and the IDE extension panel sets no
         // TERM_PROGRAM at all (so the click did nothing). `open -b` takes the id verbatim.
-        if !termBundle.isEmpty {
-            openTool(["-b", termBundle])
+        if !s.termBundle.isEmpty {
+            openTool(["-b", s.termBundle])
             return
         }
         // Map TERM_PROGRAM to a name `open -a` understands; most terminals match verbatim.
         let app: String
-        switch termProgram {
+        switch s.termProgram {
         case "Apple_Terminal": app = "Terminal"
         case "iTerm.app":      app = "iTerm"
         case "vscode":         app = "Visual Studio Code"
         case "WarpTerminal":   app = "Warp"
         case "":               return  // unknown surface, nothing to focus
-        default:               app = termProgram  // Ghostty, WezTerm, Tabby, Hyper, kitty, …
+        default:               app = s.termProgram  // Ghostty, WezTerm, Tabby, Hyper, kitty, …
         }
         openTool(["-a", app])
     }

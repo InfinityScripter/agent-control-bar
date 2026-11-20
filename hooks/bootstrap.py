@@ -333,7 +333,7 @@ def claim_hooks():
 
 
 def write_paths():
-    """Where the app finds its MCP backend.
+    """Where the app finds its MCP backend when its own bundle carries none.
 
     Rewritten on every start because the plugin directory carries the version in its path, so
     it moves with every upgrade and a remembered path goes stale immediately.

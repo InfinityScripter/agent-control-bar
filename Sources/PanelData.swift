@@ -6,34 +6,25 @@ import Cocoa
 // non-obvious ones came with them: which sessions are allowed to show, why a skipped limit window
 // is skipped rather than zeroed, what a server's right-hand column says when it did not answer.
 // The rules are the product of a lot of reported bugs; the presentation is what changed.
+// Two of them have since moved to the model half, where the model check holds them: which sessions
+// show (SessionRows) and the server column (MCPServer.tail).
 extension StatusController {
 
     // MARK: sessions
 
     /// The sessions a user should see, in the order they should see them.
     func panelSessions(now: Double) -> [PanelSession] {
-        // Gate ONLY the desktop app: opening a conversation there seeds an idle session without
-        // real activity, so a desktop session stays out until a prompt or tool fires. CLI, terminal
-        // and editor sessions are launched deliberately and surface the moment they start.
-        // An agent the setting leaves out is not listed at all — not even as the one row kept below
-        // so the panel never goes empty: that row would be exactly the session asked not to show.
-        let agents = agentDisplay
-        let ordered = sessions.values.sorted {
-            $0.ts == $1.ts ? $0.key < $1.key : $0.ts > $1.ts
-        }.filter { s in
-            guard agents.inPanel(s.provider), !hiddenModelServices.contains(s.modelService) else { return false }
-            let gated = s.entrypoint == "claude-desktop"
-            return !gated || s.started || isActiveState(effState(s, now: now))
+        // Which sessions, and in what order, is decided in the model — see SessionRows. It reads
+        // the effective state off the session, so one read since the last tick gets its state here.
+        let known = sessions.mapValues { session -> Session in
+            var s = session
+            s.eff = effState(s, now: now)
+            return s
         }
-        // Hiding is render-only — the file, and thus liveness, is untouched. The most recent
-        // session is always kept, so the panel never goes empty while one is alive.
-        var visible = ordered.filter { s in
-            let resting = SessionActivityGroup(state: effState(s, now: now),
-                                               asyncQuestion: s.asyncQuestion) == .idle
-            return !(stalePruneAge > 0 && resting && now - s.ts > stalePruneAge)
-        }
-        if visible.isEmpty, let lead = ordered.first { visible = [lead] }
-        return visible.map { panelSession($0, now: now) }
+        return SessionRows.visible(Array(known.values), now: now, agents: agentDisplay,
+                                   hiding: hiddenModelServices, stalePruneAge: stalePruneAge)
+            .compactMap { known[$0] }
+            .map { panelSession($0, now: now) }
     }
 
     private func panelSession(_ s: Session, now: Double) -> PanelSession {
@@ -53,11 +44,7 @@ extension StatusController {
             pct: s.pct,
             assumed: s.assumed,
             tag: SessionFormat.surfaceTag(s),
-            entrypoint: s.entrypoint,
-            termProgram: s.termProgram,
-            termBundle: s.termBundle,
-            t3Thread: s.t3Thread,
-            tty: s.tty,
+            canOpen: SessionFormat.canOpen(s),
             // Decided here, in the model half, rather than at the click: which of the two places a
             // Codex session can be read is the right one is a rule about the session, and rules
             // about sessions are what the model checks cover.
@@ -244,16 +231,19 @@ extension StatusController {
     // MARK: MCP
 
     func panelServer(_ server: MCPServer) -> PanelServer {
-        PanelServer(
+        // Asked once, of the server's own agent: the spinner and the word beside it share a slot,
+        // and when the word was asked of Claude's model alone, a Codex server just switched on
+        // turned its spinner next to "next session".
+        let checking = model(of: server.provider).isChecking(server.name, backendBusy: mcpChecking)
+        return PanelServer(
             id: server.provider + ":" + server.name,
             serverName: server.name,
             provider: server.provider,
             name: mcpShortName(server.name),
             state: server.state,
-            tail: serverTail(server),
+            tail: server.tail(checking: checking),
             enabled: !server.disabled,
-            checking: model(of: server.provider).isChecking(server.name,
-                                                            backendBusy: mcpChecking),
+            checking: checking,
             prefix: server.toolPrefix,
             tip: serverTip(server),
             tools: server.tools.map { tool in
@@ -279,30 +269,6 @@ extension StatusController {
             }.joined(separator: "\n")
         }
         return text
-    }
-
-    /// What the right-hand column says for a server. A server that did not answer says so in
-    /// words — a bare "!" next to a plainly-ON switch reads as a contradiction rather than an
-    /// explanation, especially since "pending" here means "switched on, waiting for a new session".
-    private func serverTail(_ server: MCPServer) -> String {
-        let count = server.tools.isEmpty
-            ? (server.reportedTools.map(String.init) ?? "—")
-            : "\(server.enabledTools)/\(server.tools.count)"
-        switch server.state {
-        case "ok", "off": return count
-        // A server from a repo's .mcp.json that Claude Code has not been told to trust yet: it is
-        // not switched on and waiting, it is waiting to be allowed at all, and only the user can
-        // answer that — in Claude Code, not here.
-        case "pending" where server.needsApproval: return "approve in Claude Code"
-        // Empty while the check runs: the spinner in this same slot is the answer, and a word
-        // beside a turning arc reads as two competing statuses.
-        case "pending":
-            return mcp.isChecking(server.name, backendBusy: mcpChecking) ? "" : "next session"
-        // A remote (http/sse) project server: there is no probe for it, and claiming either green
-        // or red would be inventing.
-        case "unknown": return "not checked"
-        default: return "failed"
-        }
     }
 
     private func serverTip(_ server: MCPServer) -> String {
@@ -337,24 +303,19 @@ extension StatusController {
 
     /// The banner across the top of the panel, or nil when this copy is current.
     ///
-    /// The order matters and is not arbitrary: a newer copy already sitting on disk is checked
-    /// before the download line and instead of it, because there is nothing left to fetch and
-    /// offering "Update to 0.5.1" next to a 0.5.1 bundle sends the user to download what they
-    /// installed an hour ago.
+    /// Which of them, and in what order they are checked, is decided in
+    /// Sources/Model/UpdateOffer.swift. A Homebrew install whose cask has not caught up gets no
+    /// banner: there is nothing in it to click yet.
     func panelUpdate() -> PanelUpdate? {
-        guard let latest = UserDefaults.standard.string(forKey: "latestVersion"),
-              Self.versionIsNewer(latest, than: currentVersion) else { return nil }
-        if let onDisk = installedVersion, Self.versionIsNewer(onDisk, than: currentVersion) {
-            return PanelUpdate(kind: .restart, version: onDisk, stage: nil, command: nil)
+        switch updateOffer() {
+        case .none, .brewPending:
+            return nil
+        case .restart(let version):
+            return PanelUpdate(kind: .restart, version: version, stage: nil, command: nil)
+        case .brew(let version):
+            return PanelUpdate(kind: .brew, version: version, stage: nil, command: brewUpgradeCommand)
+        case .available(let version):
+            return PanelUpdate(kind: .available, version: version, stage: updateStage, command: nil)
         }
-        if brewManaged {
-            // Silent until the cask catches up (autobump lag): never offer a command that would
-            // report "already up to date".
-            guard let cask = UserDefaults.standard.string(forKey: "brewCaskVersion"),
-                  Self.versionIsNewer(cask, than: currentVersion) else { return nil }
-            return PanelUpdate(kind: .brew, version: cask, stage: nil,
-                               command: brewUpgradeCommand)
-        }
-        return PanelUpdate(kind: .available, version: latest, stage: updateStage, command: nil)
     }
 }

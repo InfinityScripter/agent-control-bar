@@ -7,16 +7,106 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
-## [Unreleased]
+## [0.30.0] - 2026-11-20
 
 ### Added
 - **Claude history** sits beside Live and Codex in the Sessions tab. Search the 50 most recent
   Claude Code chats by title, project, branch, client, or ID, open a Claude app chat in the app,
   or copy a `claude --resume` command that starts in the chat's directory. The list is built
   from transcript metadata; prompts and replies are never stored.
+- **Usage window.** **Usage** in the panel footer (⌘U) opens a window with **Cost**, **Tokens**
+  and **Limits** tabs, a port of T3 Code's Usage page. Cost and tokens for the past 24 hours,
+  7, 30 or 90 days are counted on your Mac from Claude Code and Codex session files and priced
+  with LiteLLM's public table: a chart per provider, totals by token type and speed tier, a
+  table by model or by day, and a dialog per model. Cost is an estimate at API prices.
+- **Custom model prices.** **Model prices** in the Usage window sets your own price per million
+  tokens for a model, or maps a model without a known price to one that has it.
+- **Limits tab.** Each limit window shows what is left, a mark for an even pace and what the
+  next reset gives back; a click shows the plan, the account and the reset time. Reset credits
+  banked on the account can be spent with **Use reset**, after a confirmation.
 
 ### Changed
 - The Sessions picker reads **Live | Claude | Codex**; **Codex history** is now **Codex**.
+- The limits polls also store the plan, the account e-mail and banked reset credits, in
+  `account.json` and `codex/account.json`. The Claude poll asks for the credits in its one
+  request; the Codex e-mail is asked for at most once a day. [PRIVACY.md](PRIVACY.md) lists
+  every new request and file, including what a usage scan reads and keeps.
+- Claude limits are polled with the app's own bundled backend script, as Codex limits already
+  were, so an older plugin copy can no longer leave the Usage window without account details.
+- `build.sh` compiles with one job per core. The larger app had pushed the serial build past
+  the plugin channel's four-minute limit on a busy Mac.
+- MCP checks, switches and the other backend commands run the script inside the app too, and
+  the plugin's copy only when the app carries none. With the app and the plugin both installed,
+  a plugin update that removed its old folder made every MCP check and switch fail until the
+  app was restarted.
+- The one-click update checks that the downloaded app's signature verifies and that it runs on
+  this version of macOS before it replaces the installed copy. When either check fails, the
+  update stops with the notice "Nothing was changed". Before, such a release replaced the
+  working app and left nothing in the menu bar to say so.
+- `build.sh` stops when ad-hoc signing fails on an Apple Silicon Mac or in a `--dmg` build, and
+  verifies the signature before it replaces the installed app. It used to warn and go on, which
+  swapped a working app for one that macOS refuses to start.
+- A hung MCP check, limits poll, Codex history load, hooks question or switch is stopped by the
+  app and noted in `problems.log`: after ten minutes for a full check or a Codex switch, after
+  two minutes for the others. One such run used to leave the MCP tab checking, Codex limits
+  unasked or history loading until the app was restarted.
+- Mounting an update's disk image is limited to two minutes. A mount that never returned left
+  the banner on "Installing…" for as long as the app ran.
+- The **Codex** list names where a chat ran with the short words of the live rows: CLI, IDE and
+  APP instead of Terminal, Editor and ChatGPT, and T3 instead of T3 Code. Search matches the
+  new words.
+- The tooltip of a session row starts with the full project name and its folder. The name in
+  the row itself is still shortened in the middle when it is long.
+
+### Fixed
+- Two sessions in worktrees of one project are told apart by the first folder that differs
+  between their paths. Before, both rows got the same parent folder, "services/my-service"
+  twice, and looked alike.
+- A Claude Code session is tagged CLI only when Claude Code names its own CLI as the entry
+  point. An SDK run or a host the app does not know has no tag instead of a wrong CLI.
+- A click on a session row that has no window on record leaves the panel open, and the row's
+  tooltip reads "No window recorded for this session". Before, the panel closed and nothing
+  came to the front.
+- Closing the panel with Esc or with a second click on the menu bar icon gives the keyboard
+  back to the app the panel was opened over.
+- A long amber notice in the panel wraps instead of being cut off after one line. In a session
+  error the missing half was the one that said what to do.
+- VoiceOver reads the server or tool name on every switch in the MCP tab, and reads the two
+  icon buttons in the tab's header as "Check MCP now" and "Open settings.json".
+- When a server or tool switch is not applied, the MCP tab says why in a line above the list,
+  "Switch not applied: …", with a button that opens the config file the switch writes to.
+  Before, the switch sprang back and the reason reached only the system log.
+- A server or tool switch is written to the config without waiting for a running MCP check to
+  end. Before, a switch flipped during a check was written only when the check finished, about
+  half a minute later, and its row could jump back meanwhile.
+- A switch re-checks the servers of its own agent only: switching a Claude server no longer
+  starts Codex's servers, and switching a Codex server starts them once instead of twice.
+- A Codex server that was just switched on shows only its spinner while it is checked, without
+  "next session" beside it.
+- **Settings > General** says "Hooks not installed in Codex" when Codex lists none of this app's
+  hooks. It used to say "Hooks approved".
+- When **Approve** gets no answer from Codex, "Codex did not answer — try again" appears under
+  the button, in the panel and in Settings. Before, the button turned back without a word.
+- **Settings > About** says "Codex hooks weren't written", with the reason, when
+  `~/.codex/hooks.json` cannot be read or written. It used to say "Installed".
+- On a Homebrew install, **Settings > About** shows the `brew upgrade` command only once
+  Homebrew's cask has the release, and says so while it does not. Before, the page offered the
+  command while brew had nothing newer to install.
+- On a Homebrew install the "is available" notification waits for the cask as well, so it
+  arrives when the panel has the command to run.
+- **Download and install** in "What's new" restarts into a newer copy that is already on disk
+  instead of downloading the same release again.
+- A Claude Code turn's timer carries on from the start of the turn after a permission prompt
+  instead of restarting from zero, and the chime for a long turn counts the whole turn, not
+  only the part after the prompt.
+- The Needs you sound stays quiet when the app in front is the one that started the session,
+  even if the session file names a launcher instead of that app. With T3 Code opened through a
+  launcher, the sound played while its window was already in front.
+- Switching the pet off for Claude's session rows no longer takes the Codex pet away at the
+  next launch. A Codex pet that had never been chosen was worked out from Claude's on every
+  start; it is now saved the first time.
+- While a Codex session is open and Codex has no control socket to ask, as with sessions
+  T3 Code starts, the app no longer starts Python every five seconds for the same empty answer.
 
 ## [0.29.0] - 2026-11-19
 

@@ -1551,11 +1551,14 @@ class LimitsStatusFile(unittest.TestCase):
 
         self._dir = tempfile.TemporaryDirectory()
         self.saved = {k: getattr(home(k), k)
-                      for k in ("USAGE_URL", "LIMITS", "LIMITS_STATUS", "oauth_token")}
+                      for k in ("USAGE_URL", "LIMITS", "LIMITS_STATUS", "oauth_token", "CONFIG")}
         mcpbar.USAGE_URL = self.target_url
         mcpbar.LIMITS = os.path.join(self._dir.name, "limits.json")
         mcpbar.LIMITS_STATUS = os.path.join(self._dir.name, "limits-status.json")
         mcpbar.oauth_token = lambda: "SECRET"
+        # Удачный опрос пишет рядом account.json и берёт для него e-mail из ~/.claude.json:
+        # настоящий файл человека тестам читать незачем.
+        mcpbar.CONFIG = os.path.join(self._dir.name, "claude.json")
 
     def tearDown(self):
         for k, v in self.saved.items():
@@ -1593,7 +1596,8 @@ class LimitsStatusFile(unittest.TestCase):
 
         with mock.patch.object(mcpbar, "write_json", spy):
             mcpbar.fetch_limits()
-        self.assertEqual(order, ["limits.json", "limits-status.json"])
+        # account.json — последним: вспомогательный файл не задерживает ни цифры, ни их статус.
+        self.assertEqual(order, ["limits.json", "limits-status.json", "account.json"])
         self.assertEqual(self.status()["state"], "ok")
 
     def test_сбой_записи_limits_json_не_оставляет_ok(self):
@@ -2363,7 +2367,10 @@ class CodexLimits(unittest.TestCase):
             }}, None)
         with mock.patch.object(mcpbar_codex.time, "time", return_value=1_792_575_900):
             mcpbar_codex.fetch_codex_limits()
-        self.rpc_mock.assert_called_once_with("account/rateLimits/read", read_only=True)
+        # Второй вызов — e-mail для codex/account.json; оба чтения аккаунта только read-only.
+        self.assertEqual(self.rpc_mock.call_args_list, [
+            mock.call("account/rateLimits/read", read_only=True),
+            mock.call("account/read", timeout=10, read_only=True)])
         written = mcpbar.read_json(mcpbar_codex.CODEX_LIMITS)
         self.assertEqual(written, {"ts": 1_792_575_900, "source": "app-server", "plan": "pro", "windows": [
             {"kind": "primary", "pool": "codex", "ts": 1_792_575_900, "used_percentage": 24,
@@ -3019,6 +3026,43 @@ else:
         self.assertIsNone(error)
         self.assertEqual(result, {"method": "account/rateLimits/read", "args": ["app-server"]})
 
+    def test_categories_name_failures_without_a_read_only_launch(self):
+        """Погашение сброса — запись, read-only ему не положен, но исход оно пишет в файл, куда
+        фразам для человека нельзя. Прежним вызовам без `categories` фразы остаются."""
+        echo = '''
+hello = json.loads(sys.stdin.readline())
+print(json.dumps({"id": 1, "result": {}}), flush=True)
+json.loads(sys.stdin.readline())
+request = json.loads(sys.stdin.readline())
+print(json.dumps({"id": 2, "result": {"args": sys.argv[1:], "hello": hello["params"],
+                                      "params": request["params"]}}), flush=True)
+'''
+        # Срок с запасом на старт подставного python: на загруженной машине секунды не хватает.
+        result, error = self.run_server(echo, "account/rateLimitResetCredit/consume",
+                                        params={"idempotencyKey": "k"}, timeout=10, categories=True,
+                                        capabilities={"experimentalApi": True})
+        self.assertIsNone(error)
+        self.assertEqual(result["args"], ["app-server"])
+        self.assertEqual(result["hello"]["capabilities"], {"experimentalApi": True})
+        self.assertEqual(result["params"], {"idempotencyKey": "k"})
+        result, _ = self.run_server(echo, "config/batchWrite", timeout=10)
+        self.assertNotIn("capabilities", result["hello"])
+        cases = (("time.sleep(5)\n", "timeout", mcpbar.t("codex.timeout")),
+                 ('print(json.dumps({"id": 1, "result": []}), flush=True)\n', "invalid_reply",
+                  mcpbar.t("codex.badreply")),
+                 ('print(json.dumps({"id": 1, "error": {"message": "sensitive"}}), flush=True)\n',
+                  "rpc_error", "rpc_error"),
+                 ("sys.exit(0)\n", "connection_closed", "connection_closed"))
+        for body, category, sentence in cases:
+            # Запас на старт подставного python: полный срок ждёт только случай с таймаутом.
+            wait = 1 if category == "timeout" else 5
+            with self.subTest(category=category):
+                self.assertEqual(self.run_server(body, timeout=wait, categories=True), (None, category))
+                self.assertEqual(self.run_server(body, timeout=wait), (None, sentence))
+        with mock.patch.object(mcpbar_codex, "find_codex", return_value=""):
+            self.assertEqual(mcpbar_codex.codex_rpc("x", categories=True), (None, "not_installed"))
+            self.assertEqual(mcpbar_codex.codex_rpc("x"), (None, mcpbar.t("codex.nobinary")))
+
 
 class CodexAttention(unittest.TestCase):
     thread_id = "00000000-0000-7000-8000-000000000001"
@@ -3368,9 +3412,69 @@ class CodexHooks(unittest.TestCase):
         mcpbar_codex.codex_hooks_list = lambda: (self.groups(self.ours("untrusted")), None)
         mcpbar_codex.fetch_codex_hooks()
         mcpbar_codex.codex_hooks_list = lambda: ([], "app-server timed out")
-        mcpbar_codex.fetch_codex_hooks()
+        with self.assertRaisesRegex(mcpbar.Refused, "app-server timed out"):
+            mcpbar_codex.fetch_codex_hooks()
         with open(mcpbar_codex.CODEX_HOOKS) as fh:
             self.assertEqual(json.load(fh)["untrusted"], 1)
+
+    def test_в_файле_ещё_и_сколько_наших_хуков_codex_вообще_видит(self):
+        """Ноль без доверия значил сразу два ответа: «все одобрены» и «наших хуков у Codex нет
+        вовсе» — и Settings рисовал галочку «Hooks approved» там, где хуки не установлены.
+        Считаются все свои, которые Codex перечислил: и одобренные, и выключенные."""
+        os.makedirs(mcpbar_codex.CODEX, exist_ok=True)
+        off = dict(self.ours("untrusted", "sessionEnd"), enabled=False)
+        alien = {"eventName": "preToolUse", "command": "/usr/local/bin/somebody-else",
+                 "enabled": True, "trustStatus": "untrusted"}
+        mcpbar_codex.codex_hooks_list = lambda: (self.groups(self.ours("trusted"), off, alien), None)
+        mcpbar_codex.fetch_codex_hooks()
+        with open(mcpbar_codex.CODEX_HOOKS) as fh:
+            written = json.load(fh)
+        self.assertEqual((written["untrusted"], written["ours"]), (0, 2))
+
+        mcpbar_codex.codex_hooks_list = lambda: (self.groups(alien), None)
+        mcpbar_codex.fetch_codex_hooks()
+        with open(mcpbar_codex.CODEX_HOOKS) as fh:
+            written = json.load(fh)
+        self.assertEqual((written["untrusted"], written["ours"]), (0, 0))
+
+    def command(self, *argv):
+        import contextlib
+        import io
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = mcpbar.main(["codex-hooks", *argv])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_молчание_app_server_это_ненулевой_код_и_причина_в_stderr(self):
+        """Ошибка печаталась в stdout с кодом 0. Приложение stdout не читает, а stderr пишет в
+        лог только при ненулевом выходе — нажатие Approve при неответившем Codex не оставляло
+        следа нигде."""
+        os.makedirs(mcpbar_codex.CODEX, exist_ok=True)
+        mcpbar_codex.codex_hooks_list = lambda: ([], "app-server timed out")
+        for argv in ((), ("approve",)):
+            code, out, err = self.command(*argv)
+            self.assertEqual(code, 2, argv)
+            self.assertIn("app-server timed out", err, argv)
+            self.assertEqual(out, "", argv)
+        self.assertFalse(os.path.exists(mcpbar_codex.CODEX_HOOKS))
+
+    def test_отказ_записи_доверия_это_ненулевой_код(self):
+        os.makedirs(mcpbar_codex.CODEX, exist_ok=True)
+        waiting = dict(self.ours("untrusted"), key="k", currentHash="sha256:aa")
+        self.fake_app_server(self.groups(waiting), self.groups(waiting),
+                             write_error="config is locked")
+        code, _, err = self.command("approve")
+        self.assertEqual(code, 2)
+        self.assertIn("config is locked", err)
+
+    def test_ответ_codex_это_ноль(self):
+        os.makedirs(mcpbar_codex.CODEX, exist_ok=True)
+        done = dict(self.ours("trusted"), key="k", currentHash="sha256:aa")
+        self.fake_app_server(self.groups(done), self.groups(done))
+        for argv in ((), ("approve",)):
+            code, _, err = self.command(*argv)
+            self.assertEqual((code, err), (0, ""), argv)
 
     def test_изменённый_после_одобрения_тоже_ждёт(self):
         """`modified` — хук, одобренный раньше, чья команда с тех пор поменялась: так бывает
@@ -3435,7 +3539,8 @@ class CodexHooks(unittest.TestCase):
         self.fake_app_server(self.groups(waiting),
                              self.groups(dict(waiting, trustStatus="trusted")),
                              write_error="config is locked")
-        self.assertEqual(mcpbar_codex.approve_codex_hooks(), "config is locked")
+        with self.assertRaisesRegex(mcpbar.Refused, "config is locked"):
+            mcpbar_codex.approve_codex_hooks()
         self.assertFalse(os.path.exists(mcpbar_codex.CODEX_HOOKS))
 
 
@@ -3538,6 +3643,34 @@ class CodexMCP(unittest.TestCase):
         with open(mcpbar_codex.CODEX_MCP) as fh:
             data = json.load(fh)
         return {s["name"]: s for s in data["servers"]}, data
+
+    def test_вторая_проверка_при_занятом_замке_не_поднимает_серверы(self):
+        """Проверку Codex зовут и таймер приложения, и переключатель сервера после записи.
+        Вторая, пока идёт первая, — это дважды поднятые серверы пользователя: она обязана
+        никого не спрашивать и оставить файл как есть (замок держит другой дескриптор —
+        семантика та же, что у другого процесса)."""
+        import fcntl
+
+        mcpbar_codex.secure_codex_root()
+        mcpbar.write_json(mcpbar_codex.CODEX_MCP, {"checked_at": 42, "servers": []})
+        asked = []
+        holder = open(os.path.join(mcpbar_codex.CODEX_ROOT, "refresh.lock"), "w")
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        try:
+            with mock.patch.object(mcpbar_codex, "codex_mcp_list",
+                                   side_effect=lambda: asked.append("list") or ([], None)):
+                answer = mcpbar_codex.refresh_codex_mcp()
+        finally:
+            holder.close()
+        self.assertEqual(asked, [])
+        self.assertEqual(answer, mcpbar.t("check.running"))
+        self.assertEqual(self.servers()[1]["checked_at"], 42)
+
+    def test_свободный_замок_отпускается_после_проверки(self):
+        self.refresh()
+        os.remove(mcpbar_codex.CODEX_MCP)
+        self.refresh()
+        self.assertIn("wiki", self.servers()[0], "замок не отпущен — вторая проверка не прошла")
 
     def test_сервер_пишется_в_той_же_форме_что_у_claude(self):
         """MCPModel читает оба файла ОДНИМ парсером — значит ключи обязаны совпадать."""
@@ -3687,3 +3820,28 @@ class Bundle(unittest.TestCase):
         for path in glob.glob(os.path.join(repo, "scripts", "*.py")):
             name = "scripts/" + os.path.basename(path)
             self.assertTrue(any(name in line for line in copied), name + " не копируется в .app")
+
+
+class LazyCommands(unittest.TestCase):
+    """Слова `usage`, `claude-reset-credit` и `codex-reset-credit` живут в своих модулях и
+    грузятся только своей командой: код выхода модуля — единственное, что видит приложение."""
+
+    def test_usage_hands_its_arguments_to_its_module_and_returns_its_code(self):
+        calls = []
+        stub = mock.Mock(command=lambda argv: calls.append(argv) or 7)
+        with mock.patch.dict(sys.modules, {"mcpbar_usage": stub}):
+            self.assertEqual(mcpbar.main(["usage", "--refresh"]), 7)
+            self.assertEqual(mcpbar.main(["usage"]), 7)
+        self.assertEqual(calls, [["--refresh"], []])
+
+    def test_reset_credit_words_reach_their_module(self):
+        calls = []
+        stub = mock.Mock(command=lambda word, argv: calls.append((word, argv)) or 1)
+        with mock.patch.dict(sys.modules, {"mcpbar_resets": stub}):
+            self.assertEqual(mcpbar.main(["claude-reset-credit", "grant_a"]), 1)
+            self.assertEqual(mcpbar.main(["codex-reset-credit"]), 1)
+        self.assertEqual(calls, [("claude-reset-credit", ["grant_a"]), ("codex-reset-credit", [])])
+
+    def test_new_words_are_listed_in_the_usage_text(self):
+        for word in ("usage", "claude-reset-credit", "codex-reset-credit"):
+            self.assertRegex(mcpbar.__doc__, r"(?m)^    %s\b" % word)

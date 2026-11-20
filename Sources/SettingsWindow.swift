@@ -69,7 +69,8 @@ extension StatusController {
     /// An accessory app has no main menu, and going .regular without one leaves the bar empty
     /// except for the Apple menu — which reads as a broken app rather than a deliberate one. It
     /// also gives the window the two shortcuts anyone will try on it: ⌘W and ⌘M.
-    private func installMainMenuIfNeeded() {
+    /// Not private: the Usage window is the second window that needs it.
+    func installMainMenuIfNeeded() {
         guard NSApp.mainMenu == nil else { return }
         let main = NSMenu()
 
@@ -78,6 +79,9 @@ extension StatusController {
         let settings = appMenu.addItem(withTitle: "Settings…", action: #selector(openSettingsWindow),
                                        keyEquivalent: ",")
         settings.target = self
+        let usageItem = appMenu.addItem(withTitle: "Usage…", action: #selector(openUsageWindow),
+                                        keyEquivalent: "u")
+        usageItem.target = self
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide \(appName)", action: #selector(NSApplication.hide(_:)),
                         keyEquivalent: "h")
@@ -107,18 +111,28 @@ extension StatusController {
         refreshNotificationAuthStatus()
     }
 
-    // Back to an accessory the moment Settings goes away. The .regular policy above is what puts
-    // this app in the Dock and in Cmd-Tab, and it has no business being in either once the one
-    // window it was raised for is gone.
+    // Back to an accessory the moment the last ordinary window goes away. The .regular policy
+    // above is what puts this app in the Dock and in Cmd-Tab, and it has no business being in
+    // either once the windows it was raised for are gone. Two windows raise it now — Settings and
+    // Usage — so closing one must not take the Dock icon from under the other. A minimised window
+    // still counts: it is in the Dock, and an accessory app has no Dock to keep it in.
     func windowWillClose(_ notification: Notification) {
-        guard (notification.object as? NSWindow) === settingsWindow else { return }
-        NSApp.setActivationPolicy(.accessory)
-        // The pet picker draws every pet, so it holds every pet's frames. The panel needs one.
-        // Emptying the caches is half of giving them back: the pickers hold what they were last
-        // handed, a closed window never asks again, and so the pages went on keeping a decoded
-        // sheet for every pet in the library. Only the pages going away lets go of those — the
-        // window stays, with its place on screen, and opens on General again next time.
-        releasePetPreviews()
-        settingsWindow?.contentViewController = nil
+        guard let closing = notification.object as? NSWindow,
+              closing === settingsWindow || closing === usageWindow else { return }
+        let other = closing === settingsWindow ? usageWindow : settingsWindow
+        if other?.isVisible != true && other?.isMiniaturized != true {
+            NSApp.setActivationPolicy(.accessory)
+        }
+        if closing === settingsWindow {
+            // The pet picker draws every pet, so it holds every pet's frames. The panel needs one.
+            // Emptying the caches is half of giving them back: the pickers hold what they were last
+            // handed, a closed window never asks again, and so the pages went on keeping a decoded
+            // sheet for every pet in the library. Only the pages going away lets go of those — the
+            // window stays, with its place on screen, and opens on General again next time.
+            releasePetPreviews()
+            settingsWindow?.contentViewController = nil
+        } else {
+            usageWindowClosed()
+        }
     }
 }

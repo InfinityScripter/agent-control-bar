@@ -364,6 +364,8 @@ test("a settings.json symlinked into dotfiles stays a symlink", (t) => {
 // therefore the whole job; clobbering would silently disable somebody else's product.
 
 const codexHooksPath = (home) => path.join(home, ".codex", "hooks.json");
+// install.js exits with this when Claude's part is in place and ~/.codex/hooks.json is not.
+const codexNotWritten = 73;
 const codexCommands = (home) =>
   Object.values(JSON.parse(fs.readFileSync(codexHooksPath(home), "utf8")).hooks)
     .flat().flatMap((entry) => entry.hooks || []).map((hook) => hook.command || "");
@@ -465,12 +467,80 @@ test("a codex hooks file that does not parse is left alone", (t) => {
   fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
   fs.writeFileSync(codexHooksPath(home), "{ not json");
 
-  runInstaller(home);
+  // Not a success either: with a 0 here the app showed "Installed" while every Codex session
+  // stayed invisible. 73, and the reason as the FIRST line said — that line is what the app shows.
+  assert.throws(() => runInstaller(home), (error) => error.status === codexNotWritten
+    && String(error.stderr).startsWith("~/.codex/hooks.json does not parse"));
 
   // Rewriting it from {} would take the user's own Codex hooks with it, and Claude's hooks must
   // still get installed either way.
   assert.equal(fs.readFileSync(codexHooksPath(home), "utf8"), "{ not json");
   assert.equal(statusBarCommands(readSettings(home)).length, 8, "Claude's install still happened");
+});
+
+test("the plugin channel does not report a codex failure as success", (t) => {
+  // This branch ended in a bare exit(0): nothing to install for Claude, so nothing could fail.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "control-bar-codex-plugin-broken-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const pluginRoot = path.join(home, "plugin");
+  fs.mkdirSync(pluginRoot, { recursive: true });
+  fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+  fs.mkdirSync(path.join(home, ".claude", "control-bar"), { recursive: true });
+  fs.writeFileSync(path.join(home, ".claude", "control-bar", "owner.json"),
+    JSON.stringify({ channel: "plugin", pluginRoot }));
+  fs.writeFileSync(codexHooksPath(home), "[]");
+
+  assert.throws(() => runInstaller(home), (error) => error.status === codexNotWritten);
+  assert.equal(fs.readFileSync(codexHooksPath(home), "utf8"), "[]");
+});
+
+test("a codex hooks file that cannot be written is not a success", { skip: process.getuid() === 0 },
+  (t) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "control-bar-codex-readonly-"));
+    const codexDir = path.join(home, ".codex");
+    t.after(() => {
+      fs.chmodSync(codexDir, 0o700);
+      fs.rmSync(home, { recursive: true, force: true });
+    });
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
+    fs.chmodSync(codexDir, 0o500);
+
+    assert.throws(() => runInstaller(home), (error) => error.status === codexNotWritten
+      && String(error.stderr).startsWith("could not write " + codexHooksPath(home)));
+    assert.deepEqual(fs.readdirSync(codexDir), [], "nothing half-written is left behind");
+    assert.equal(statusBarCommands(readSettings(home)).length, 8, "Claude's install still happened");
+  });
+
+test("a settings.json failure outranks a codex one", (t) => {
+  // 73 means "Claude's hooks are in place". Said over a settings.json that was never written, it
+  // would hide the bigger failure and stop the app's retries.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "control-bar-codex-priority-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const settingsPath = path.join(home, ".claude", "settings.json");
+  fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
+  fs.writeFileSync(codexHooksPath(home), "{ not json");
+
+  fs.writeFileSync(settingsPath, "{ definitely not json");
+  assert.throws(() => runInstaller(home), (error) => error.status === 1);
+
+  // Busy rather than broken: a write that lands between the installer's read and its rename.
+  fs.writeFileSync(settingsPath, JSON.stringify({ hooks: {} }));
+  const script = [
+    `require("node:child_process").execSync = () => {};`,
+    `const fs = require("node:fs");`,
+    `const real = fs.writeFileSync;`,
+    `fs.writeFileSync = (p, ...rest) => {`,
+    `  real(p, ...rest);`,
+    `  if (String(p).endsWith(".bak-control-bar")) real(process.env.SETTINGS, '{"theirs": true}');`,
+    `};`,
+    `require(process.env.SCRIPT_PATH);`,
+  ].join("\n");
+  assert.throws(() => execFileSync(process.execPath, ["-e", script], {
+    env: { ...process.env, HOME: home, SCRIPT_PATH: installerPath, SETTINGS: settingsPath },
+    stdio: "pipe",
+  }), (error) => error.status === 75);
 });
 
 test("uninstalling takes the codex hooks with it and leaves foreign ones", (t) => {

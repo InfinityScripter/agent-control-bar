@@ -123,6 +123,12 @@ struct PanelSessionsTab: View {
                       + "hash Codex computes itself — then asks it again.")
             }
             .padding(.top, 2)
+            if store.snapshot.codexApproveFailed {
+                Text(CodexHookTrust.noAnswer)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 4)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, 8)
@@ -199,6 +205,16 @@ struct PanelSessionRow: View {
                                     : .secondary.opacity(0.45)
     }
 
+    /// The name is cut in the middle at this width ("tef-trigg…-frontend"), so the hover carries
+    /// it whole, with the folder that tells two worktrees of one project apart.
+    private var rowHelp: String {
+        let action = session.questionLabel != nil ? Session.asyncQuestionHint
+            : session.canOpen ? "Bring this session’s app to the front"
+            : "No window recorded for this session"
+        let path = (session.detail.cwd as NSString).abbreviatingWithTildeInPath
+        return [session.name, path, action].filter { !$0.isEmpty }.joined(separator: "\n")
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
@@ -269,8 +285,7 @@ struct PanelSessionRow: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help(session.questionLabel == nil ? "Bring this session’s app to the front"
-                                                  : Session.asyncQuestionHint)
+                .help(rowHelp)
 
                 Button { store.toggleExpanded(session.id) } label: {
                     // The glyph is 9pt. Without a frame and a shape around it the hit area IS the
@@ -450,12 +465,14 @@ struct PanelMCPTab: View {
                 .keyboardShortcut("r", modifiers: .command)
                 .disabled(mcp.checking)
                 .help(mcp.checking ? "Checking MCP…" : "Check MCP now (⌘R)")
+                .accessibilityLabel("Check MCP now")
                 Button { store.openSettingsJSON() } label: {
                     Image(systemName: "arrow.up.forward.square")
                         .font(.system(size: 11, weight: .medium))
                 }
                 .buttonStyle(PanelButtonStyle(filled: false))
                 .help("Open settings.json — every server and tool switch is written there")
+                .accessibilityLabel("Open settings.json")
             }
 
             if let change = mcp.change {
@@ -469,6 +486,8 @@ struct PanelMCPTab: View {
                     // Worth saying exactly once, next to the change that prompts the question.
                     .help("Applies to new sessions — an open one keeps the tools it started with")
             }
+
+            if let refusal = mcp.refusal { refusalBlock(refusal) }
 
             if !mcp.groups.isEmpty {
                 PanelCard {
@@ -522,6 +541,25 @@ struct PanelMCPTab: View {
                 }
             }
         }
+    }
+
+    /// Why the row that was just switched sprang back. Above the list, beside the "changed:" line
+    /// that reports what a switch did do: the reason used to reach the system log and nothing
+    /// else, which left a switch that moved, spun and moved back looking like a broken button.
+    private func refusalBlock(_ refusal: SwitchRefusal) -> some View {
+        let config = (Provider.named(refusal.provider).configFile(home: "") as NSString).lastPathComponent
+        return VStack(alignment: .leading, spacing: 7) {
+            Text("Switch not applied: " + refusal.reason)
+                .font(.system(size: 11))
+                .foregroundStyle(Color(nsColor: .systemRed))
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Open " + config) { store.openConfig(of: refusal.provider) }
+                .buttonStyle(PanelButtonStyle())
+                .help("The file this switch writes to")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 4)
+        .padding(.bottom, 8)
     }
 
     private func errorBlock(_ error: String) -> some View {
@@ -605,7 +643,7 @@ struct PanelServerRow: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel(open ? "Hide tools" : "Show tools")
                 }
-                Toggle("", isOn: Binding(
+                Toggle(server.name, isOn: Binding(
                     get: { server.enabled },
                     set: { store.setServer(server, enabled: $0) }))
                     .toggleStyle(.switch)
@@ -662,7 +700,7 @@ struct PanelToolRow: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 4)
-            Toggle("", isOn: Binding(
+            Toggle(tool.name, isOn: Binding(
                 get: { tool.enabled },
                 set: { store.setTool(server: server, tool: tool.name, enabled: $0) }))
                 .toggleStyle(.switch)

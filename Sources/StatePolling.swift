@@ -79,11 +79,13 @@ extension StatusController {
     /// told its hooks are fine.
     func loadCodexHooks() {
         switch codexStateFile(at: "codex/hooks.json", gate: &codexHooksMTime) {
-        case .missing: codexHooksUntrusted = 0; codexHooksAnswered = false
+        case .missing: codexHooksUntrusted = 0; codexHooksListed = nil; codexHooksAnswered = false
         case .unchanged: break
         case .changed(let object):
             codexHooksUntrusted = (object["untrusted"] as? NSNumber)?.intValue ?? 0
+            codexHooksListed = CodexHookTrust.listed(in: object)
             codexHooksAnswered = true
+            codexApproveFailed = false
         }
     }
 
@@ -91,6 +93,13 @@ extension StatusController {
         let path = (root as NSString).appendingPathComponent("codex/attention.json")
         engine.codexAttention = CodexAttention.read(at: path, gate: &codexAttentionMTime,
                                                    previous: engine.codexAttention)
+    }
+
+    /// The files only the Usage window reads: the usage summary and its scan status, both account
+    /// sidecars, both reset results, the saved prices. Each behind its own mtime gate, in
+    /// UsageFiles (UsageData.swift), where the render mode reads fixtures through the same code.
+    func loadUsageFiles() {
+        usage.files.reload(root: root)
     }
 
     // MARK: state polling
@@ -122,6 +131,9 @@ extension StatusController {
         loadCodexHooks()
         loadCodexAttention()
         pollCodexAttention(now: now)
+        // Only while its window is visible: seven stats a tick for a window most runs never open
+        // would be work for nobody.
+        if usageWindowVisible { tickUsageWindow(wall: now) }
         evaluate()
         // The panel is a live window, not a menu frozen at open time: the per-session clocks, the
         // limit figures and the server states all move under it. The store publishes only when
@@ -189,7 +201,11 @@ extension StatusController {
                                        hiddenModelServices: hiddenModelServices)
         let tick = board.tick(now: now, rules: rules, pidAlive: pidAlive,
                               frontmost: { NSWorkspace.shared.frontmostApplication?.bundleIdentifier },
-                              owner: { [self] session in
+                              frontmostHosts: { session in
+            NSWorkspace.shared.frontmostApplication.map {
+                RunningProcesses.descends(session.pid, from: $0.processIdentifier)
+            } ?? false
+        }, owner: { [self] session in
             guard let snapshot = sessionOwners, now - snapshot.takenAt.timeIntervalSince1970 < 5
             else { return .unknown }
             return snapshot.presence(of: session)

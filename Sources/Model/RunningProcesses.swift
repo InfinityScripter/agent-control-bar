@@ -116,6 +116,39 @@ enum RunningProcesses {
         return Array(pids.prefix(min(Int(count), pids.count))).filter { $0 > 0 }
     }
 
+    /// Is `ancestor` this process or one of the processes above it?
+    ///
+    /// Asked about the app in front and a session's process: an app that started the session is
+    /// showing it, whatever bundle id a launcher left in the session file. pid 1 is refused as an
+    /// ancestor — everything hangs off launchd, and it hosts nobody. The walk is bounded because
+    /// the table is read one row at a time while it changes: a pid reused mid-walk could
+    /// otherwise close a loop. Thirty-two levels is several times any real shell nesting.
+    static func descends(_ pid: pid_t, from ancestor: pid_t,
+                         parent: (pid_t) -> pid_t? = parentPid) -> Bool {
+        guard ancestor > 1 else { return false }
+        var current = pid
+        for _ in 0..<32 {
+            guard current > 1 else { return false }
+            if current == ancestor { return true }
+            guard let next = parent(current) else { return false }
+            current = next
+        }
+        return false
+    }
+
+    /// nil for a process that is gone, which ends the walk above.
+    ///
+    /// The short record and not the full one codexSnapshot reads: the full one is refused (EPERM)
+    /// for another user's process, and Terminal's shells hang off `login`, which runs as root —
+    /// the walk would stop one step short of the window. Measured on pid 1: full refused, short
+    /// answered.
+    static func parentPid(_ pid: pid_t) -> pid_t? {
+        var info = proc_bsdshortinfo()
+        let size = Int32(MemoryLayout<proc_bsdshortinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDT_SHORTBSDINFO, 0, &info, size) == size else { return nil }
+        return pid_t(truncatingIfNeeded: info.pbsi_ppid)
+    }
+
     static func exists(named name: String) -> Bool {
         existsAny(of: [name])
     }

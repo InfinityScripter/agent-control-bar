@@ -99,8 +99,10 @@ private struct GeneralSettings: View {
     // took it, which is how it shipped; the plugin compiles the app on the user's own Mac, with
     // whatever Swift that Mac's Command Line Tools carry, and there `build.sh` simply failed.
     private static let limitsFooter: String = "Polls Anthropic's usage endpoint with your own Claude "
-        + "OAuth token, which is sent to api.anthropic.com and nowhere else. With this off, the 5h "
-        + "and 7d bars only move when a status line happens to write them.\n\n"
+        + "OAuth token, which is sent to api.anthropic.com and nowhere else. The same request "
+        + "brings the plan, the account e-mail and the banked reset credits the Usage window "
+        + "shows; they stay on this Mac. With this off, the 5h and 7d bars only move when a "
+        + "status line happens to write them, and the Usage window has no account details.\n\n"
         + "Limit reset odds asks whenreset.app at most every 15 minutes for its estimate of an early "
         + "Claude or Codex limit reset, built from past vendor announcements. A plain public request "
         + "with no key and nothing about you in it. Off removes the card and stops the request."
@@ -128,7 +130,8 @@ private struct GeneralSettings: View {
 
     private static let codexFooter: String = "Current account limits are requested through Codex every five minutes "
         + "and when the menu-bar panel opens, using Codex's own sign-in. If Codex cannot answer, "
-        + "the latest usable session snapshot is shown with its original measurement time.\n\n"
+        + "the latest usable session snapshot is shown with its original measurement time. Once "
+        + "a day Codex is also asked for the account e-mail the Usage window shows.\n\n"
         + "The second switch lists Codex's own MCP servers in the MCP tab, with the same switches. "
         + "Asking Codex for the tool names starts each configured server, the way Codex itself "
         + "does — so with a slow server, turn this off and the servers stop being asked."
@@ -143,12 +146,14 @@ private struct GeneralSettings: View {
     /// never saw the block at all.
     private var codexHooksRow: some View {
         HStack {
-            switch store.codexHooksUntrusted {
-            case .none:
+            switch store.codexHooks {
+            case .notAsked:
                 Label("Hook trust: not asked yet", systemImage: "questionmark.circle")
-            case .some(0):
+            case .notInstalled:
+                Label("Hooks not installed in Codex", systemImage: "exclamationmark.triangle")
+            case .approved:
                 Label("Hooks approved", systemImage: "checkmark.circle")
-            case .some(let n):
+            case .waiting(let n):
                 Label(n == 1 ? "1 hook not approved" : "\(n) hooks not approved",
                       systemImage: "exclamationmark.triangle")
             }
@@ -246,7 +251,14 @@ private struct GeneralSettings: View {
             Section {
                 Toggle("Codex limits", isOn: store.codexLimits)
                 Toggle("Codex MCP servers", isOn: store.codexServers)
-                if store.codexPresent { codexHooksRow }
+                if store.codexPresent {
+                    codexHooksRow
+                    if store.codexApproveFailed {
+                        Text(CodexHookTrust.noAnswer)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             } header: {
                 Text("Codex")
             } footer: {
@@ -462,6 +474,9 @@ private struct AboutSettings: View {
         + "Codex skips any hook until it is approved, so the button also approves this app's "
         + "hooks in Codex. Only a click does that, never a launch."
 
+    private static let brewPendingNote: String = "Homebrew has not picked this release up yet. "
+        + "Its cask usually follows within a day, and the upgrade command appears here once it has."
+
     /// The cause is selectable here and not in the panel: this is a normal window, and a path or a
     /// library name is exactly what someone wants to paste into a terminal or a bug report.
     @ViewBuilder
@@ -481,6 +496,14 @@ private struct AboutSettings: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
+        } else if case .codexNotWritten(let reason) = store.hooksHealth {
+            Label("Installed for Claude", systemImage: "checkmark.circle")
+                .foregroundStyle(.secondary)
+            Label("Codex hooks weren\u{2019}t written", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text(reason)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
         } else if store.hooksHealth == .ok {
             Label("Installed", systemImage: "checkmark.circle")
                 .foregroundStyle(.secondary)
@@ -517,9 +540,14 @@ private struct AboutSettings: View {
                     Button("What\u{2019}s new in \(newer)") { store.showLatestNotes() }
                     // Homebrew owns the bundle, and a DMG swapped under it would be undone by the
                     // next `brew upgrade` — so the command is handed over rather than performed.
-                    if store.brewManaged {
+                    // Only once the cask has the release, though: until then brew answers
+                    // "already up to date", and the page says to wait instead.
+                    if case .brew = store.updateOffer {
                         LabeledContent("Update with", value: store.brewUpgradeCommand)
                             .textSelection(.enabled)
+                    } else if case .brewPending = store.updateOffer {
+                        Text(Self.brewPendingNote)
+                            .foregroundStyle(.secondary)
                     }
                 } else if store.updateProblem == nil {
                     Label("This copy is up to date", systemImage: "checkmark.circle")

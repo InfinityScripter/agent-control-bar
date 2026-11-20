@@ -108,8 +108,11 @@ const codexEvents = [
   ["SessionEnd", life("end"), 3],
 ];
 
+// False when ~/.codex/hooks.json could not be read or written — the one outcome that leaves a
+// Codex user without sessions. The reason is said on the first line of output, which is the line
+// the app shows.
 const installCodexHooks = () => {
-  if (!fs.existsSync(codexHome)) return;       // no Codex here, nothing to hook into
+  if (!fs.existsSync(codexHome)) return true;  // no Codex here, nothing to hook into
   let file = { hooks: {} };
   if (fs.existsSync(codexHooksPath)) {
     file = readJSON(codexHooksPath);
@@ -117,7 +120,7 @@ const installCodexHooks = () => {
     // take the user's own Codex hooks with it, and Claude's install must still proceed.
     if (!file || typeof file !== "object" || Array.isArray(file)) {
       console.error("~/.codex/hooks.json does not parse — Codex hooks not installed.");
-      return;
+      return false;
     }
   }
   if (!file.hooks || typeof file.hooks !== "object" || Array.isArray(file.hooks)) file.hooks = {};
@@ -132,7 +135,7 @@ const installCodexHooks = () => {
   const next = JSON.stringify(file, null, 2) + "\n";
   // Changing a hook's command makes Codex ask for trust again, so an unchanged file must not be
   // rewritten at all — this installer runs on every app launch.
-  if (next === before) return;
+  if (next === before) return true;
   try {
     fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
     const tmp = `${codexHooksPath}.${process.pid}.tmp`;
@@ -142,16 +145,22 @@ const installCodexHooks = () => {
     fs.renameSync(tmp, codexHooksPath);
     console.log("Installed Codex hooks into", codexHooksPath);
     console.log("Codex will ask you to trust them once, on its next start.");
+    return true;
   } catch (err) {
     console.error("could not write " + codexHooksPath + ":", err.message);
+    return false;
   }
 };
 
-installCodexHooks();
+const codexWritten = installCodexHooks();
+// The exit status for "Claude's hooks are in place, Codex's are not" (EX_CANTCREAT). Its own
+// code rather than a plain failure: the app must not announce that the session hooks are missing
+// and start retrying over a Claude install that worked. A 0 was worse — it read as "Installed".
+const CODEX_NOT_WRITTEN = 73;
 
 if (pluginOwns) {
   console.log("Plugin channel owns the hooks (" + owner.pluginRoot + ") — nothing to install.");
-  process.exit(0);
+  process.exit(codexWritten ? 0 : CODEX_NOT_WRITTEN);
 }
 
 // Retire the old 0.0.2 background watcher LaunchAgent on upgrade (0.0.3+ self-quits).
@@ -285,6 +294,9 @@ if (next === before) {
   // place while the hooks were missing. 75 is EX_TEMPFAIL: the file was busy, not broken.
   process.exitCode = 75;
 }
+// Only over an otherwise clean run: a settings.json that was not written is the bigger failure,
+// and the app retries on it.
+if (!codexWritten && !process.exitCode) process.exitCode = CODEX_NOT_WRITTEN;
 
 // claude-status-bar — the project this was forked from — installs its own hooks under
 // ~/.claude/statusbar. They are NOT stripped here on purpose: it is a separate product, and

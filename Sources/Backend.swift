@@ -9,21 +9,34 @@ extension StatusController {
     /// Any mcpbar.py command: off the main queue, UI updated back on it. Nothing here parses the
     /// script's output — the script writes mcp.json and the model re-reads it.
     ///
-    /// Serial, on backendQueue (main.swift says why).
+    /// Serial, a full check on backendQueue and a switch on switchQueue (main.swift says why).
     func runBackend(_ command: BackendCommand, then done: (() -> Void)? = nil) {
         guard !backend.script.isEmpty else {
-            NSLog("ClaudeControlBar: no mcpbar.py — the bootstrap hook has not run")
+            NSLog("ClaudeControlBar: no mcpbar.py — neither inside the app nor where paths.json points")
             done?()
             return
         }
         backendRunning += 1
         mcpBusy = true
-        backendQueue.async { [weak self] in
+        let switched = command.switchProvider
+        // Told about the switch twice, now and when the write has landed (below). Landing is the
+        // one that matters: a check that began after the click can still have read the config
+        // before the write. This one is for the check that lands in the instant between the
+        // script exiting and that block running — by then it no longer looks in flight.
+        if let switched { mcpRefresh.switched(switched) }
+        (switched == nil ? backendQueue : switchQueue).async { [weak self] in
             guard let self else { return }
-            self.spawnBackend(command)
+            let run = self.spawnBackend(command)
             DispatchQueue.main.async {
                 self.backendRunning = max(0, self.backendRunning - 1)
                 self.mcpBusy = self.backendRunning > 0
+                if let switched {
+                    // nil for a switch that took — which is also what clears the last refusal.
+                    // Not kept for a panel closed meanwhile: it would greet the next open, hours
+                    // later, as if it were about something just clicked.
+                    self.mcpSwitchRefusal = self.panelIsOpen ? command.refusal(run) : nil
+                    self.mcpRefresh.switched(switched)
+                }
                 self.mcp.reloadIfChanged(force: true)
                 // Both models, or the promise in the comment below holds for one agent only.
                 // A refused Codex toggle leaves codex/mcp.json exactly as it was — same mtime,
@@ -42,34 +55,45 @@ extension StatusController {
         }
     }
 
-    /// Refreshes coalesce: a second full check queued behind one still running buys nothing but
-    /// another half-minute of every configured server being started again. It is remembered, not
-    /// discarded, and runs once as soon as the current one lands.
-    @objc func refreshMCP() {
-        guard !refreshQueued else { refreshAgain = true; return }
-        refreshQueued = true
-        // Codex's list is asked for on the same occasions as Claude's, and coalesces with it for
-        // the same reason: this one starts every configured Codex server to ask it for its tools,
-        // which is the expensive thing a second queued check would repeat for nothing. Gated on
+    /// Both agents: the ten-minute timer, an opened panel, the Check button.
+    @objc func refreshMCP() { refreshMCP(of: ["claude", "codex"]) }
+
+    /// Refreshes coalesce, each agent's on its own (MCPRefreshPoll says why): a second full check
+    /// behind one still running buys nothing but another half-minute of every configured server
+    /// being started again. It is remembered, not discarded, and runs once the current one lands.
+    func refreshMCP(of providers: Set<String>) {
+        // Codex's check starts every configured Codex server to ask it for its tools. Gated on
         // the switch AND on Codex being installed, so a Mac without it spawns nothing.
-        if codexServers, codexInstalled {
-            runQuietCommand(.mcpRefresh(provider: "codex"))
+        let wanted = codexServers && codexInstalled ? providers : providers.subtracting(["codex"])
+        let starting = mcpRefresh.begin(wanted)
+        guard !starting.isEmpty else { return }
+        if starting.contains("codex") {
+            runQuietCommand(.mcpRefresh(provider: "codex")) { [weak self] _ in
+                self?.finishRefresh(of: "codex")
+            }
         }
         // Asked on the same occasions, and not gated on either Codex switch: this one explains an
         // empty Sessions tab, which is not a thing either switch turns off. It is gated on its own
         // INPUT instead, and that gate is not an optimisation: refreshes also run 2.5 s after every
-        // server or tool switch, so without it a handful of clicks in the MCP tab would spawn a
+        // Claude server switch, so without it a handful of clicks in the MCP tab would spawn a
         // `codex app-server` each — for an answer that can only change when a human has answered a
         // trust prompt, which is exactly what rewrites one of the two files below.
-        if askCodexAboutHooks() { runQuietCommand(.codexHooks) }
-        runBackend(.mcpRefresh(provider: "claude")) { [weak self] in
-            guard let self else { return }
-            self.refreshQueued = false
-            if self.refreshAgain {
-                self.refreshAgain = false
-                self.refreshMCP()
+        if askCodexAboutHooks() {
+            runQuietCommand(.codexHooks) { [weak self] succeeded in
+                // A question Codex did not answer was not asked: without this the gate holds the
+                // next one back until Codex rewrites one of its two files, which may be never.
+                if !succeeded { self?.codexTrustInputs = nil }
             }
         }
+        if starting.contains("claude") {
+            runBackend(.mcpRefresh(provider: "claude")) { [weak self] in
+                self?.finishRefresh(of: "claude")
+            }
+        }
+    }
+
+    private func finishRefresh(of provider: String) {
+        if mcpRefresh.finish(provider) { refreshMCP(of: [provider]) }
     }
 
     /// Current account limits, with each provider's own switch and debounce.
@@ -80,13 +104,15 @@ extension StatusController {
         pollServiceUsage(now: Date(timeIntervalSince1970: now))
     }
 
-    func pollCodexLimits(now: Double) {
-        guard codexLimits, codexInstalled, codexLimitsPoll.begin(now: now) else { return }
+    /// `force` is the Usage window's refresh button; see CodexLimitsPoll.begin.
+    func pollCodexLimits(now: Double, force: Bool = false) {
+        guard codexLimits, codexInstalled, codexLimitsPoll.begin(now: now, force: force) else { return }
         codexLimitsTimer?.fireDate = Date(timeIntervalSince1970: now + 300)
         runQuietCommand(.limits(provider: "codex")) { [weak self] _ in
             self?.codexLimitsPoll.finish()
             self?.loadCodexLimits()
             self?.loadCodexLimitsStatus()
+            self?.usageLimitsLanded()
             self?.refreshCounts()
         }
     }
@@ -110,8 +136,14 @@ extension StatusController {
     /// app starts, and the tick 0.4 s later reads a file written before the machine was last
     /// closed, every window in it long since rolled over. Without the minute that is a second
     /// request for the answer already coming.
+    ///
+    /// The minute is asked the way pollClaudeLimits asks it (ClaudeLimitsPoll.mayStart), not
+    /// counted here: a rollover is marked as handled only when its poll really starts. A request
+    /// in flight for more than a minute passes a bare minute and is still refused there, and the
+    /// rollover marked meanwhile was never asked for again.
     func pollLimitsIfRolledOver(now: Double) {
-        guard oauthLimits, now - lastLimitsPoll >= 60,
+        guard oauthLimits, ClaudeLimitsPoll.mayStart(now: now, lastStart: lastLimitsPoll,
+                                                     running: claudeLimitsRunning, force: false),
               let newest = limits?.set.rolledOver(since: rolledOverHandled, at: now)
         else { return }
         rolledOverHandled = newest
@@ -120,32 +152,43 @@ extension StatusController {
 
     /// Ask Anthropic now and push the five-minute timer back to count from this question, so a
     /// poll made on opening the panel is not followed seconds later by the timer's own.
-    func pollClaudeLimits(now: Double) {
-        guard oauthLimits, now - lastLimitsPoll >= 60 else { return }
+    ///
+    /// `force` is the Usage window's refresh button: it skips the minute, never a request that is
+    /// already on its way (ClaudeLimitsPoll). The file is still picked up by the tick's mtime
+    /// gate; the completion only clears the flag and tells the Usage window, if there is one.
+    func pollClaudeLimits(now: Double, force: Bool = false) {
+        guard oauthLimits, ClaudeLimitsPoll.mayStart(now: now, lastStart: lastLimitsPoll,
+                                                     running: claudeLimitsRunning, force: force)
+        else { return }
         lastLimitsPoll = now
+        claudeLimitsRunning = true
         limitsTimer?.fireDate = Date(timeIntervalSince1970: now + 300)
-        runQuietCommand(.limits(provider: "claude"))
+        runQuietCommand(.limits(provider: "claude")) { [weak self] _ in
+            self?.claudeLimitsRunning = false
+            self?.usageLimitsLanded()
+        }
     }
 
     /// Run one backend command for the file it writes and nothing else. Not routed through runBackend:
     /// that toggles mcpBusy and re-reads mcp.json, and a poll that only rewrites its own file
     /// has nothing to say about either — the tick's mtime gate picks the file up.
     func runQuietCommand(_ command: BackendCommand, then done: ((Bool) -> Void)? = nil) {
-        guard !backend(for: command).script.isEmpty else { done?(false); return }
+        guard !backend.script.isEmpty else { done?(false); return }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
-            let succeeded = self.spawnBackend(command)
+            let succeeded = self.spawnBackend(command).succeeded
             if let done { DispatchQueue.main.async { done(succeeded) } }
         }
     }
 
-    func backend(for command: BackendCommand) -> (python: String, script: String) {
-        command.backend(normal: backend,
-                        bundledScript: Bundle.main.path(forResource: "mcpbar", ofType: "py", inDirectory: "scripts"))
-    }
-
     func pollCodexAttention(now: Double) {
-        guard codexAttentionPoll.begin(now: now, sessions: Array(sessions.values), pidAlive: pidAlive) else { return }
+        // The same path mcpbar_codex.py connects to. Only its presence is asked here; whether it
+        // is a socket of ours that is safe to talk to stays the script's question.
+        let socket = (codexHome as NSString)
+            .appendingPathComponent("app-server-control/app-server-control.sock")
+        guard codexAttentionPoll.begin(now: now, sessions: Array(sessions.values),
+                                       socketExists: { FileManager.default.fileExists(atPath: socket) },
+                                       pidAlive: pidAlive) else { return }
         runQuietCommand(.codexAttention) { [weak self] _ in
             guard let self else { return }
             self.codexAttentionPoll.finish()
@@ -193,46 +236,34 @@ extension StatusController {
     /// come through here, so neither can die unheard: stderr and the exit code used to go to
     /// /dev/null together on the quiet path, and a backend that died on a traceback looked exactly
     /// like one that had nothing to report — every question to Codex once failed that way with a
-    /// NameError, unnoticed. Read into a pipe (not inherited: a GUI process's stderr is the
-    /// system log, where it is nobody's) and surfaced only on a non-zero exit, so a healthy run
-    /// stays quiet.
+    /// NameError, unnoticed. Surfaced only when the run did not exit 0, so a healthy run stays
+    /// quiet.
+    ///
+    /// Every run has a deadline (BackendCommand.deadline), and the caller is answered either way.
+    /// Only the attention poll had one: any other run that never returned kept the serial queue,
+    /// and whichever of "checking", "loading" or "approving" was waiting on it, until the app was
+    /// restarted. HookInstall.run collects stderr in a file because a pipe is read to EOF, and
+    /// EOF waits for every holder of the write end — the server a stopped script had started
+    /// would have kept this thread exactly where the deadline was meant to free it.
     @discardableResult
-    func spawnBackend(_ command: BackendCommand) -> Bool {
-        let backend = self.backend(for: command)
+    func spawnBackend(_ command: BackendCommand) -> HookInstall.Run {
+        let backend = self.backend
         let arguments = command.arguments
-        let task = Process()
         // Absolute paths: a GUI process gets a stripped PATH with no pyenv and no nvm in it.
-        task.executableURL = URL(fileURLWithPath: backend.python)
-        task.arguments = [backend.script] + arguments
-        task.standardOutput = FileHandle.nullDevice
-        let errors = Pipe()
-        task.standardError = errors
-        do {
-            try task.run()
-            var deadline: DispatchWorkItem?
-            if case .codexAttention = command {
-                let stop = DispatchWorkItem {
-                    if task.isRunning {
-                        NSLog("ClaudeControlBar: Codex attention poll exceeded its deadline")
-                        kill(task.processIdentifier, SIGKILL)
-                    }
-                }
-                deadline = stop
-                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 3, execute: stop)
-            }
-            defer { deadline?.cancel() }
-            let stderr = errors.fileHandleForReading.readDataToEndOfFile()
-            task.waitUntilExit()
-            if task.terminationStatus != 0 {
-                let text = String(data: stderr.suffix(2000), encoding: .utf8) ?? ""
-                NSLog("ClaudeControlBar: mcpbar.py \(arguments.joined(separator: " ")) exited"
-                      + " \(task.terminationStatus): \(text)")
-            }
-            return task.terminationReason == .exit && task.terminationStatus == 0
-        } catch {
-            NSLog("ClaudeControlBar: \(backend.python) failed: \(error)")
-            return false
+        let run = HookInstall.run(backend.python, [backend.script] + arguments,
+                                  timeout: command.deadline, errorsOnly: true)
+        let words = arguments.joined(separator: " ")
+        if run.end == .timedOut, case .codexAttention = command {
+            // Not in problems.log: this one is asked every five seconds, and a socket that has
+            // stopped answering would add a line to that file each time for as long as it lasts.
+            NSLog("ClaudeControlBar: Codex attention poll exceeded its deadline")
+        } else if run.end == .timedOut {
+            logProblem("mcpbar.py \(words) was stopped after \(command.deadline.clampedInt) s without finishing")
+        } else if !run.succeeded {
+            NSLog("ClaudeControlBar: mcpbar.py \(words) \(HookInstall.describe(run)):"
+                  + " \(run.output.suffix(2000))")
         }
+        return run
     }
 
     /// Re-publish the panel's picture if it is on screen. The menu needed a list of closures for
@@ -242,6 +273,7 @@ extension StatusController {
     func refreshCounts() {
         if panelIsOpen { panelStore.refresh() }
         if settingsWindow?.isVisible == true { settingsStore.refresh() }
+        if usageWindowVisible { usageStore.refresh() }
     }
 
     /// Which model holds a provider's servers. One place, so a new provider cannot be half-wired.
@@ -254,7 +286,10 @@ extension StatusController {
         // the wrong file and leave the row lying about what happened.
         model(of: provider).setServerLocally(name, enabled: enabled)
         runBackend(.toggleServer(provider: provider, name: name, on: enabled))
-        scheduleRecheck()
+        // Claude's switch only patches mcp.json, so something has to go and ask the servers.
+        // Codex's command ends in its own full re-read: a recheck on top of it started every
+        // Codex server a second time for the same click.
+        if provider != "codex" { scheduleRecheck() }
         // Last, not first: the row draws a spinner while a check is running or ordered, so it has
         // to be redrawn after the work is on its way rather than before.
         refreshCounts()
@@ -268,9 +303,13 @@ extension StatusController {
     /// the ten-minute timer meant a server switched back on sat unresolved long enough to read as
     /// broken. Debounced, because flipping several servers in a row should cost one check, not one
     /// each — a full check re-runs `claude mcp list` and a tools/list round trip per server.
+    /// Claude's check alone: only a Claude switch asks for it, and Codex's servers are not its
+    /// business.
     func scheduleRecheck() {
         recheckTimer?.invalidate()
-        let timer = Timer(timeInterval: 2.5, repeats: false) { [weak self] _ in self?.refreshMCP() }
+        let timer = Timer(timeInterval: 2.5, repeats: false) { [weak self] _ in
+            self?.refreshMCP(of: ["claude"])
+        }
         // .common, so it fires while the menu is open — which is exactly when toggles happen.
         RunLoop.main.add(timer, forMode: .common)
         recheckTimer = timer
