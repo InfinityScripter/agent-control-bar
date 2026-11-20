@@ -4863,6 +4863,86 @@ func mcpSwitchReadChecks() {
 }
 mcpSwitchReadChecks()
 
+// A full check that wrote nothing settles no click. Codex's exits at once, its file untouched, when
+// codex/refresh.lock is held — by a second switch's own re-read, say — and in 0.30.1 that exit still
+// counted as a read from after the first switch: its row flipped back to the stale file for as long
+// as the second switch's re-read took. Here the controller's steps are taken as Backend.swift takes
+// them; file times are set rather than taken from the clock, and uptime and wall clock share numbers.
+func mcpSwitchReadChecks2() {
+    let folder = NSTemporaryDirectory() + "ccb-mcp-lock-\(getpid())/"
+    try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+    func write(_ file: String, x: String, y: String, at time: Double) {
+        try! JSONSerialization.data(withJSONObject: ["servers": [
+            ["name": "x", "state": x, "source": "codex", "provider": "codex"],
+            ["name": "y", "state": y, "source": "codex", "provider": "codex"]]])
+            .write(to: URL(fileURLWithPath: folder + file))
+        try! FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: time)],
+                                               ofItemAtPath: folder + file)
+    }
+    func states(_ model: MCPModel) -> [String] { model.servers.map(\.state) }
+
+    write("codex.json", x: "ok", y: "ok", at: 0)
+    let model = MCPModel(path: folder + "codex.json")
+    model.reloadIfChanged()
+    var poll = MCPRefreshPoll()
+    var started: [Double] = []
+    func refresh(at time: Double) { if !poll.begin(["codex"]).isEmpty { started.append(time) } }
+    func finishRefresh(startedAt time: Double) -> Bool {
+        let settled = model.checkLanded(startedAt: time, wallStart: Date(timeIntervalSince1970: time))
+        if poll.finish("codex") { refresh(at: time) }
+        model.reloadIfChanged(force: true)
+        return settled
+    }
+    func switchLanded(_ command: BackendCommand, at time: Double) {
+        let ownRead = poll.switchLanded("codex")
+        model.switchLanded(command, applied: true, ownRead: ownRead, at: time)
+        if !ownRead { refresh(at: time + 0.5) }
+        model.reloadIfChanged(force: true)
+    }
+
+    refresh(at: 1)                                    // check A: the panel opened
+    model.setServerLocally("x", enabled: false); poll.switchStarted("codex")
+    model.setServerLocally("y", enabled: false); poll.switchStarted("codex")
+    write("codex.json", x: "ok", y: "ok", at: 5)      // A writes what it read before the clicks
+    _ = finishRefresh(startedAt: 1)
+    check(states(model) == ["off", "off"], "a check that read the config before two switches flips neither back")
+    switchLanded(.toggleServer(provider: "codex", name: "x", on: false), at: 6)
+    // Check D, ordered by the first switch, finds the lock held by the second switch's own re-read.
+    check(!finishRefresh(startedAt: 6.5) && states(model) == ["off", "off"],
+          "a check that exited on a busy lock without writing does not flip the first switch back")
+    write("codex.json", x: "off", y: "off", at: 9)    // the second switch's own re-read
+    switchLanded(.toggleServer(provider: "codex", name: "y", on: false), at: 9)
+    check(states(model) == ["off", "off"], "nor does the second switch landing")
+    write("codex.json", x: "off", y: "off", at: 12)   // check E, ordered by the second switch
+    check(finishRefresh(startedAt: 9.5), "a check that did rewrite the file still settles both clicks")
+    check(started == [1, 6.5, 9.5], "one check more per switch, no loop on the busy lock (got \(started))")
+    write("codex.json", x: "ok", y: "off", at: 20)
+    model.reloadIfChanged(force: true)
+    check(states(model) == ["ok", "off"], "and the file is shown as it is after that")
+
+    // Claude's checks land through the same call: one that wrote settles, one that did not waits.
+    write("claude.json", x: "ok", y: "ok", at: 30)
+    let claude = MCPModel(path: folder + "claude.json")
+    claude.reloadIfChanged()
+    claude.setServerLocally("x", enabled: false)
+    claude.switchLanded(.toggleServer(provider: "claude", name: "x", on: false),
+                        applied: true, ownRead: false, at: 31)
+    check(!claude.checkLanded(startedAt: 32, wallStart: Date(timeIntervalSince1970: 32)),
+          "a Claude check that found its lock busy settles nothing either")
+    write("claude.json", x: "off", y: "ok", at: 33)
+    check(claude.checkLanded(startedAt: 32, wallStart: Date(timeIntervalSince1970: 32)),
+          "a Claude check that wrote its file settles the click as before")
+    claude.setServerLocally("y", enabled: false)
+    write("claude.json", x: "off", y: "ok", at: 40)
+    claude.switchLanded(.toggleServer(provider: "claude", name: "y", on: false),
+                        applied: true, ownRead: true, at: 41)
+    claude.reloadIfChanged(force: true)
+    check(claude.servers.map(\.state) == ["off", "ok"],
+          "a switch's own re-read still settles its click by itself")
+    try? FileManager.default.removeItem(atPath: folder)
+}
+mcpSwitchReadChecks2()
+
 // A switch clicked in the panel shows its new position at once and keeps it until a re-read that
 // began after the write has landed. In 0.30.0 the row flipped back to the old state as soon as a
 // check that had read the config before the click wrote its file, and stayed there until the
@@ -8978,6 +9058,7 @@ func usageChecks71() {
     let raw = (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath:
         FileManager.default.currentDirectoryPath + "/build/seam/reset-credit-pending.json")))) as? [String: Any]
     let created = usageNumber(raw?["createdAt"]) ?? 0, sent = usageNumber(raw?["sentAt"]) ?? 0
+    let answerBy = usageNumber(raw?["answerBy"]) ?? 0
     var retried = UsageInputs(now: sent + 60, providers: ["claude"])
     retried.files.accounts["claude"] = sidecar(created + 1800)
     retried.files.resetResults["claude"] = UsageResetResult(
@@ -8987,12 +9068,42 @@ func usageChecks71() {
     check(sent - created >= 3600 && allowed(retried) == [true, false],
           "a retry killed mid-request after a fresh poll still leaves only its grant: the window reads when it was sent")
     let seam = files.resetPending["claude"]
-    check(seam?.attempt.creditId == "weekly_a" && seam?.attempt.ts == sent && seam?.createdAt == created && created > 0
+    check(seam?.attempt.creditId == "weekly_a" && seam?.attempt.ts == answerBy && answerBy > sent
+            && seam?.createdAt == created && created > 0
             && seam?.attempt.outcome == nil && seam?.attempt.error == "requestFailed",
           "pending key seam: build/seam/reset-credit-pending.json reads as an open attempt for its grant "
             + "(run the python suite first, it writes the file)")
 }
 usageChecks71()
+
+// A poll that ran while the retry could still be waiting for its answer may have read the credits
+// before the provider handled it: only a poll after the key's answer deadline settles the attempt.
+func usageChecks73() {
+    let sent = 1_795_091_862.0, answerBy = sent + 25
+    let root = NSTemporaryDirectory() + "acb-usageChecks73-\(ProcessInfo.processInfo.processIdentifier)"
+    try? FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(atPath: root) }
+    let key: [String: Any] = ["key": "k", "creditId": "weekly_a", "createdAt": sent - 3600, "sentAt": sent,
+                              "answerBy": answerBy]
+    try? JSONSerialization.data(withJSONObject: key).write(to: URL(fileURLWithPath: root + "/reset-credit-pending.json"))
+    var files = UsageFiles()
+    files.reload(root: root)
+    var inputs = UsageInputs(now: answerBy + 60, providers: ["claude"])
+    inputs.files.resetPending = files.resetPending
+    let allowed = { (pollTs: Double) -> [Bool] in
+        inputs.files.accounts["claude"] = UsageAccount(json: ["ts": pollTs, "resetCredits": ["availableCount": 3, "options": [
+            ["creditId": "weekly_a", "kind": "weekly", "availableCount": 2] as [String: Any],
+            ["creditId": "session_a", "kind": "session", "availableCount": 1] as [String: Any],
+        ]] as [String: Any]], provider: "claude")
+        let state = UsageSnapshot(inputs).limits[0]
+        return state.limits.resetChoices(now: inputs.now).map { state.mayRedeem(creditId: $0.creditId) }
+    }
+    check(allowed(sent + 5) == [true, false],
+          "a poll inside the retry's answer window does not settle it: only its grant may be retried")
+    check(allowed(answerBy) == [true, false], "nor one stamped in the deadline's own second")
+    check(allowed(answerBy + 1) == [true, true], "a poll after the answer deadline settles it")
+}
+usageChecks73()
 
 // The popover's target is plain data the store can compare.
 func usageChecks69() {
@@ -9114,6 +9225,43 @@ func usageChecks72() {
           "a week with room leaves the session's own bar and line in the icon")
 }
 usageChecks72()
+
+// The panel knows a plan that only account.json carries before the Usage window is ever opened:
+// the tick reads the account sidecars, not the window. Codex Free with no window lengths and a
+// spent week: the slot without a length is Monthly, so the panel must not block it.
+func usageChecks74() {
+    let now = 1_795_112_308.0
+    let root = NSTemporaryDirectory() + "ccb-panel-plan-\(getpid())/"
+    try? FileManager.default.createDirectory(atPath: root + "codex", withIntermediateDirectories: true)
+    try? FileManager.default.createDirectory(atPath: root + "usage", withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(atPath: root) }
+    try? #"{"ts": 1795112278, "provider": "codex", "planType": "free"}"#
+        .write(toFile: root + "codex/account.json", atomically: true, encoding: .utf8)
+    try? #"{"version": 1, "readAt": 1795112278, "periods": {}}"#
+        .write(toFile: root + "usage/summary.json", atomically: true, encoding: .utf8)
+    let set = LimitsSet(provider: "codex", windows: [
+        NamedWindow(key: "primary", title: "primary", badge: nil, minutes: nil,
+                    window: LimitWindow(used: 30, resets: now + 3600)),
+        NamedWindow(key: "secondary", title: "secondary", badge: nil, minutes: nil,
+                    window: LimitWindow(used: 100, resets: now + 86400)),
+    ], source: "app-server", ts: now - 30, plan: nil)
+
+    var panelFiles = UsageFiles()   // no window reload yet, only the tick's
+    panelFiles.reloadAccounts(root: root)
+    check(panelFiles.accounts["codex"]?.planType == "free" && panelFiles.summary == nil,
+          "the tick reads the account sidecars, and only them: not the usage summary")
+    var windowFiles = UsageFiles()
+    windowFiles.reload(root: root)
+    let rows = UsageProviderLimits(provider: "codex", set: set, account: windowFiles.accounts["codex"], now: now).rows
+    for panel in set.usable(set.drawable(at: now), account: panelFiles.accounts["codex"], now: now) {
+        let row = rows.first { $0.id == panel.key }
+        check(row?.remainingPercent == panel.window.remaining && row?.resetsAt == panel.window.resets,
+              "before the Usage window opens, \(panel.key): panel \(panel.window.remaining)% left "
+                + "reset \(panel.window.resets.map { $0 - now } ?? -1); Usage \(row?.label ?? "-") "
+                + "\(row?.remainingPercent ?? -1)% left reset \(row?.resetsAt.map { $0 - now } ?? -1)")
+    }
+}
+usageChecks74()
 
 // MARK: Usage window — the files the real Python writers produced
 // The same border as the limits seams above, for the Usage window's five files: written by the

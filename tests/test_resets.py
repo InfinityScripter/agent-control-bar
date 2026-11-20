@@ -276,6 +276,9 @@ class ClaudeResetCredit(unittest.TestCase):
         self.assertEqual(self.server.posts[0]["body"]["request_id"], "stored-key")
         self.assertEqual((seen[0]["key"], seen[0]["createdAt"]), ("stored-key", created))
         self.assertGreaterEqual(seen[0]["sentAt"], started)
+        # Опрос, прошедший пока заявка могла быть в пути, мог прочитать сбросы до её обработки:
+        # окно засчитывает только опрос после крайнего срока ответа.
+        self.assertEqual(seen[0]["answerBy"], seen[0]["sentAt"] + mcpbar_resets.CLAIM_TIMEOUT)
         # Тот же файл оставит процесс, убитый посреди повтора: окно читает его как открытую заявку.
         os.makedirs(os.path.join(REPO, "build", "seam"), exist_ok=True)
         shutil.copyfile(self.path("reset-credit-pending.json"),
@@ -739,6 +742,9 @@ class CodexResetCredit(unittest.TestCase):
                 self.replies[self.CONSUME] = [reply]
                 with mock.patch.object(mcpbar_resets, "CONSUME_TIMEOUT", 1 if "hang" in reply else 20):
                     self.assertEqual(self.redeem(), 1)
+                    # Ответа ждут CONSUME_TIMEOUT, потом app-server до 2 с гасят и до 2 с ждут после kill.
+                    self.assertEqual(self.pending()["answerBy"] - self.pending()["sentAt"],
+                                     mcpbar_resets.CONSUME_TIMEOUT + 4)
                 result = self.result()
                 self.assertEqual((result["outcome"], result["error"], result["confirmed"]), (None, category, False))
                 self.assertEqual(self.calls(self.CONSUME)[-1]["params"]["idempotencyKey"], self.pending()["key"])

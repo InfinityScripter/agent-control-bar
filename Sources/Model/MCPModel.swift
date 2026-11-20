@@ -291,6 +291,18 @@ final class MCPModel {
         }
     }
 
+    /// A full check begun at `start` (uptime) and `wallStart` (the clock file times are in) has
+    /// landed. Only one that rewrote the file read the config after the clicks: a check that found
+    /// its agent's refresh lock busy — held by a switch's own re-read, say — exits at once and
+    /// writes nothing, and the file left is the picture from before them.
+    @discardableResult
+    func checkLanded(startedAt start: Double, wallStart: Date) -> Bool {
+        let stamp = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate])
+            as? Date
+        guard let stamp, stamp >= wallStart else { return false }
+        return forgetClicks(readStartedAt: start)
+    }
+
     /// A read that began at `start` has landed: the clicks written before it are now in the file,
     /// which re-reading shows as it is. True when any was dropped and the caller has to re-read.
     @discardableResult

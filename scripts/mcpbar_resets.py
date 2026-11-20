@@ -73,14 +73,15 @@ def account_lock(root):
             yield True
 
 
-def pending_key(root, credit_id):
+def pending_key(root, credit_id, answer_within):
     """Ключ идемпотентности попытки: сохранённый, пока он годен, иначе новый.
 
     Ключ ложится на диск до отправки запроса: процесс, убитый посреди вызова, не должен
     забыть ключ заявки, которая могла дойти. Сохранённый годен сутки от `createdAt` и только для
     того же гранта — старый ключ с другим грантом был бы новой заявкой под чужим именем.
-    `sentAt` — время этой отправки: окно сравнивает с ним account.json, и повтор после свежего
-    опроса остаётся открытой заявкой, даже если процесс убит посреди запроса.
+    `sentAt` — время этой отправки, `answerBy` — её крайний срок ответа (`answer_within` секунд
+    спустя). Окно засчитывает только account.json новее `answerBy`: опрос, прошедший пока заявка
+    могла быть в пути, мог прочитать сбросы до её обработки, а процесс могли убить до записи исхода.
     """
     path = os.path.join(root, "reset-credit-pending.json")
     stored, now = read_json(path, {}), time.time()
@@ -88,8 +89,8 @@ def pending_key(root, credit_id):
     if not (isinstance(key, str) and REQUEST_ID.fullmatch(key) and stored.get("creditId") == credit_id
             and finite(created) and 0 <= now - created < KEY_TTL):
         key, created = str(uuid.uuid4()), int(now)
-    write_json(path, {"key": key, "creditId": credit_id, "createdAt": created, "sentAt": int(now)},
-               mode=SECURE_FILE)
+    write_json(path, {"key": key, "creditId": credit_id, "createdAt": created, "sentAt": int(now),
+                      "answerBy": int(now + answer_within)}, mode=SECURE_FILE)
     return key
 
 
@@ -246,7 +247,7 @@ def claude_attempt(credit_id):
     if not token or not organization:
         return None, "signedOut", False
     outcome, error = claude_claim(organization, token, version, credit_id,
-                                  pending_key(core.ROOT, credit_id))
+                                  pending_key(core.ROOT, credit_id, CLAIM_TIMEOUT))
     return outcome, error, True
 
 
@@ -273,7 +274,9 @@ def codex_attempt():
     """
     if not os.path.isdir(codex.CODEX):
         return None, "not_installed", False
-    key = pending_key(codex.CODEX_ROOT, None)
+    # Ответа ждём CONSUME_TIMEOUT, потом codex_rpc до 2 с ждёт выхода app-server и до 2 с после kill:
+    # пока app-server жив, заявка может быть в пути.
+    key = pending_key(codex.CODEX_ROOT, None, CONSUME_TIMEOUT + 4)
     # Обычный app-server, не read-only: погашение — запись. experimentalApi — как у T3,
     # единственной конфигурации, в которой этот метод кто-либо вызывал.
     result, error = codex.codex_rpc("account/rateLimitResetCredit/consume", {"idempotencyKey": key},

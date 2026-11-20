@@ -72,9 +72,10 @@ extension StatusController {
         let starting = mcpRefresh.begin(wanted)
         guard !starting.isEmpty else { return }
         let started = ProcessInfo.processInfo.systemUptime
+        let wallStart = Date()
         if starting.contains("codex") {
             runQuietCommand(.mcpRefresh(provider: "codex")) { [weak self] _ in
-                self?.finishRefresh(of: "codex", startedAt: started)
+                self?.finishRefresh(of: "codex", startedAt: started, wallStart: wallStart)
             }
         }
         // Asked on the same occasions, and not gated on either Codex switch: this one explains an
@@ -92,15 +93,15 @@ extension StatusController {
         }
         if starting.contains("claude") {
             runBackend(.mcpRefresh(provider: "claude")) { [weak self] in
-                self?.finishRefresh(of: "claude", startedAt: started)
+                self?.finishRefresh(of: "claude", startedAt: started, wallStart: wallStart)
             }
         }
     }
 
-    /// The clicks written before this check began are in its file now, which is shown as it is —
-    /// including a position someone changed outside the app since.
-    private func finishRefresh(of provider: String, startedAt: Double) {
-        if model(of: provider).forgetClicks(readStartedAt: startedAt) {
+    /// The clicks written before this check began are in its file now, if it wrote one, which is
+    /// shown as it is — including a position someone changed outside the app since.
+    private func finishRefresh(of provider: String, startedAt: Double, wallStart: Date) {
+        if model(of: provider).checkLanded(startedAt: startedAt, wallStart: wallStart) {
             model(of: provider).reloadIfChanged(force: true)
             notifyMCPChange()
             refreshCounts()

@@ -250,21 +250,22 @@ struct UsageSnapshot: Equatable {
 
 // MARK: - the files and the builder
 
-/// The state files only the Usage window reads, parsed, each behind its own mtime gate.
+/// The state files the Usage window reads, parsed, each behind its own mtime gate.
 struct UsageFiles {
     /// usage/summary.json; nil until a scan has written one.
     var summary: UsageSummaryFile?
     /// usage/status.json; nil until a scan has started once.
     var scan: UsageScanStatus?
-    /// account.json and codex/account.json, by provider id.
+    /// account.json and codex/account.json, by provider id; the panel's tick reads these too.
     var accounts: [String: UsageAccount] = [:]
     /// reset-credit-result.json of each provider, by provider id.
     var resetResults: [String: UsageResetResult] = [:]
     /// reset-credit-pending.json of each provider, read as the `requestFailed` it stands for: the
     /// redeem command saves its key there before it sends and drops it after a definite answer, so
     /// a key on disk is an attempt that may have gone out, even one whose command died before it
-    /// could write a result. The attempt's `ts` is its last send (`sentAt`), `createdAt` when the key
-    /// was made; the key itself is not kept.
+    /// could write a result. The attempt's `ts` is the answer deadline of its last send (`answerBy`;
+    /// `sentAt` or `createdAt` in older files), `createdAt` when the key was made; the key itself is
+    /// not kept.
     var resetPending: [String: (attempt: UsageResetResult, createdAt: Double)] = [:]
     /// usage/prices.json. Swift's own file, so there is always a value: no file is no overrides.
     var prices = UsagePriceSettings()
@@ -297,13 +298,8 @@ struct UsageFiles {
         case .unchanged: break
         case .changed(let object): scan = UsageScanStatus(json: object)
         }
+        reloadAccounts(root: root)
         for provider in Provider.all.map(\.id) {
-            let account = Self.name("account.json", of: provider)
-            switch StateFileLook.at(path(account), gate: &gates[account]) {
-            case .missing: accounts[provider] = nil
-            case .unchanged: break
-            case .changed(let object): accounts[provider] = UsageAccount(json: object, provider: provider)
-            }
             let result = Self.name("reset-credit-result.json", of: provider)
             switch StateFileLook.at(path(result), gate: &gates[result]) {
             case .missing: resetResults[provider] = nil
@@ -317,7 +313,8 @@ struct UsageFiles {
             case .changed(let object):
                 let created = usageNumber(object["createdAt"]) ?? 0
                 resetPending[provider] = (UsageResetResult(
-                    json: ["ts": usageNumber(object["sentAt"]) ?? created, "creditId": object["creditId"] ?? NSNull(),
+                    json: ["ts": usageNumber(object["answerBy"]) ?? usageNumber(object["sentAt"]) ?? created,
+                           "creditId": object["creditId"] ?? NSNull(),
                            "error": "requestFailed"],
                     provider: provider), created)
             }
@@ -333,6 +330,18 @@ struct UsageFiles {
             prices = UsagePriceSettings.load(at: pricesPath)
             pricesStamp = stamp
             pricesRead = true
+        }
+    }
+
+    /// Only the account sidecars: the panel needs the plan in them before the window first opens.
+    mutating func reloadAccounts(root: String) {
+        for provider in Provider.all.map(\.id) {
+            let account = Self.name("account.json", of: provider)
+            switch StateFileLook.at((root as NSString).appendingPathComponent(account), gate: &gates[account]) {
+            case .missing: accounts[provider] = nil
+            case .unchanged: break
+            case .changed(let object): accounts[provider] = UsageAccount(json: object, provider: provider)
+            }
         }
     }
 
@@ -435,7 +444,8 @@ extension UsageProviderState {
         // A saved key outranks the result file: the command may have died before writing one, or
         // a later run that sent nothing may have written over it. Only its grant's retry reuses
         // the key, and only for a day from its making (the script's KEY_TTL), after which the
-        // script forgets it. A poll counts only if it came after the key's last send.
+        // script forgets it. A poll counts only if it came after the last send's answer deadline: one
+        // that ran while the request was in flight may have read the credits before it landed.
         if open?.outcome == nil, let pending = inputs.files.resetPending[provider],
            inputs.now - pending.createdAt < 86_400, accountTs <= pending.attempt.ts {
             open = pending.attempt

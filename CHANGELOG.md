@@ -7,6 +7,20 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.30.2] - 2026-11-20
+
+### Fixed
+- A limits refresh counts against an unsettled reset request only once that request can no
+  longer be waiting for its answer: 25 seconds after it was sent for Claude, 24 for Codex.
+  A refresh made earlier, even right after a failed request, keeps the other credits disabled,
+  so a request the service may still be handling cannot be followed by a second credit.
+- An MCP switch no longer flips back after two quick Codex switches. A check that found
+  another check running and exited without writing no longer confirms a click; the row keeps
+  its new position until a check that rewrote the file confirms it.
+- The panel reads the account files on its own, so a Codex Free or Go plan named only in the
+  account file is known right after launch. A monthly window without a length no longer shows
+  a false 0% left until the Usage window has been opened once.
+
 ## [0.30.1] - 2026-11-20
 
 ### Changed

@@ -118,7 +118,7 @@ extension StatusController {
             // has, Fable is a slice of the week only some plans carry. A window the writer did not
             // report is skipped, not zeroed — the model hands over only the windows it read. A
             // session the spent week blocks reads as the Usage window shows it: empty, no line,
-            // the week's reset. The account is the one that window last read, for the same plan.
+            // the week's reset. The account sidecar is re-read on every tick, for the same plan.
             let account = usage.files.accounts[entry.set.provider]
             let rows = entry.set.usable(entry.windows, account: account, now: now).map { window in
                 PanelLimit(title: window.title, badge: window.badge, used: window.window.used,
