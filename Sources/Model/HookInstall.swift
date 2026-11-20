@@ -22,11 +22,16 @@ enum HookHealth: Equatable {
     case notInstalled(reason: String, hint: String?)
     /// They are written, but the node their commands call does not start, so every hook fails.
     case cannotRun(reason: String, hint: String?)
+    /// Claude's hooks are in place; ~/.codex/hooks.json could not be read or written, in the
+    /// installer's own words. Deliberately not a `problem`: that would put "Session hooks aren't
+    /// installed" in the panel and start the retry timer over a Claude install that worked.
+    /// Settings says it instead.
+    case codexNotWritten(reason: String)
 
     /// The line a reader sees first, the cause under it, and what usually fixes it.
     var problem: (title: String, reason: String, hint: String?)? {
         switch self {
-        case .unchecked, .ok:
+        case .unchecked, .ok, .codexNotWritten:
             return nil
         case .notInstalled(let reason, let hint):
             return ("Session hooks aren't installed", reason, hint)
@@ -47,7 +52,8 @@ enum HookInstall {
             case notStarted(String)
         }
         let end: End
-        /// Standard output and standard error together, in the order they were written.
+        /// Standard output and standard error together, in the order they were written — or
+        /// standard error alone, for a run made with `errorsOnly`.
         let output: String
 
         var succeeded: Bool { end == .exited(0) }
@@ -64,7 +70,11 @@ enum HookInstall {
     /// an agent in the background keeps the pipe open long after zsh itself has exited, and the
     /// read never returns. A file owes nothing to anyone else's lifetime, and cannot fill up and
     /// stall a chatty child either.
-    static func run(_ executable: String, _ arguments: [String], timeout: TimeInterval) -> Run {
+    ///
+    /// `errorsOnly` drops standard output instead of collecting it: mcpbar.py answers through the
+    /// files it writes and explains a failure on stderr, and its stdout must never become data.
+    static func run(_ executable: String, _ arguments: [String], timeout: TimeInterval,
+                    errorsOnly: Bool = false) -> Run {
         let fm = FileManager.default
         let log = (NSTemporaryDirectory() as NSString)
             .appendingPathComponent("control-bar-\(UUID().uuidString).log")
@@ -77,7 +87,7 @@ enum HookInstall {
         task.executableURL = URL(fileURLWithPath: executable)
         task.arguments = arguments
         task.standardInput = FileHandle.nullDevice
-        task.standardOutput = sink
+        task.standardOutput = errorsOnly ? FileHandle.nullDevice : sink
         task.standardError = sink
         let finished = DispatchSemaphore(value: 0)
         task.terminationHandler = { _ in finished.signal() }
@@ -163,15 +173,20 @@ enum HookInstall {
             return .notInstalled(reason: "\(first.path) does not start: \(describe(first.run))\(others)",
                                  hint: repairHint(first.path, isHomebrew))
         }
-        guard installer.succeeded else {
+        let codexMissed = installer.end == .exited(codexNotWrittenExit)
+        guard installer.succeeded || codexMissed else {
             return .notInstalled(reason: "install.js failed: \(describe(installer))", hint: nil)
         }
         if let runtime, let broken = rejected.first(where: { $0.path == runtime }) {
             return .cannotRun(reason: "They call \(runtime), and it does not start: \(describe(broken.run))",
                               hint: repairHint(runtime, isHomebrew))
         }
-        return .ok
+        return codexMissed ? .codexNotWritten(reason: describe(installer)) : .ok
     }
+
+    /// install.js's exit status for "Claude's hooks are in place, ~/.codex/hooks.json is not" —
+    /// CODEX_NOT_WRITTEN there. The reason is the first line it printed.
+    static let codexNotWrittenExit: Int32 = 73
 
     /// How a run ended, as the second half of a sentence about it.
     static func describe(_ run: Run) -> String {
@@ -211,7 +226,7 @@ enum HookInstall {
         return lines.first.map(clipped)
     }
 
-    private static func clipped(_ text: String) -> String {
+    static func clipped(_ text: String) -> String {
         text.count > 180 ? String(text.prefix(179)) + "…" : text
     }
 
@@ -245,6 +260,34 @@ enum HookInstall {
     /// than every two minutes, because a look runs node twice.
     static func checkDueOnOpen(problem: Bool, noSessions: Bool, sinceLastCheck age: Double) -> Bool {
         problem ? age >= 10 : (noSessions && age >= 120)
+    }
+}
+
+/// What Codex said about this app's hooks, as the row in Settings words it.
+enum CodexHookTrust: Equatable {
+    /// Codex has not answered yet — a fresh launch, or a Codex that did not answer.
+    case notAsked
+    /// Codex lists none of this app's hooks, so there is nothing for it to trust or to run.
+    case notInstalled
+    case approved
+    case waiting(Int)
+
+    /// Said beside Approve when the click got no answer out of Codex.
+    static let noAnswer: String = "Codex did not answer \u{2014} try again"
+
+    /// `untrusted` is nil until Codex has answered. `listed` is how many of this app's hooks Codex
+    /// lists at all; nil in a codex/hooks.json written before that was recorded, which reads as
+    /// it always did.
+    init(untrusted: Int?, listed: Int?) {
+        guard let untrusted else { self = .notAsked; return }
+        if listed == 0 { self = .notInstalled }
+        else if untrusted == 0 { self = .approved }
+        else { self = .waiting(untrusted) }
+    }
+
+    /// `listed` out of the parsed codex/hooks.json — `ours`, as fetch_codex_hooks writes it.
+    static func listed(in object: [String: Any]) -> Int? {
+        (object["ours"] as? NSNumber)?.intValue
     }
 }
 

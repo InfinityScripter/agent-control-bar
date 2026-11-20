@@ -24,11 +24,13 @@ final class SettingsStore: ObservableObject {
         let hooksHealth: HookHealth
         let hooksChecking: Bool
         let codexPresent: Bool
-        let codexHooksUntrusted: Int?
+        let codexHooks: CodexHookTrust
+        let codexApproveFailed: Bool
         let updateChecking: Bool
         let updateCheckedAt: Date?
         let updateProblem: String?
         let newerVersion: String?
+        let updateOffer: UpdateOffer
         let limitsPollStatus: String
         let serviceAccounts: [ServiceUsageBoard.Account]
         let notificationsDenied: Bool
@@ -37,10 +39,11 @@ final class SettingsStore: ObservableObject {
 
     func refresh() {
         let next = Live(hooksHealth: hooksHealth, hooksChecking: hooksChecking,
-                        codexPresent: codexPresent, codexHooksUntrusted: codexHooksUntrusted,
+                        codexPresent: codexPresent, codexHooks: codexHooks,
+                        codexApproveFailed: codexApproveFailed,
                         updateChecking: updateChecking, updateCheckedAt: updateCheckedAt,
                         updateProblem: updateProblem, newerVersion: newerVersion,
-                        limitsPollStatus: limitsPollStatus,
+                        updateOffer: updateOffer, limitsPollStatus: limitsPollStatus,
                         serviceAccounts: ServiceUsageBoard.services.map { serviceAccount($0) },
                         notificationsDenied: notificationsDenied)
         guard next != live else { return }
@@ -141,11 +144,15 @@ final class SettingsStore: ObservableObject {
         controller?.codexInstalled ?? false
     }
     /// How many of this app's hooks Codex is still skipping, and whether an answer has been had at
-    /// all. Nil means Codex has not been asked yet — a fresh launch, or a Codex that did not
+    /// all. No answer means Codex has not been asked yet — a fresh launch, or a Codex that did not
     /// answer — and that is not the same as zero: saying "all approved" on the strength of never
     /// having looked is the one wrong thing this row could say.
-    var codexHooksUntrusted: Int? { controller?.codexHooksAnswered == true
-        ? controller?.codexHooksUntrusted : nil }
+    var codexHooks: CodexHookTrust {
+        CodexHookTrust(untrusted: controller?.codexHooksAnswered == true
+                           ? controller?.codexHooksUntrusted : nil,
+                       listed: controller?.codexHooksListed)
+    }
+    var codexApproveFailed: Bool { controller?.codexApproveFailed ?? false }
     func approveCodexHooks() { controller?.approveCodexHooks() }
     func revealCodexHooks() { controller?.revealCodexHooks() }
 
@@ -209,17 +216,15 @@ final class SettingsStore: ObservableObject {
     }
     var version: String { controller?.currentVersion ?? "0" }
 
+    /// The same answer the panel banner is built from, so the two cannot disagree about whether
+    /// there is an update and how to get it.
+    var updateOffer: UpdateOffer { controller?.updateOffer() ?? .none }
+
     /// The newer version on offer, or nil when this copy is current.
     var newerVersion: String? {
-        guard let controller,
-              let latest = UserDefaults.standard.string(forKey: "latestVersion"),
-              StatusController.versionIsNewer(latest, than: controller.currentVersion)
-        else { return nil }
-        return latest
+        updateOffer == .none ? nil : UserDefaults.standard.string(forKey: "latestVersion")
     }
 
-    /// True when Homebrew owns this bundle, so updating is `brew upgrade` rather than our own swap.
-    var brewManaged: Bool { controller?.brewManaged ?? false }
     var brewUpgradeCommand: String { controller?.brewUpgradeCommand ?? "" }
 
     func showWhatsNew() { controller?.showWhatsNewCurrent() }

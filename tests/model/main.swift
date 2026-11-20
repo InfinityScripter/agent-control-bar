@@ -102,6 +102,23 @@ check(!model.isChecking("yt", backendBusy: true),
       "a server that already answered does not spin")
 check(!model.isChecking("nosuch", backendBusy: true), "an unknown server does not spin")
 
+// What the row's right-hand column says. The spinner and a word must not share the slot, and the
+// flag is the same one the spinner draws from — handed in, so the two cannot be asked of
+// different agents' models (Claude's does not know a Codex server and answers "not checking").
+let pendingWiki = model.servers.first { $0.name == "wiki" }!
+check(pendingWiki.tail(checking: true).isEmpty && pendingWiki.tail(checking: false) == "next session",
+      "a pending server leaves its column to the spinner, and names what it waits for once that stops")
+check(model.servers.first { $0.name == "yt" }!.tail(checking: false) == "2/2"
+      && MCPModel.parse(server: ["name": "n", "state": "ok", "tools": 7]).tail(checking: false) == "7"
+      && MCPModel.parse(server: ["name": "n", "state": "off"]).tail(checking: false) == "—",
+      "a server that answered, or is switched off, shows its tool count in the best form known")
+check(MCPModel.parse(server: ["name": "n", "state": "pending", "needsApproval": true])
+        .tail(checking: true) == "approve in Claude Code",
+      "a project server waiting to be trusted says so even while a check runs: no check resolves it")
+check(MCPModel.parse(server: ["name": "n", "state": "unknown"]).tail(checking: false) == "not checked"
+      && MCPModel.parse(server: ["name": "n", "state": "failed", "tools": 7]).tail(checking: false) == "failed",
+      "an unprobed remote server and one that did not answer are told apart in words")
+
 // A tool's deny rule is built from the prefix the transcript proves Claude Code uses, not from
 // the display name. Built from the name, the rule matched no tool at all: the switch went off,
 // the tool kept loading, and the "N/M tools on" count promised a saving that never happened.
@@ -549,10 +566,38 @@ check(T3Sessions.threadURL(threadID: "a/b?x", home: t3Home)?.absoluteString == "
       "an odd thread id is escaped rather than taken as a path")
 check(SessionFormat.surfaceTag(Session(json: ["provider": "codex", "surface": "exec"], id: "x")) == "EXEC",
       "a non-interactive codex exec run says so")
-check(SessionFormat.surfaceTag(Session(json: ["provider": "codex", "surface": ""], id: "x")).isEmpty,
-      "an unnamed surface gets no badge instead of a guessed one")
+check(SessionFormat.surfaceTag(Session(json: ["provider": "codex", "surface": ""], id: "x")).isEmpty
+      && SessionFormat.surfaceTag(Session(json: ["provider": "codex", "surface": "web"], id: "x")).isEmpty,
+      "an unnamed surface, or one this build has no word for, gets no badge instead of a guessed one")
 check(SessionFormat.surfaceTag(Session(json: ["entrypoint": "claude-desktop"], id: "x")) == "APP",
       "Claude's own badges are untouched")
+// Claude's terminal badge is for the one entrypoint that names a terminal. An SDK run or a host
+// this build has never heard of gets no badge, the rule the Codex half already follows.
+check(SessionFormat.surfaceTag(Session(json: ["entrypoint": "cli"], id: "x")) == "CLI",
+      "Claude Code's terminal entrypoint is a CLI session")
+check(SessionFormat.surfaceTag(Session(json: ["entrypoint": "sdk-ts"], id: "x")).isEmpty
+      && SessionFormat.surfaceTag(Session(json: ["entrypoint": "some-future-host"], id: "x")).isEmpty,
+      "an entrypoint this build does not know gets no badge instead of a guessed CLI")
+// One dictionary for the Live rows and for Codex history, in the pill's short spelling.
+check(["cli", "ide", "app", "exec", "t3"].map(SessionFormat.surfaceLabel) == ["CLI", "IDE", "APP", "EXEC", "T3"]
+      && SessionFormat.surfaceLabel("").isEmpty && SessionFormat.surfaceLabel("web").isEmpty,
+      "every surface has one short word, and a code nobody taught this build has none")
+
+// Whether a click on the row has anywhere to go. A session can be alive with no window on
+// record — a terminal whose environment named neither a program nor a bundle — and a click that
+// closes the panel and raises nothing reads as a broken button.
+check(!SessionFormat.canOpen(Session(json: ["entrypoint": "cli", "tty": "/dev/ttys004"], id: "x")),
+      "a terminal session that recorded no terminal has no window to bring forward")
+check(SessionFormat.canOpen(Session(json: ["entrypoint": "cli", "term_bundle": "com.apple.Terminal"], id: "x"))
+      && SessionFormat.canOpen(Session(json: ["entrypoint": "cli", "term_program": "ghostty"], id: "x")),
+      "a recorded hosting app or terminal program is somewhere to go")
+check(SessionFormat.canOpen(Session(json: ["entrypoint": "claude-desktop"], id: "x"))
+      && SessionFormat.canOpen(codexDesktop)
+      && SessionFormat.canOpen(Session(json: ["entrypoint": "t3-code", "t3_thread": "th-1"], id: "x")),
+      "a desktop conversation, a Codex thread and a T3 Code thread each open without a terminal")
+check(!SessionFormat.canOpen(Session(json: ["entrypoint": "cli", "t3_thread": "th-1"], id: "x"))
+      && !SessionFormat.canOpen(codexUnknown),
+      "a thread id inherited from T3 Code, or a Codex session placed nowhere, is not a window")
 
 // MARK: the tty a click focuses — normalised, and refused when it is not a device name
 
@@ -569,6 +614,67 @@ check(SessionActivityGroup(state: "permission", asyncQuestion: false) == .needsY
       && SessionActivityGroup(state: "tool", asyncQuestion: false) == .working
       && SessionActivityGroup(state: "idle", asyncQuestion: false) == .idle,
       "the async question stays visible without claiming the agent is blocked")
+
+// Which sessions the panel lists. Each rule answers a reported bug, and until now all of them
+// lived in the controller where nothing checked them.
+do {
+    let now = 1_800_000_000.0
+    func row(_ id: String, eff: String = "idle", age: Double = 0, _ extra: [String: Any] = [:]) -> Session {
+        var s = Session(json: ["ts": now - age, "started": true].merging(extra) { $1 }, id: id)
+        s.eff = eff
+        return s
+    }
+    func keys(_ sessions: [Session], agents: AgentDisplay = .both,
+              hiding: Set<ModelService> = [], prune: Double = 900) -> [String] {
+        SessionRows.visible(sessions, now: now, agents: agents, hiding: hiding, stalePruneAge: prune)
+    }
+    check(keys([row("old", age: 30), row("b", age: 5), row("a", age: 5)]) == ["claude:a", "claude:b", "claude:old"],
+          "rows run newest first, and two events of one second keep a stable order")
+    let opened = row("d", ["entrypoint": "claude-desktop", "started": false])
+    check(keys([opened, row("t")]) == ["claude:t"]
+          && keys([row("d", eff: "thinking", ["entrypoint": "claude-desktop", "started": false])]) == ["claude:d"]
+          && keys([row("c", ["entrypoint": "cli", "started": false])]) == ["claude:c"],
+          "a desktop conversation that was only opened waits for real activity; a terminal one does not")
+    check(keys([row("d", ["entrypoint": "claude-desktop"]), row("t", age: 1)]) == ["claude:d", "claude:t"],
+          "once it has had a prompt, a desktop conversation stays listed while it rests")
+    check(keys([opened]).isEmpty,
+          "and it is not brought back as the one row kept so the panel is never empty")
+    let resting = row("r", age: 1000)
+    check(keys([row("w", eff: "tool", age: 1000), resting, row("n", age: 10)]) == ["claude:n", "claude:w"],
+          "a session resting past the hide-idle age leaves the list; a working one that old stays")
+    // Resting apart from its question: the question alone has to keep the row.
+    var asking = row("q", age: 1000)
+    asking.asyncQuestion = true
+    check(keys([asking, row("p", eff: "permission", age: 1000)]) == ["claude:p", "claude:q"],
+          "a session that needs the user is never hidden for its age")
+    check(keys([resting, row("older", age: 2000)]) == ["claude:r"],
+          "the most recent session stays when every one is resting, so the panel is never empty")
+    check(keys([resting], prune: 0) == ["claude:r"] && keys([row("x", age: 5000), resting], prune: 0).count == 2,
+          "hide-idle switched off hides nothing")
+    let codexRow = row("c", ["provider": "codex"])
+    check(keys([codexRow, row("a", age: 1)], agents: .claude) == ["claude:a"]
+          && keys([codexRow], agents: .claude).isEmpty
+          && keys([codexRow, row("a", age: 1)], agents: .hidden).count == 2,
+          "an agent the setting leaves out is not listed, not even as the last row; Hidden is about the bar")
+    check(keys([row("g", ["modelService": "zai"]), row("a", age: 1)], hiding: [.zai]) == ["claude:a"],
+          "a hidden model service takes its sessions out of the list")
+
+    check(SessionRows.offersOpenClaude(rows: 0, desktopRunning: true, agents: .both)
+          && !SessionRows.offersOpenClaude(rows: 1, desktopRunning: true, agents: .both)
+          && !SessionRows.offersOpenClaude(rows: 0, desktopRunning: false, agents: .both)
+          && !SessionRows.offersOpenClaude(rows: 0, desktopRunning: true, agents: .codex),
+          "Open Claude is offered only by an empty list, a running desktop app and a panel that shows Claude")
+    // Asked of every session the app knows, not of the rows: a Codex session hidden for resting
+    // too long still proves its hooks run, and "approve its hooks" would name the wrong cause.
+    let hiddenCodex = row("h", age: 5000, ["provider": "codex"])
+    check(keys([hiddenCodex, row("a")]) == ["claude:a"]
+          && !SessionRows.codexHooksBlocked(untrusted: 2, agents: .both, sessions: [hiddenCodex, row("a")]),
+          "a Codex session out of the list for its age still shows that Codex's hooks are running")
+    check(SessionRows.codexHooksBlocked(untrusted: 2, agents: .both, sessions: [row("a")])
+          && !SessionRows.codexHooksBlocked(untrusted: 0, agents: .both, sessions: [])
+          && !SessionRows.codexHooksBlocked(untrusted: 2, agents: .claude, sessions: []),
+          "unapproved Codex hooks are named only with no Codex session at all and Codex in the panel")
+}
 
 do {
     var board = ServiceUsageBoard()
@@ -606,6 +712,12 @@ do {
     check(history.matching("deepseek", excluding: []).map(\.id) == [first.id]
           && history.matching("", excluding: [], hiding: [.deepseek]).map(\.id) == [history.threads[1].id],
           "model services are searchable and hidden services stay out of history")
+    // One tab, one word per surface: a terminal chat reads "CLI" in history exactly as the same
+    // session read in Live a minute earlier, and is found by the word its row shows.
+    check(first.sourceLabel == SessionFormat.surfaceTag(codexCLI) && first.sourceLabel == "CLI"
+          && history.threads[1].sourceLabel.isEmpty
+          && history.matching("cli", excluding: []).map(\.id) == [first.id],
+          "history names a client with the Live badge's word, and an unknown client with none")
     check(first.resumeCommand(codexHome: history.codexHome)
           == "CODEX_HOME='/tmp/Codex account' codex resume --cd '/tmp/O'\"'\"'Neil project' \(first.id)",
           "resume copies the exact profile, workspace and thread id with shell-safe quoting")
@@ -1679,12 +1791,31 @@ if !appSources.isEmpty {
           "a saved animation preference still overrides the Crab default")
     check(mainSource.contains("d.string(forKey: \"codexPetID\") ?? (petID.isEmpty"),
           "a Codex pet nobody has chosen follows whether pets are on at all")
+    check(mainSource.contains("if d.object(forKey: \"codexPetID\") == nil { d.set(codexPetID, forKey: \"codexPetID\") }"),
+          "and that first answer is saved, so later launches stop deriving it from Claude's pet")
     check(mainSource.contains("\"Needs you\"") && !mainSource.contains("Awaiting permission"),
           "permission uses the short Needs you status-bar label")
     check(mainSource.contains(".markedIcon(") && !mainSource.contains("dot: true"),
           "permission renders a badge over the mascot instead of replacing it with a dot")
     check(mainSource.contains("MenuBarAgent.shown("),
           "the status-bar mood is selected with the permission-aware display model")
+    // The one-click update deletes the running copy's bundle before the new one first starts,
+    // so "can this bundle start here" has to be answered before the move aside, not after it.
+    let swapSource = mainSource.range(of: "private func mountAndSwap(").map { mainSource[$0.upperBound...] } ?? ""
+    let beforeMoveAside = swapSource.range(of: "moveItem(atPath: target, toPath: aside)")
+        .map { swapSource[..<$0.lowerBound] } ?? ""
+    check(beforeMoveAside.contains("[\"--verify\", \"--deep\", \"--strict\", stage.path]")
+            && beforeMoveAside.contains("UpdateFeed.systemProblem(minimum: minimum"),
+          "a staged update's signature and minimum macOS are checked before the running copy is moved aside")
+    // UpdateOffer's rules are checked further down; these hold the places that have to ask it.
+    let checkSource = mainSource.range(of: "func checkForUpdate(force: Bool = false) {")
+        .map { mainSource[$0.upperBound...] } ?? ""
+    let checkBody = checkSource.range(of: "func updateCheckFinished(").map { checkSource[..<$0.lowerBound] } ?? ""
+    check(checkBody.components(separatedBy: "self?.announceUpdateOffer()").count == 3
+            && !checkBody.contains("updateNotifiedVersion"),
+          "both answers of the update check, GitHub's and the cask's, ask whether there is an update to announce")
+    check(mainSource.contains("if case .restart = updateOffer() { return restartIntoInstalledCopy() }"),
+          "Install with a newer copy already on disk restarts into it instead of downloading it again")
 } else {
     check(false, "Sources/*.swift are readable for the presentation defaults contract")
 }
@@ -2194,6 +2325,20 @@ check(UpdateFeed.signingKey.isEmpty || Data(base64Encoded: UpdateFeed.signingKey
 try? FileManager.default.removeItem(at: signedTmp)
 try? FileManager.default.removeItem(at: dmgTmp)
 
+// The staged bundle's LSMinimumSystemVersion against this Mac, asked before the old copy is moved.
+let ventura = OperatingSystemVersion(majorVersion: 13, minorVersion: 5, patchVersion: 0)
+check(UpdateFeed.systemProblem(minimum: "13.0", system: ventura) == nil,
+      "a bundle that asks for an older macOS than this one may be swapped in")
+check(UpdateFeed.systemProblem(minimum: "13.5", system: ventura) == nil,
+      "a bundle that asks for exactly this macOS may be swapped in")
+check(UpdateFeed.systemProblem(minimum: "13.5.1", system: ventura) != nil,
+      "a newer patch release than this macOS is refused")
+let tooNew = UpdateFeed.systemProblem(minimum: "14.0", system: ventura)
+check(tooNew?.contains("14.0") == true && tooNew?.contains("13.5") == true,
+      "a bundle that needs a newer macOS is refused, naming both versions: \(tooNew ?? "nil")")
+check(UpdateFeed.systemProblem(minimum: nil, system: ventura) == nil,
+      "a bundle that names no minimum is not held back: macOS reads that as no requirement")
+
 // A check that found no release says why, on the About page, instead of nothing.
 let rateLimited = UpdateFeed.checkProblem(status: 403, answer: [
     "message": "API rate limit exceeded for 203.0.113.7. (But here's the good news: Authenticated "
@@ -2239,6 +2384,62 @@ check(NeedsYouSound.shouldCue(prevState: nil, effective: "permission",
 check(!NeedsYouSound.shouldCue(prevState: "tool", effective: "thinking",
                                hostBundle: "", frontmost: nil),
       "only the permission state cues")
+// A launcher wrapped around the hosting app leaves ITS bundle id in the session file, so the
+// comparison above never matches the app actually in front. The process tree still knows who
+// started the session. It is a second reason for silence and not a replacement: iTerm's shells
+// hang off a detached server and tmux's off its own, so their tree never reaches the window.
+check(!NeedsYouSound.shouldCue(prevState: "tool", effective: "permission",
+                               hostBundle: "local.t3.auto-launcher", frontmost: "com.t3tools.t3code",
+                               frontmostHosts: true),
+      "no cue when the app in front started the session, whatever bundle a launcher recorded")
+check(NeedsYouSound.shouldCue(prevState: "tool", effective: "permission",
+                              hostBundle: "local.t3.auto-launcher", frontmost: "com.apple.Safari",
+                              frontmostHosts: false),
+      "the same session behind an unrelated app still cues")
+check(!NeedsYouSound.shouldCue(prevState: "tool", effective: "permission",
+                               hostBundle: "com.googlecode.iterm2", frontmost: "com.googlecode.iterm2",
+                               frontmostHosts: false),
+      "the recorded bundle still silences a terminal whose process tree does not reach its window")
+do {
+    let parents: [pid_t: pid_t] = [40: 30, 30: 20, 20: 1, 50: 1, 60: 61, 61: 60]
+    check(RunningProcesses.descends(40, from: 20) { parents[$0] }
+          && RunningProcesses.descends(40, from: 40) { parents[$0] },
+          "a session's process descends from the app two levels up, and from itself")
+    check(!RunningProcesses.descends(40, from: 50) { parents[$0] }
+          && !RunningProcesses.descends(20, from: 40) { parents[$0] },
+          "an unrelated app is not an ancestor, and a parent does not descend from its child")
+    check(!RunningProcesses.descends(40, from: 1) { parents[$0] }
+          && !RunningProcesses.descends(0, from: 20) { parents[$0] },
+          "launchd hosts nobody although everything hangs off it, and a file without a pid has no tree")
+    check(!RunningProcesses.descends(60, from: 20) { parents[$0] }
+          && !RunningProcesses.descends(40, from: 99) { _ in nil },
+          "a loop in the table ends the walk, and so does a process that has already gone")
+    check(RunningProcesses.parentPid(getpid()) == getppid()
+          && RunningProcesses.descends(getpid(), from: getppid()),
+          "the real process table agrees: this check descends from whatever launched it")
+    // Terminal's shells hang off `login`, which runs as root. A lookup that is refused for
+    // another user's process would stop the walk one step short of the terminal window.
+    check(RunningProcesses.parentPid(1) == 0, "a root-owned process still names its parent")
+
+    let board = SessionBoard(engine: SessionEngine())
+    let rules = SessionBoard.Rules(soundThreshold: 60, stalePruneAge: 900, thinkingWords: [], needsYou: true)
+    func wait(_ id: String) -> SessionBoard.File {
+        SessionBoard.File(key: "claude:" + id, path: "/" + id, provider: "claude", id: id,
+                          mtime: Date(timeIntervalSince1970: 1))
+    }
+    func read(_ path: String) -> [String: Any]? {
+        ["state": "permission", "pid": path == "/hosted" ? 21 : 22, "ts": 1_800_000_000.0,
+         "term_bundle": "local.t3.auto-launcher"]
+    }
+    board.reload([wait("hosted")], read: read) { _ in "" }
+    check(!board.tick(now: 1_800_000_000, rules: rules, pidAlive: { _ in true },
+                      frontmost: { "com.t3tools.t3code" }, frontmostHosts: { $0.pid == 21 }).needsYou,
+          "the board asks the process tree about the session that started waiting, and stays silent")
+    board.reload([wait("hosted"), wait("elsewhere")], read: read) { _ in "" }
+    check(board.tick(now: 1_800_000_001, rules: rules, pidAlive: { _ in true },
+                     frontmost: { "com.t3tools.t3code" }, frontmostHosts: { $0.pid == 21 }).needsYou,
+          "while a session the app in front did not start cues as before")
+}
 check(NeedsYouSound.choices.contains(NeedsYouSound.defaultChoice), "the default is one of the choices")
 check(NeedsYouSound.choices.allSatisfy { NSSound(named: NSSound.Name($0)) != nil },
       "every offered sound loads by name — the way the app plays it")
@@ -2755,6 +2956,11 @@ check(hookSpoke.end == .exited(3), "a child's exit code is read, not ignored: \(
 check(hookSpoke.output.contains("out") && hookSpoke.output.contains("err"),
       "and both of its streams are kept: \(hookSpoke.output)")
 check(HookInstall.run("/usr/bin/true", [], timeout: 10).succeeded, "exit 0 is a success")
+// mcpbar.py answers through its files and explains a failure on stderr; its stdout is never data.
+let hookErrorsOnly = HookInstall.run("/bin/sh", ["-c", "echo out; echo err >&2; exit 3"], timeout: 10,
+                                     errorsOnly: true)
+check(hookErrorsOnly.end == .exited(3) && hookErrorsOnly.output == "err\n",
+      "a backend run keeps what the child said on stderr and nothing from stdout: \(hookErrorsOnly.output)")
 
 // What dyld does to a node whose library Homebrew upgraded away: one line on stderr, then abort.
 let hookDeadNode = hookScript("dead-node", """
@@ -2772,6 +2978,11 @@ let hookHungAt = Date()
 let hookHung = HookInstall.run("/bin/sleep", ["30"], timeout: 0.5)
 check(hookHung.end == .timedOut, "a child that never ends is given up on: \(hookHung.end)")
 check(Date().timeIntervalSince(hookHungAt) < 5, "promptly, not when it finally finishes")
+// What a pipe read to EOF could not do: the stopped script's own child still holds the write end.
+let hookOrphanAt = Date()
+let hookOrphan = HookInstall.run("/bin/sh", ["-c", "sleep 6 & sleep 30"], timeout: 0.5, errorsOnly: true)
+check(hookOrphan.end == .timedOut && Date().timeIntervalSince(hookOrphanAt) < 5,
+      "a child stopped at its deadline is not waited on for the grandchild it leaves behind")
 if case .notStarted = HookInstall.run(hookDir + "no-such-node", [], timeout: 5).end {
     check(true, "a path that is not there reads as not started, not as a crash")
 } else {
@@ -2829,6 +3040,48 @@ check(HookInstall.health(rejected: [], installer: hookBusy, runtime: nil) == .no
       "an installer that exits non-zero is a failure, with its first line as the reason")
 check(HookHealth.ok.problem == nil && HookHealth.unchecked.problem == nil,
       "fine and not-yet-looked-at both show nothing")
+
+// Claude's half worked and Codex's did not, which install.js says with an exit status of its own.
+// Not a `problem`: that word puts "Session hooks aren't installed" in the panel and starts the
+// retry timer, over hooks that are in place.
+let hookCodexMissed = HookInstall.Run(end: .exited(73), output:
+    "~/.codex/hooks.json does not parse — Codex hooks not installed.\nHooks already current in settings.json")
+let hookCodexVerdict = HookInstall.health(rejected: [], installer: hookCodexMissed, runtime: nil)
+check(hookCodexVerdict.problem == nil,
+      "a Codex file that was not written is not a failed install of Claude's hooks: \(hookCodexVerdict)")
+check(hookCodexVerdict
+        == .codexNotWritten(reason: "~/.codex/hooks.json does not parse — Codex hooks not installed."),
+      "and it is said in the installer's own first line: \(hookCodexVerdict)")
+check(HookInstall.health(rejected: [hookDead], installer: hookCodexMissed,
+                         runtime: "/opt/homebrew/bin/node", isHomebrew: hookBrew).problem?.title
+        == "Session hooks can't run",
+      "a node the hooks cannot start still outranks the Codex file")
+
+// codex/hooks.json counted only the hooks waiting for trust, so zero meant both "all approved"
+// and "Codex lists none of ours" — and Settings drew the tick for a Codex with no hooks in it.
+check(CodexHookTrust(untrusted: nil, listed: nil) == .notAsked
+        && CodexHookTrust(untrusted: nil, listed: 0) == .notAsked,
+      "no answer from Codex is not an answer about its hooks")
+check(CodexHookTrust(untrusted: 0, listed: 0) == .notInstalled,
+      "none of our hooks in Codex's list is not \"approved\"")
+check(CodexHookTrust(untrusted: 0, listed: 8) == .approved
+        && CodexHookTrust(untrusted: 3, listed: 8) == .waiting(3),
+      "listed hooks are approved or waiting, by Codex's own count")
+check(CodexHookTrust(untrusted: 0, listed: nil) == .approved
+        && CodexHookTrust(untrusted: 2, listed: nil) == .waiting(2),
+      "a file from before the count was recorded reads as it always did")
+check(CodexHookTrust.listed(in: ["untrusted": 2]) == nil
+        && CodexHookTrust.listed(in: ["untrusted": 0, "ours": "8"]) == nil,
+      "a missing or mistyped count is no count, not zero")
+// The python→swift seam: the file the real fetch_codex_hooks() wrote during the python suite.
+let codexHooksSeamPath = FileManager.default.currentDirectoryPath + "/build/seam/codex-hooks.json"
+if let data = FileManager.default.contents(atPath: codexHooksSeamPath),
+   let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+    check(CodexHookTrust.listed(in: object) == 1, "the count the real backend wrote is read back")
+} else {
+    check(false, "codex hooks seam fixture missing at \(codexHooksSeamPath) — run the python suite "
+        + "first (/usr/bin/python3 -m unittest discover -s tests), it writes build/seam/codex-hooks.json")
+}
 
 let hookThrown = """
     node:internal/modules/cjs/loader:1228
@@ -3631,6 +3884,29 @@ do {
     check(board.sessions["claude:n1"]?.displayName == "solo",
           "a session with no cwd is not a second location")
 
+    // Two worktrees of one service share every folder between the worktree and the project, so
+    // the parent alone ("services/svc" twice) tells nothing apart: the qualifier is the nearest
+    // folder that actually differs.
+    disk["/claude/w1.json"] = ["state": "idle", "project": "svc", "pid": 13, "ts": now,
+                              "cwd": "/wt/wt-a/taxi/frontend/services/svc"]
+    disk["/claude/w2.json"] = ["state": "idle", "project": "svc", "pid": 13, "ts": now,
+                              "cwd": "/wt/wt-b/taxi/frontend/services/svc"]
+    board.reload([file("claude", "w1"), file("claude", "w2")], read: read) { _ in "" }
+    _ = board.tick(now: now, rules: rules, pidAlive: { alive.contains($0) }, frontmost: { nil })
+    check(board.sessions["claude:w1"]?.displayName == "wt-a/svc",
+          "two worktrees with the same deep tail are told apart by the worktree folder: "
+            + (board.sessions["claude:w1"]?.displayName ?? "nil"))
+    check(board.sessions["claude:w2"]?.displayName == "wt-b/svc", "and so is the other one")
+    // One clone sits shallower than the other: where its path has run out there is no folder to
+    // name, and the bare project against a qualified one is still two different rows.
+    disk["/claude/w2.json"]?["cwd"] = "/services/svc"
+    board.reload([file("claude", "w1"), file("claude", "w2", at: Date(timeIntervalSince1970: 4))],
+                 read: read) { _ in "" }
+    _ = board.tick(now: now, rules: rules, pidAlive: { alive.contains($0) }, frontmost: { nil })
+    check(board.sessions["claude:w1"]?.displayName == "frontend/svc"
+            && board.sessions["claude:w2"]?.displayName == "svc",
+          "a clone with no folder at the differing depth keeps its bare name")
+
     for provider in ["codex", "claude"] {
         let soundPath = NSTemporaryDirectory() + "ccb-\(provider)-completion-cue.jsonl"
         try! (codexEvent(ts: now, "task_started", turn: "t1") + "\n")
@@ -4271,49 +4547,66 @@ do {
           "a missing attention file drops the signal and its mtime gate")
     session.transcript = ""; session.state = "idle"
     var poll = CodexAttentionPoll()
-    check(poll.begin(now: clock, sessions: [session], pidAlive: { _ in true }),
+    check(poll.begin(now: clock, sessions: [session], socketExists: { true }, pidAlive: { _ in true }),
           "a live started parent is polled even if its raw state rests")
-    check(!poll.begin(now: clock + 6, sessions: [session], pidAlive: { _ in true }),
+    check(!poll.begin(now: clock + 6, sessions: [session], socketExists: { true }, pidAlive: { _ in true }),
           "attention polling has only one in-flight batch")
     poll.finish()
     var earlyPoll = poll
-    check(!earlyPoll.begin(now: clock + 2, sessions: [session], pidAlive: { _ in true }),
+    check(!earlyPoll.begin(now: clock + 2, sessions: [session], socketExists: { true }, pidAlive: { _ in true }),
           "attention polling does not reuse the old two-second cadence")
-    check(!poll.begin(now: clock + 4.9, sessions: [session], pidAlive: { _ in true }),
+    check(!poll.begin(now: clock + 4.9, sessions: [session], socketExists: { true }, pidAlive: { _ in true }),
           "attention polling waits five seconds between starts")
     poll.finish()
-    check(poll.begin(now: clock + 5, sessions: [session], pidAlive: { _ in true }),
+    check(poll.begin(now: clock + 5, sessions: [session], socketExists: { true }, pidAlive: { _ in true }),
           "attention polling can start again at the five-second boundary")
     poll.finish()
-    check(!poll.begin(now: clock + 10, sessions: [session], pidAlive: { _ in false }),
+    check(!poll.begin(now: clock + 10, sessions: [session], socketExists: { true }, pidAlive: { _ in false }),
           "a dead parent does not cause an attention poll")
     session.started = false
-    check(!poll.begin(now: clock + 10, sessions: [session], pidAlive: { _ in true }),
+    check(!poll.begin(now: clock + 10, sessions: [session], socketExists: { true }, pidAlive: { _ in true }),
           "an unopened parent does not cause an attention poll")
     session.started = true; session.provider = "claude"
-    check(!poll.begin(now: clock + 10, sessions: [session], pidAlive: { _ in true }),
+    check(!poll.begin(now: clock + 10, sessions: [session], socketExists: { true }, pidAlive: { _ in true }),
           "a Claude parent does not cause a Codex attention poll")
+    session.provider = "codex"
+    var socketStats = 0
+    check(!poll.begin(now: clock + 10, sessions: [session], socketExists: { socketStats += 1; return false },
+                      pidAlive: { _ in true }) && socketStats == 1,
+          "no control socket, no attention poll: the script could only answer that there is none")
+    check(poll.begin(now: clock + 10.4, sessions: [session], socketExists: { true }, pidAlive: { _ in true }),
+          "a missing socket does not spend the five-second cadence: the poll starts once it appears")
+    poll.finish()
+    check(!poll.begin(now: clock + 11, sessions: [session], socketExists: { socketStats += 1; return true },
+                      pidAlive: { _ in true })
+            && !poll.begin(now: clock + 16, sessions: [], socketExists: { socketStats += 1; return true },
+                           pidAlive: { _ in true }) && socketStats == 1,
+          "the socket is looked for only when a poll would otherwise start")
     check(BackendCommand.codexAttention.arguments == ["codex-attention"],
           "the live attention request uses the existing backend command protocol")
-    let oldBackend = (python: "/old/plugin/python3", script: "/old/plugin/mcpbar.py")
+    // Which mcpbar.py every command runs. The copy inside the app is the one built with this
+    // binary; paths.json names the plugin's, whose folder carries a version and goes away with the
+    // next plugin update — so it is the fallback for a bundle without a script, not the first choice.
+    let pluginPaths: [String: Any] = ["python": "/old/plugin/python3", "script": "/old/plugin/mcpbar.py"]
     let bundleScript = "/current/app/scripts/mcpbar.py"
-    let attentionBackend = BackendCommand.codexAttention.backend(normal: oldBackend, bundledScript: bundleScript)
-    check(attentionBackend.python == "/usr/bin/python3" && attentionBackend.script == bundleScript,
-          "command attention uses the corrected bundle even with an old plugin backend")
-    let limitsBackend = BackendCommand.limits(provider: "codex").backend(normal: oldBackend, bundledScript: bundleScript)
-    check(limitsBackend.python == "/usr/bin/python3" && limitsBackend.script == bundleScript,
-          "Codex limits use the current bundle even when paths.json selects an older plugin")
-    check(BackendCommand.limits(provider: "codex").backend(normal: oldBackend, bundledScript: nil).script.isEmpty,
-          "missing bundled limits code cannot silently run an old plugin")
-    for command: BackendCommand in [.mcpRefresh(provider: "claude"), .limits(provider: "claude"), .codexHooks,
-                                    .codexHooksApprove, .statuslineHeal, .claudeLogin,
-                                    .toggleServer(provider: "codex", name: "wiki", on: true)] {
-        let selected = command.backend(normal: oldBackend, bundledScript: bundleScript)
-        check(selected.python == oldBackend.python && selected.script == oldBackend.script,
-              "other backend commands preserve their normal plugin resolver: \(command.arguments)")
+    var pathsReads = 0
+    let bundledBackend = BackendCommand.backend(bundledScript: bundleScript,
+                                                paths: { pathsReads += 1; return pluginPaths },
+                                                exists: { _ in true })
+    check(bundledBackend.python == "/usr/bin/python3" && bundledBackend.script == bundleScript && pathsReads == 0,
+          "the script inside the app runs even when paths.json names a plugin copy, which is not even read")
+    for missing: String? in [bundleScript, nil] {
+        let fallback = BackendCommand.backend(bundledScript: missing, paths: { pluginPaths },
+                                              exists: { $0 != bundleScript })
+        check(fallback.python == "/old/plugin/python3" && fallback.script == "/old/plugin/mcpbar.py",
+              "a bundle without the script falls back to the plugin copy from paths.json")
     }
-    check(BackendCommand.codexAttention.backend(normal: oldBackend, bundledScript: nil).script.isEmpty,
-          "a missing attention bundle does not execute an older plugin backend")
+    check(BackendCommand.backend(bundledScript: nil, paths: { ["script": "/old/plugin/mcpbar.py"] },
+                                 exists: { _ in true }).python == "/usr/bin/python3",
+          "a paths.json without an interpreter runs the system python")
+    check(BackendCommand.backend(bundledScript: nil, paths: { pluginPaths }, exists: { _ in false }).script.isEmpty
+            && BackendCommand.backend(bundledScript: nil, paths: { nil }, exists: { _ in true }).script.isEmpty,
+          "a plugin copy that is gone, or no paths.json at all, leaves nothing to run")
 #endif
 }
 
@@ -4356,6 +4649,81 @@ for (command, words) in backendGolden {
     check(command.arguments == words, "backend \(words.joined(separator: " ")): \(command.arguments)")
 }
 
+// How long the app waits before stopping the script itself. A second net ABOVE the script's own
+// budgets, never below them: a full check runs `claude mcp list` once per root and per project at
+// 120 s each, and every Codex re-read waits up to 60 s for app-server plus 30 s per `codex mcp`
+// call — which a Codex switch repeats in full after its write.
+let deadlineGolden: [(BackendCommand, TimeInterval)] = [
+    (.mcpRefresh(provider: "claude"), 600),
+    (.mcpRefresh(provider: "codex"), 600),
+    (.toggleServer(provider: "codex", name: "wiki", on: true), 600),
+    (.toggleTool(provider: "codex", server: "wiki", tool: "Read", prefix: "wiki", on: true), 600),
+    (.toggleServer(provider: "claude", name: "wiki", on: false), 120),
+    (.toggleTool(provider: "claude", server: "wiki", tool: "Read", prefix: "wiki", on: false), 120),
+    (.limits(provider: "claude"), 120),
+    (.limits(provider: "codex"), 120),
+    (.codexHooks, 120),
+    (.codexHooksApprove, 120),
+    (.codexHistory, 120),
+    (.statuslineHeal, 120),
+    (.claudeLogin, 120),
+    (.codexAttention, 3),
+]
+for (command, seconds) in deadlineGolden {
+    check(command.deadline == seconds,
+          "deadline of \(command.arguments.joined(separator: " ")): \(command.deadline)")
+}
+
+// Why a switch bounced. The script says it on stderr as `refused: <reason>` and exits 2; the row
+// flipping back on its own with the reason only in the system log read as a broken button.
+let refusedSwitch = BackendCommand.toggleServer(provider: "codex", name: "wiki", on: false)
+let refusedRun = HookInstall.Run(end: .exited(2),
+                                 output: "refused: settings.json changed underneath the switch; nothing written\n")
+check(refusedSwitch.refusal(refusedRun)
+        == SwitchRefusal(provider: "codex", reason: "settings.json changed underneath the switch; nothing written"),
+      "a refused switch carries the script's own reason and the agent whose config it was")
+check(BackendCommand.toggleTool(provider: "claude", server: "wiki", tool: "Read", prefix: "wiki", on: true)
+        .refusal(HookInstall.Run(end: .exited(2), output: "note\nrefused: first\nrefused: last\n"))
+        == SwitchRefusal(provider: "claude", reason: "last"),
+      "the last refusal on stderr is the one that ended the run")
+check(refusedSwitch.refusal(HookInstall.Run(end: .exited(0), output: "refused: stale\n")) == nil,
+      "a switch that was applied has nothing to explain")
+check(BackendCommand.mcpRefresh(provider: "claude").refusal(refusedRun) == nil
+        && BackendCommand.limits(provider: "codex").refusal(refusedRun) == nil,
+      "only a switch can be refused: a failed check has its own line in the tab")
+check(refusedSwitch.refusal(HookInstall.Run(end: .exited(1), output: """
+        Traceback (most recent call last):
+          File "mcpbar.py", line 2230, in <module>
+        NameError: name 'codex' is not defined
+        """))?.reason == "NameError: name 'codex' is not defined",
+      "a script that died on a traceback is explained by the line that names the error")
+check(refusedSwitch.refusal(HookInstall.Run(end: .timedOut, output: ""))?.reason == "did not finish in time"
+        && refusedSwitch.refusal(HookInstall.Run(end: .exited(1), output: ""))?.reason == "exited with code 1",
+      "and one that said nothing, by how it ended")
+
+// Full MCP checks coalesce per agent. One flag for both used to mean a click on a Claude server
+// started every Codex server as well, half a minute of spinner for a file the click never touched.
+var mcpRefresh = MCPRefreshPoll()
+check(mcpRefresh.begin(["claude", "codex"]) == ["claude", "codex"],
+      "the timer and an opened panel check both agents")
+check(mcpRefresh.begin(["claude"]).isEmpty, "a second check of an agent still being checked is not started")
+check(!mcpRefresh.finish("codex"), "an agent nobody asked about again is left alone when its check lands")
+check(mcpRefresh.begin(["claude", "codex"]) == ["codex"],
+      "one agent's running check does not hold the other's back")
+check(mcpRefresh.finish("claude"), "the check asked for meanwhile is remembered and runs once the first lands")
+check(mcpRefresh.begin(["claude"]) == ["claude"] && !mcpRefresh.finish("claude"), "once, not for ever after")
+// A switch written while that agent's check is out: the check read the config before the write
+// (or, for Codex, holds the lock the switch's own re-read then finds busy), so its picture is stale.
+mcpRefresh.switched("claude")
+check(mcpRefresh.begin(["claude"]) == ["claude"] && !mcpRefresh.finish("claude"),
+      "a switch with no check in flight orders nothing: the command leaves its own file current")
+mcpRefresh.switched("codex")
+check(mcpRefresh.finish("codex"), "a switch during its agent's check has that agent checked once more")
+check(mcpRefresh.begin(["codex", "claude"]) == ["codex", "claude"], "and both are free again afterwards")
+mcpRefresh.switched("claude")
+check(!mcpRefresh.finish("codex") && mcpRefresh.finish("claude"),
+      "the re-check follows the agent whose config was written, not the other one")
+
 
 // Version order, used both to offer an update and to pick the newest nvm node.
 check(ReleaseVersion.isNewer("0.0.10", than: "0.0.9"), "versions compare per component, not as text")
@@ -4364,6 +4732,45 @@ check(!ReleaseVersion.isNewer("0.6.0-rc.1", than: "0.6.0"),
       "a release candidate is never newer than the release it precedes")
 check(!ReleaseVersion.isNewer("1.0", than: "1.0.0") && !ReleaseVersion.isNewer("1.0.0", than: "1.0"),
       "a missing component counts as zero")
+
+// What an out-of-date copy is offered: the one answer the panel banner, the About page, the
+// notification and the Install button all read.
+check(UpdateOffer.resolve(current: "0.27.0", latest: "0.28.0", onDisk: "0.27.0",
+                          brewManaged: false, caskVersion: nil) == .available(version: "0.28.0"),
+      "a newer release and nothing on disk yet: the release is offered")
+check(UpdateOffer.resolve(current: "0.27.0", latest: "0.28.0", onDisk: "0.28.0",
+                          brewManaged: false, caskVersion: nil) == .restart(version: "0.28.0"),
+      "a newer copy already on disk is a restart, not a second download")
+check(UpdateOffer.resolve(current: "0.27.0", latest: "0.28.0", onDisk: "0.28.0",
+                          brewManaged: true, caskVersion: "0.28.0") == .restart(version: "0.28.0"),
+      "after brew replaced the bundle the answer is a restart, not the command again")
+check(UpdateOffer.resolve(current: "0.27.0", latest: "0.28.0", onDisk: "0.27.0",
+                          brewManaged: true, caskVersion: "0.28.0") == .brew(version: "0.28.0"),
+      "a Homebrew install whose cask has the release gets the brew command")
+check(UpdateOffer.resolve(current: "0.27.0", latest: "0.28.0", onDisk: "0.27.0",
+                          brewManaged: true, caskVersion: "0.27.0") == .brewPending(version: "0.28.0"),
+      "a Homebrew install whose cask lags the release is told to wait, never handed a command")
+check(UpdateOffer.resolve(current: "0.27.0", latest: "0.28.0", onDisk: "0.27.0",
+                          brewManaged: true, caskVersion: nil) == .brewPending(version: "0.28.0"),
+      "a cask nobody has answered about yet counts as lagging")
+check(UpdateOffer.resolve(current: "0.28.0", latest: "0.28.0", onDisk: "0.28.0",
+                          brewManaged: false, caskVersion: nil) == UpdateOffer.none,
+      "a current copy is offered nothing")
+check(UpdateOffer.resolve(current: "0.28.0", latest: nil, onDisk: "0.28.0",
+                          brewManaged: true, caskVersion: "0.29.0") == UpdateOffer.none,
+      "no release seen yet: nothing is offered, whatever the cask says")
+var diskReads = 0
+func countedDiskVersion() -> String? { diskReads += 1; return "0.28.0" }
+_ = UpdateOffer.resolve(current: "0.28.0", latest: "0.28.0", onDisk: countedDiskVersion(),
+                        brewManaged: false, caskVersion: nil)
+check(diskReads == 0, "a current copy answers without reading the bundle on disk: \(diskReads)")
+check(UpdateOffer.available(version: "0.28.0").announcedVersion == "0.28.0"
+        && UpdateOffer.brew(version: "0.28.0").announcedVersion == "0.28.0",
+      "an update the panel can act on is announced")
+check(UpdateOffer.brewPending(version: "0.28.0").announcedVersion == nil
+        && UpdateOffer.restart(version: "0.28.0").announcedVersion == nil
+        && UpdateOffer.none.announcedVersion == nil,
+      "nothing is announced while the panel has no update to show for it")
 
 // Where the app looks for a node: the hooks' own two first, then the fixed spots, then nvm newest
 // first — as text "v9" sorts above "v20", which picked the oldest node on the machine.
@@ -4445,6 +4852,16 @@ _ = idle.step(now: quitT0 + 21, inUse: false, needed: false)
 idle.reset()
 check(idle.step(now: quitT0 + 30, inUse: false, needed: false) == .stay,
       "a probe that found the app needed starts the clock over")
+
+// When closing the panel gives the keyboard back to the app it was opened over.
+check(PanelFocus.handsBack(appActive: true, previousRunning: true, settingsVisible: false),
+      "Esc over a running app gives it the keyboard back")
+check(!PanelFocus.handsBack(appActive: false, previousRunning: true, settingsVisible: false),
+      "someone who already switched to another app keeps the one they chose")
+check(!PanelFocus.handsBack(appActive: true, previousRunning: false, settingsVisible: false),
+      "an app that has quit since, or none remembered, is not brought back")
+check(!PanelFocus.handsBack(appActive: true, previousRunning: true, settingsVisible: true),
+      "an open Settings window keeps the keyboard")
 
 // The branch a session row shows, read out of .git/HEAD.
 let gitRoot = splitDir + "git/"

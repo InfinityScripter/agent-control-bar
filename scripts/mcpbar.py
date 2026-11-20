@@ -2134,7 +2134,15 @@ def main(argv):
             print("Could not save Codex history", file=sys.stderr)
             return 1
     elif command == "codex-hooks":
-        print(codex.approve_codex_hooks() if rest[:1] == ["approve"] else codex.fetch_codex_hooks())
+        # Причина — в stderr и код 2, как у переключателей: приложение не читает stdout, а
+        # stderr пишет в лог только при ненулевом выходе, и по коду кнопка Approve узнаёт,
+        # что Codex не ответил.
+        try:
+            print(codex.approve_codex_hooks() if rest[:1] == ["approve"]
+                  else codex.fetch_codex_hooks())
+        except Refused as exc:
+            print(f"refused: {exc}", file=sys.stderr)
+            return 2
     elif command == "codex-mcp":
         # Своё слово после команды, как у statusline: три действия над одним файлом, и
         # отдельные команды верхнего уровня для них читались бы как отдельные подсистемы.

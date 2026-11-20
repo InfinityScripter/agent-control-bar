@@ -22,7 +22,7 @@ import struct
 import time
 
 import mcpbar as core
-from mcpbar import (HOME, SECURE_DIR, STRINGS, Refused, describe_tool, mtime, parse_reset,
+from mcpbar import (HOME, SECURE_DIR, SECURE_FILE, STRINGS, Refused, describe_tool, mtime, parse_reset,
                     read_json, read_json_line, t, tail_lines, write_json)
 
 
@@ -897,9 +897,29 @@ def codex_mcp_record(entries, statuses, error=None):
 
 
 def refresh_codex_mcp():
-    """Один проход: спросить Codex о серверах → переписать codex/mcp.json."""
+    """Один проход: спросить Codex о серверах → переписать codex/mcp.json.
+
+    Под таким же неблокирующим замком, что и refresh() у Claude, и по той же причине: путей
+    сюда два — проверка по таймеру приложения и переключатель сервера, который перечитывает
+    Codex после своей записи. Две проверки разом — это дважды поднятые серверы пользователя
+    и две записи codex/mcp.json наперегонки. Занято — файл перепишет идущая проверка, а
+    приложение спросит ещё раз после неё, если переключатель записал конфиг позже её чтения.
+    """
     if not os.path.isdir(CODEX):
         return t("codex.absent")
+    import fcntl
+
+    secure_codex_root()
+    lock = os.path.join(CODEX_ROOT, "refresh.lock")
+    with os.fdopen(os.open(lock, os.O_WRONLY | os.O_CREAT, SECURE_FILE), "w") as fh:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return t("check.running")
+        return _refresh_codex_mcp_locked()
+
+
+def _refresh_codex_mcp_locked():
     entries, list_error = codex_mcp_list()
     if not entries:
         return list_error or t("codex.noservers")
@@ -1039,25 +1059,31 @@ def codex_hooks_list():
     return rows, None
 
 
-def codex_hooks_waiting(groups):
-    """НАШИ включённые хуки, которые Codex не запустит, пока их не одобрят.
+def codex_hooks_ours(groups):
+    """НАШИ хуки, которые Codex вообще перечислил, — в любом состоянии.
 
     Только свои: чужой неодобренный хук — сознательный выбор человека, и ни подсказка, ни
-    кнопка одобрения его не касаются. Только включённые: выключенный не запустится и с
-    доверием. `modified` — хук, одобренный раньше, чья команда с тех пор поменялась (так
-    бывает после обновления приложения): Codex пропускает его так же, как неодобренный.
+    кнопка одобрения его не касаются.
     """
-    waiting = []
+    ours = []
     for group in groups or []:
         hooks = group.get("hooks") if isinstance(group, dict) else None
         for hook in hooks if isinstance(hooks, list) else []:
-            if not isinstance(hook, dict) or hook.get("enabled") is False:
-                continue
-            if not our_hook_command(hook.get("command")):
-                continue
-            if hook.get("trustStatus") in ("untrusted", "modified"):
-                waiting.append(hook)
-    return waiting
+            if isinstance(hook, dict) and our_hook_command(hook.get("command")):
+                ours.append(hook)
+    return ours
+
+
+def codex_hooks_waiting(groups):
+    """НАШИ включённые хуки, которые Codex не запустит, пока их не одобрят.
+
+    Только включённые: выключенный не запустится и с доверием. `modified` — хук, одобренный
+    раньше, чья команда с тех пор поменялась (так бывает после обновления приложения): Codex
+    пропускает его так же, как неодобренный.
+    """
+    return [hook for hook in codex_hooks_ours(groups)
+            if hook.get("enabled") is not False
+            and hook.get("trustStatus") in ("untrusted", "modified")]
 
 
 def codex_untrusted_ours(groups):
@@ -1066,17 +1092,24 @@ def codex_untrusted_ours(groups):
 
 
 def fetch_codex_hooks():
-    """Один проход: спросить Codex о доверии к хукам → переписать codex/hooks.json."""
+    """Один проход: спросить Codex о доверии к хукам → переписать codex/hooks.json.
+
+    Отказ Codex — исключение Refused, а не строка ответа: команда выходит с ненулевым кодом,
+    и только тогда приложение пишет причину в лог и узнаёт, что вопрос остался без ответа.
+    """
     if not os.path.isdir(CODEX):
         return t("codex.absent")
     groups, error = codex_hooks_list()
     # Отказ app-server — это «не знаю», а не «всё одобрено». Ноль поверх честного числа
     # убрал бы подсказку ровно в тот момент, когда она нужна: Codex занят и не ответил.
     if error:
-        return error
+        raise Refused(error)
     secure_codex_root()
     untrusted = codex_untrusted_ours(groups)
-    write_json(CODEX_HOOKS, {"ts": int(time.time()), "untrusted": untrusted})
+    # `ours` — сколько наших хуков Codex перечислил вообще. Без него ноль в `untrusted` значил
+    # и «все одобрены», и «наших хуков у Codex нет», и Settings рисовал галочку в обоих случаях.
+    write_json(CODEX_HOOKS, {"ts": int(time.time()), "untrusted": untrusted,
+                             "ours": len(codex_hooks_ours(groups))})
     return t("codex.hooks", n=untrusted)
 
 
@@ -1093,12 +1126,12 @@ def approve_codex_hooks():
         return t("codex.absent")
     groups, error = codex_hooks_list()
     if error:
-        return error
+        raise Refused(error)
     trust = {hook["key"]: {"trusted_hash": hook["currentHash"]}
              for hook in codex_hooks_waiting(groups)
              if isinstance(hook.get("key"), str) and isinstance(hook.get("currentHash"), str)}
     if trust:
         error = codex_config_write([("hooks.state", trust)])
         if error:
-            return error
+            raise Refused(error)
     return fetch_codex_hooks()

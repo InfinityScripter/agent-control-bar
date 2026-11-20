@@ -71,8 +71,8 @@ PLIST
 # Bundle the hook scripts (so first-launch self-install works) and the app icon.
 mkdir -p "$STAGE_APP/Contents/Resources"
 cp hooks/update.js hooks/lifecycle.js hooks/install.js hooks/uninstall.js hooks/statusline.sh hooks/statusline.py "$STAGE_APP/Contents/Resources/"
-# The MCP half runs out of the bundle in the brew/DMG channel — the plugin directory that
-# normally holds it does not exist there.
+# The MCP half runs out of the bundle in every channel: this copy is the one built with the
+# binary. The plugin's own (paths.json) is only the fallback for a bundle without it.
 mkdir -p "$STAGE_APP/Contents/Resources/scripts"
 # mcpbar_codex.py too: mcpbar.py imports it from its own directory on every run.
 cp scripts/mcpbar.py scripts/mcpbar_codex.py "$STAGE_APP/Contents/Resources/scripts/"
@@ -120,23 +120,37 @@ xattr -cr "$STAGE_APP"
 # afternoon in the wrong place.
 ENTITLEMENTS="app.entitlements"
 test -f "$ENTITLEMENTS"
+SIGNED=1
 if [[ -n "$SIGN_ID" ]]; then
   echo "Signing with Developer ID: $SIGN_ID"
   codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS" --sign "$SIGN_ID" "$STAGE_APP"
 else
   echo "No Developer ID certificate found — ad-hoc signing. The result is NOT notarized:"
   echo "  macOS will block the first launch. See README, section \"Gatekeeper\"."
-  # || warns instead of swallowing: macOS kills an unsigned arm64 binary at launch, so a
-  # silently failed ad-hoc codesign shipped a complete-looking .app that never starts.
   # --options runtime here too, not only for Developer ID: releases ship ad-hoc signed, and
   # without the hardened runtime dyld honours DYLD_INSERT_LIBRARIES — any process of the user's
   # could load its own code into an app that may hold the Automation grant for Terminal/iTerm.
-  codesign --force --options runtime --entitlements "$ENTITLEMENTS" --sign - "$STAGE_APP" >/dev/null 2>&1 \
-    || echo "WARNING: ad-hoc codesign failed — Apple Silicon Macs will refuse to launch this build" >&2
+  if ! codesign --force --options runtime --entitlements "$ENTITLEMENTS" --sign - "$STAGE_APP" >/dev/null 2>&1; then
+    # Fatal wherever the result has to start on Apple Silicon: macOS kills an unsigned arm64
+    # binary at launch. As a warning this replaced the working app with a complete-looking one
+    # that never starts, and --dmg would publish the same thing to everyone. Asked of the
+    # hardware, not `uname -m`: a build started from a Rosetta shell reports x86_64 on an M-chip.
+    if [[ "${1:-}" == "--dmg" || "$(sysctl -n hw.optional.arm64 2>/dev/null)" == "1" ]]; then
+      echo "ERROR: ad-hoc codesign failed — Apple Silicon Macs refuse to launch an unsigned build" >&2
+      exit 1
+    fi
+    # An Intel Mac's own local build is the one case left: its x86_64 slice runs unsigned.
+    echo "WARNING: ad-hoc codesign failed — this build is unsigned and starts on Intel Macs only" >&2
+    SIGNED=0
+  fi
 fi
-# The swap happens only past this line: binary present and executable, plist well-formed.
+# The swap happens only past this line: binary present and executable, plist well-formed, and
+# the signature just made verifies — a seal that does not is the same never-starting app.
 test -x "$BIN"
 /usr/bin/plutil -lint "$STAGE_APP/Contents/Info.plist" >/dev/null
+if [[ "$SIGNED" == "1" ]]; then
+  codesign --verify --strict "$STAGE_APP"
+fi
 # The outgoing bundle is deleted, not kept as "$APP.previous". That rollback copy sat next to
 # the app after every update — a folder in Finder and in the Dock's Applications stack — and
 # nothing in the code ever read it; users just trashed it by hand. Leftovers of older builds

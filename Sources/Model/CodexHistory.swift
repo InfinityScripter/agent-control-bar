@@ -25,15 +25,7 @@ struct CodexHistory: Decodable, Equatable {
 
         var workspace: String { (cwd as NSString).lastPathComponent }
 
-        var sourceLabel: String {
-            switch source {
-            case "t3": return "T3 Code"
-            case "app": return "ChatGPT"
-            case "cli": return "Terminal"
-            case "ide": return "Editor"
-            default: return ""
-            }
-        }
+        var sourceLabel: String { SessionFormat.surfaceLabel(source) }
 
         var threadURL: URL? {
             guard UUID(uuidString: id) != nil else { return nil }

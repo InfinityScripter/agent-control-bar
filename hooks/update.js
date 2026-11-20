@@ -436,14 +436,16 @@ process.stdin.on("end", () => {
         ? p.notification_type === "permission_prompt"
         : /\b(permission|approve|allow)\b/i.test(p.message || "");
       if (!isPerm) return;
-      state = "permission"; label = "Awaiting permission"; startedAt = 0;
+      // startedAt is carried over, here and in permreq: the turn is still the same turn. The app
+      // shows no timer while the wait lasts, and a zero would restart the clock at PostToolUse.
+      state = "permission"; label = "Awaiting permission";
       break;
     }
     case "permreq":
       // Codex fires this before auto-review routing, so it does not prove a human prompt exists.
       if (codex) return;
       // Claude desktop permission signal; not redundant with notify (that's CLI-only).
-      state = "permission"; label = "Awaiting permission"; startedAt = 0; break;
+      state = "permission"; label = "Awaiting permission"; break;
     case "stop":
       state = "done"; label = "Done"; startedAt = 0; break;
     default:

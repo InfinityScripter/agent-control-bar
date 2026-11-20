@@ -22,15 +22,32 @@ enum SessionFormat {
     //
     // Two paths to one pill, because the two agents know different things about themselves:
     // Codex writes its surface into the state file (it is a fact from its own rollout's
-    // originator), while Claude's has to be inferred here. An unknown Codex surface yields no
-    // badge at all — a wrong "CLI" on a desktop session is worse than an empty spot.
+    // originator), while Claude's has to be inferred here. An unknown surface yields no badge at
+    // all, for either agent — a wrong "CLI" on a desktop session is worse than an empty spot. So
+    // Claude's terminal badge needs the one entrypoint that names a terminal: an SDK run or a
+    // host this build has never heard of is not a CLI session just because it is nothing else.
     static func surfaceTag(_ s: Session) -> String {
-        if s.provider == "codex" { return s.surface.uppercased() }
+        if s.provider == "codex" { return surfaceLabel(s.surface) }
         // "t3-code" is T3 Code running Claude in one of its threads: no terminal, an app's window.
-        if s.entrypoint == "claude-desktop" || s.entrypoint == "t3-code" { return "APP" }
+        if s.entrypoint == "claude-desktop" || s.entrypoint == "t3-code" { return surfaceLabel("app") }
         if s.entrypoint.isEmpty { return "" }
-        if s.entrypoint == "claude-vscode" || s.termProgram == "vscode" { return "IDE" }
-        return "CLI"
+        if s.entrypoint == "claude-vscode" || s.termProgram == "vscode" { return surfaceLabel("ide") }
+        return s.entrypoint == "cli" ? surfaceLabel("cli") : ""
+    }
+
+    // The word for a surface code, for the whole Sessions tab: the Live rows above and the Codex
+    // history list both ask here, so one chat is not "CLI" while it runs and "Terminal" once it
+    // has ended. The pill's short spelling won because a Live row has no room for a longer one.
+    // "t3" is a chat T3 Code started, which only Codex's own history index can name.
+    static func surfaceLabel(_ code: String) -> String {
+        switch code {
+        case "cli": return "CLI"
+        case "ide": return "IDE"
+        case "app": return "APP"
+        case "exec": return "EXEC"
+        case "t3": return "T3"
+        default: return ""
+        }
     }
 
     // The link that opens ONE Codex conversation, or nil when the click belongs somewhere else.
@@ -53,6 +70,18 @@ enum SessionFormat {
 
     static func codexThreadURL(id: String) -> URL? {
         urlPathComponent(id).flatMap { URL(string: "codex://threads/" + $0) }
+    }
+
+    // Whether a click on the row has anywhere to go: one term per branch of the controller's
+    // openSession, in its order. A session can be alive with no window on record — a terminal
+    // whose environment named neither a program nor a bundle — and for that one the panel stays
+    // open and the row says so, instead of closing on a click that raises nothing.
+    //
+    // It answers "is a place recorded", not "will the open succeed": whether the app is still
+    // installed is a question for the system, asked at the click.
+    static func canOpen(_ s: Session) -> Bool {
+        (s.entrypoint == "t3-code" && !s.t3Thread.isEmpty) || codexThreadURL(s) != nil
+            || s.entrypoint == "claude-desktop" || !s.termBundle.isEmpty || !s.termProgram.isEmpty
     }
 
     /// An id as one path component of a deep link, or nil for an empty one. Percent-encoded: an id

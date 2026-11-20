@@ -42,8 +42,13 @@ extension StatusController {
     /// closed panel, and open it straight back. Without the guard the icon could open the panel
     /// but never close it.
     @objc func togglePanel() {
-        if panelIsOpen { closePanel(); return }
-        guard Date().timeIntervalSince1970 - panelClosedAt > Self.reopenGuard else { return }
+        if panelIsOpen { closePanel(); handPanelFocusBack(); return }
+        // The usual way a second click closes: windowDidResignKey has already closed the panel,
+        // so this refusal is where that click ends.
+        guard Date().timeIntervalSince1970 - panelClosedAt > Self.reopenGuard else {
+            handPanelFocusBack()
+            return
+        }
         openPanel()
     }
 
@@ -83,6 +88,11 @@ extension StatusController {
         // with it — a dark wallpaper turns the bar dark while the system stays light.
         if let button = statusItem.button { window.appearance = button.effectiveAppearance }
         positionPanel(window)
+        // Read before this app takes the keyboard, or the answer would be this app. Opened from
+        // our own Settings window there is nobody to hand back to, and nil also drops whoever an
+        // earlier open remembered.
+        let front = NSWorkspace.shared.frontmostApplication
+        panelOpenedOver = front?.processIdentifier == getpid() ? nil : front
         // An accessory app is not active, and a panel opened from an inactive app never takes the
         // keyboard — the switches would work and every shortcut would not.
         NSApp.activate(ignoringOtherApps: true)
@@ -98,7 +108,24 @@ extension StatusController {
     func closePanel() {
         stopPanelDismissWatch()
         panelClosedAt = Date().timeIntervalSince1970
+        mcpSwitchRefusal = nil    // it explained a click made in the panel that is now gone
         panelWindow?.orderOut(nil)
+    }
+
+    /// Esc and a second click on the icon close the panel without choosing another app, and an
+    /// accessory app has no window to fall back to: the keys would go nowhere until the person
+    /// clicked their editor again. Not part of closePanel(): that also runs for a click past the
+    /// panel and for a session row, where the focus is already on its way to the app the person
+    /// picked and handing it back here would take it from that app.
+    private func handPanelFocusBack() {
+        let previous = panelOpenedOver
+        panelOpenedOver = nil     // once per open: Esc followed by a quick click must not repeat it
+        guard let previous,
+              PanelFocus.handsBack(appActive: NSApp.isActive,
+                                   previousRunning: !previous.isTerminated,
+                                   settingsVisible: settingsWindow?.isVisible == true)
+        else { return }
+        previous.activate(options: [])
     }
 
     /// Where the panel hangs: under the status item, right edge aligned with the button's, pulled
@@ -149,7 +176,10 @@ extension StatusController {
         window.isReleasedWhenClosed = false
         window.isRestorable = false
         window.animationBehavior = .none
-        window.onCancel = { [weak self] in self?.closePanel() }
+        window.onCancel = { [weak self] in
+            self?.closePanel()
+            self?.handPanelFocusBack()
+        }
         window.delegate = self
         return window
     }

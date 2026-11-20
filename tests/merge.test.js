@@ -694,7 +694,7 @@ test("stop and permreq events map to their states, an unknown event writes nothi
   run(updatePath, home, ["permreq"], JSON.stringify({ session_id: "s1", cwd: home }));
   let state = JSON.parse(fs.readFileSync(path.join(stateDir(home), "s1.json"), "utf8"));
   assert.equal(state.state, "permission");
-  assert.equal(state.startedAt, 0);
+  assert.ok(state.startedAt > 0, "the request does not stop the turn clock the tool started");
 
   run(updatePath, home, ["stop"], JSON.stringify({ session_id: "s1", cwd: home }));
   state = JSON.parse(fs.readFileSync(path.join(stateDir(home), "s1.json"), "utf8"));

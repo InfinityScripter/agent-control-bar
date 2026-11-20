@@ -64,6 +64,32 @@ struct MCPServer {
     /// because "12" beats "—" for a server that plainly has tools.
     var liveTools: Int { tools.isEmpty ? (reportedTools ?? 0) : enabledTools }
 
+    /// What the right-hand column of the server's row says. A server that did not answer says so
+    /// in words — a bare "!" next to a plainly-ON switch reads as a contradiction rather than an
+    /// explanation, especially since "pending" here means "switched on, waiting for a new session".
+    ///
+    /// `checking` is the row's own spinner flag (MCPModel.isChecking, asked of this server's
+    /// agent), handed in so the word and the spinner are decided from one answer.
+    func tail(checking: Bool) -> String {
+        let count = tools.isEmpty
+            ? (reportedTools.map(String.init) ?? "—")
+            : "\(enabledTools)/\(tools.count)"
+        switch state {
+        case "ok", "off": return count
+        // A server from a repo's .mcp.json that Claude Code has not been told to trust yet: it is
+        // not switched on and waiting, it is waiting to be allowed at all, and only the user can
+        // answer that — in Claude Code, not here.
+        case "pending" where needsApproval: return "approve in Claude Code"
+        // Empty while the check runs: the spinner in this same slot is the answer, and a word
+        // beside a turning arc reads as two competing statuses.
+        case "pending": return checking ? "" : "next session"
+        // A remote (http/sse) project server: there is no probe for it, and claiming either green
+        // or red would be inventing.
+        case "unknown": return "not checked"
+        default: return "failed"
+        }
+    }
+
     /// The one spelling of a full tool name. Every consumer — the deny rule, the hover card —
     /// goes through here: hand-assembling `mcp__…__…` at a call site is how a display name
     /// ends up where a toolPrefix belongs, twice now (the deny rule in 0.5.0, the card in 0.5.3).
@@ -300,5 +326,41 @@ func mcpTint(_ state: String) -> NSColor {
     case "failed": return .systemRed
     case "off": return .tertiaryLabelColor
     default: return .systemOrange
+    }
+}
+
+/// Which agents' full MCP checks are running, and which were asked for again meanwhile.
+///
+/// A full check starts every configured server of its agent and takes about half a minute, so a
+/// second one behind a running one buys nothing but all of that again. It is remembered, not
+/// discarded, and runs once when the first lands — the run in flight started BEFORE whatever
+/// prompted the second and cannot know about it.
+///
+/// Per agent, because the two checks share nothing: one flag for both made a click on a Claude
+/// server start every Codex server too, and a slow Codex check hold back Claude's.
+struct MCPRefreshPoll {
+    private var running: Set<String> = []
+    private var again: Set<String> = []
+
+    /// The agents whose check starts now. One still being checked is remembered instead.
+    mutating func begin(_ providers: Set<String>) -> Set<String> {
+        again.formUnion(providers.intersection(running))
+        let starting = providers.subtracting(running)
+        running.formUnion(starting)
+        return starting
+    }
+
+    /// This agent's check has landed. True when it was asked for again meanwhile, and is due once more.
+    mutating func finish(_ provider: String) -> Bool {
+        running.remove(provider)
+        return again.remove(provider) != nil
+    }
+
+    /// A switch wrote this agent's config. With no check of that agent out there is nothing to
+    /// order — the command leaves its own file current. One in flight read the config before the
+    /// write, or holds the lock the switch's own re-read then finds busy, so the picture it is
+    /// about to write is already stale and the agent is checked once more after it.
+    mutating func switched(_ provider: String) {
+        if running.contains(provider) { again.insert(provider) }
     }
 }

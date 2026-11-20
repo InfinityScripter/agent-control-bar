@@ -145,12 +145,16 @@ extension StatusController {
     func approveCodexHooks() {
         guard !codexHooksChecking else { return }
         codexHooksChecking = true
+        codexApproveFailed = false
         refreshCounts()
-        runQuietCommand(.codexHooksApprove) { [weak self] _ in
+        runQuietCommand(.codexHooksApprove) { [weak self] succeeded in
             guard let self else { return }
             // The next tick re-reads codex/hooks.json through its own mtime gate; clearing the
             // flag here is what turns the button back from "Approving…" to its own name.
             self.codexHooksChecking = false
+            // Said beside the button: a Codex that was busy or refused used to turn "Approving…"
+            // back into "Approve" without a word. The cause is in the log, via spawnBackend.
+            self.codexApproveFailed = !succeeded
             self.codexTrustInputs = ""   // the gate has been overtaken, so let it re-measure
             self.refreshCounts()
         }

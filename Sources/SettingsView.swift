@@ -143,12 +143,14 @@ private struct GeneralSettings: View {
     /// never saw the block at all.
     private var codexHooksRow: some View {
         HStack {
-            switch store.codexHooksUntrusted {
-            case .none:
+            switch store.codexHooks {
+            case .notAsked:
                 Label("Hook trust: not asked yet", systemImage: "questionmark.circle")
-            case .some(0):
+            case .notInstalled:
+                Label("Hooks not installed in Codex", systemImage: "exclamationmark.triangle")
+            case .approved:
                 Label("Hooks approved", systemImage: "checkmark.circle")
-            case .some(let n):
+            case .waiting(let n):
                 Label(n == 1 ? "1 hook not approved" : "\(n) hooks not approved",
                       systemImage: "exclamationmark.triangle")
             }
@@ -246,7 +248,14 @@ private struct GeneralSettings: View {
             Section {
                 Toggle("Codex limits", isOn: store.codexLimits)
                 Toggle("Codex MCP servers", isOn: store.codexServers)
-                if store.codexPresent { codexHooksRow }
+                if store.codexPresent {
+                    codexHooksRow
+                    if store.codexApproveFailed {
+                        Text(CodexHookTrust.noAnswer)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             } header: {
                 Text("Codex")
             } footer: {
@@ -462,6 +471,9 @@ private struct AboutSettings: View {
         + "Codex skips any hook until it is approved, so the button also approves this app's "
         + "hooks in Codex. Only a click does that, never a launch."
 
+    private static let brewPendingNote: String = "Homebrew has not picked this release up yet. "
+        + "Its cask usually follows within a day, and the upgrade command appears here once it has."
+
     /// The cause is selectable here and not in the panel: this is a normal window, and a path or a
     /// library name is exactly what someone wants to paste into a terminal or a bug report.
     @ViewBuilder
@@ -481,6 +493,14 @@ private struct AboutSettings: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
+        } else if case .codexNotWritten(let reason) = store.hooksHealth {
+            Label("Installed for Claude", systemImage: "checkmark.circle")
+                .foregroundStyle(.secondary)
+            Label("Codex hooks weren\u{2019}t written", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text(reason)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
         } else if store.hooksHealth == .ok {
             Label("Installed", systemImage: "checkmark.circle")
                 .foregroundStyle(.secondary)
@@ -517,9 +537,14 @@ private struct AboutSettings: View {
                     Button("What\u{2019}s new in \(newer)") { store.showLatestNotes() }
                     // Homebrew owns the bundle, and a DMG swapped under it would be undone by the
                     // next `brew upgrade` — so the command is handed over rather than performed.
-                    if store.brewManaged {
+                    // Only once the cask has the release, though: until then brew answers
+                    // "already up to date", and the page says to wait instead.
+                    if case .brew = store.updateOffer {
                         LabeledContent("Update with", value: store.brewUpgradeCommand)
                             .textSelection(.enabled)
+                    } else if case .brewPending = store.updateOffer {
+                        Text(Self.brewPendingNote)
+                            .foregroundStyle(.secondary)
                     }
                 } else if store.updateProblem == nil {
                     Label("This copy is up to date", systemImage: "checkmark.circle")

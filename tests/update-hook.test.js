@@ -105,6 +105,25 @@ test("the turn clock starts at the prompt, runs through its tools and stops at S
   assert.equal(state(home, "s1").startedAt, 0);
 });
 
+test("waiting for a permission does not restart the turn clock", (t) => {
+  // The next event after an approval is PostToolUse, at the END of the approved tool. A clock
+  // zeroed by the request restarted there, so a ten-minute build read as a turn a second old
+  // and the long-turn sound measured from the end of the wait instead of from the prompt.
+  for (const [ask, payload] of [["permreq", {}],
+    ["notify", { notification_type: "permission_prompt" }]]) {
+    const home = sandbox(t);
+    event(home, "prompt", { session_id: "s1", cwd: home });
+    fs.writeFileSync(path.join(stateDir(home), "s1.json"),
+      JSON.stringify({ ...state(home, "s1"), startedAt: 1000 }));
+
+    event(home, ask, { session_id: "s1", cwd: home, ...payload });
+    assert.equal(state(home, "s1").state, "permission", ask);
+    assert.equal(state(home, "s1").startedAt, 1000, ask);
+    event(home, "post", { session_id: "s1", cwd: home, tool_name: "Bash" });
+    assert.equal(state(home, "s1").startedAt, 1000, ask);
+  }
+});
+
 test("a tool event in a session that never saw its prompt still starts the clock", (t) => {
   // The hooks were installed mid-turn: there was no prompt event to start it, and a zero here
   // reads to the app as "no turn running" while a tool visibly is.

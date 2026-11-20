@@ -314,6 +314,93 @@ class BuildTimeout(unittest.TestCase):
             time.sleep(0.01)
 
 
+@unittest.skipUnless(sys.platform == "darwin", "build.sh зовёт plutil и xattr, они есть только в macOS")
+class BuildKeepsWorkingApp(unittest.TestCase):
+    """Сборка, которая не запустится, не должна занять место работающего приложения.
+
+    Сбой ad-hoc подписи был предупреждением: build.sh удалял прежний бандл и клал на его место
+    неподписанный, а macOS убивает неподписанный arm64-бинарь при запуске. В plugin-канале это
+    «значок пропал после обновления», и сказать об этом уже некому.
+
+    Настоящий build.sh с подставными swiftc/lipo/codesign/security/sysctl: проверяется только
+    порядок «подпись, проверка, замена», без минуты компиляции и без связки ключей.
+    """
+
+    REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    SHIMS = {
+        "swiftc": 'while [ $# -gt 0 ]; do\n'
+                  '  if [ "$1" = "-o" ]; then printf "#!/bin/sh\\n" > "$2"; chmod +x "$2"; fi\n'
+                  '  shift\ndone\n',
+        "lipo": 'cp "$2" "$5"\n',
+        "security": "exit 0\n",
+        # Сюда сборка дойти не должна; если дойдёт, настоящий образ и Finder ей не достанутся.
+        "hdiutil": "exit 1\n",
+        "sysctl": '[ "$FAKE_ARM64" = 1 ] && echo 1\nexit 0\n',
+        "codesign": 'case " $* " in\n'
+                    '  *" --verify "*) [ "$FAKE_VERIFY" = fail ] && exit 1 ;;\n'
+                    '  *" --sign "*) [ "$FAKE_SIGN" = fail ] && exit 1 ;;\n'
+                    'esac\nexit 0\n',
+    }
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.bin = os.path.join(self._dir.name, "bin")
+        os.mkdir(self.bin)
+        for name, body in self.SHIMS.items():
+            path = os.path.join(self.bin, name)
+            with open(path, "w") as fh:
+                fh.write("#!/bin/sh\n" + body)
+            os.chmod(path, 0o755)
+        self.app = os.path.join(self._dir.name, "out", "Agent Control Bar.app")
+        self.old = os.path.join(self.app, "old-copy")
+        os.makedirs(self.app)
+        open(self.old, "w").close()
+
+    def _build(self, *args, sign="ok", verify="ok", arm64="1"):
+        env = {"PATH": self.bin + ":/usr/bin:/bin:/usr/sbin:/sbin", "HOME": self._dir.name,
+               "TMPDIR": self._dir.name, "CONTROL_BAR_APP": self.app,
+               "FAKE_SIGN": sign, "FAKE_VERIFY": verify, "FAKE_ARM64": arm64}
+        return subprocess.run(["/bin/bash", os.path.join(self.REPO, "build.sh"), *args],
+                              env=env, capture_output=True, text=True, timeout=60)
+
+    def _replaced(self):
+        return os.path.exists(os.path.join(self.app, "Contents", "Info.plist"))
+
+    def test_удачная_сборка_заменяет_приложение(self):
+        """Положительная проба: с подставными инструментами сборка доходит до замены."""
+        result = self._build()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self._replaced())
+        self.assertFalse(os.path.exists(self.old))
+
+    def test_сбой_подписи_на_apple_silicon_оставляет_прежнее_приложение(self):
+        result = self._build(sign="fail")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("codesign failed", result.stderr)
+        self.assertTrue(os.path.exists(self.old))
+        self.assertFalse(self._replaced())
+
+    def test_сбой_подписи_при_сборке_dmg_фатален_и_на_intel(self):
+        """Образ уходит всем, в том числе на Apple Silicon: неподписанный публиковать нельзя."""
+        result = self._build("--dmg", sign="fail", arm64="")
+        self.assertTrue(os.path.exists(self.old), result.stderr)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_сбой_подписи_локальной_сборки_на_intel_остаётся_предупреждением(self):
+        """Неподписанный x86_64 на Intel запускается, поэтому там сборка по-прежнему проходит."""
+        result = self._build(sign="fail", verify="fail", arm64="")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("WARNING", result.stderr)
+        self.assertTrue(self._replaced())
+
+    def test_подпись_не_прошедшая_проверку_оставляет_прежнее_приложение(self):
+        result = self._build(verify="fail")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(os.path.exists(self.old))
+        self.assertFalse(self._replaced())
+
+
 class WorkingNode(unittest.TestCase):
     """Исполняемый файл ≠ node, который запускается.
 

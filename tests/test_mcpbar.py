@@ -3368,9 +3368,69 @@ class CodexHooks(unittest.TestCase):
         mcpbar_codex.codex_hooks_list = lambda: (self.groups(self.ours("untrusted")), None)
         mcpbar_codex.fetch_codex_hooks()
         mcpbar_codex.codex_hooks_list = lambda: ([], "app-server timed out")
-        mcpbar_codex.fetch_codex_hooks()
+        with self.assertRaisesRegex(mcpbar.Refused, "app-server timed out"):
+            mcpbar_codex.fetch_codex_hooks()
         with open(mcpbar_codex.CODEX_HOOKS) as fh:
             self.assertEqual(json.load(fh)["untrusted"], 1)
+
+    def test_в_файле_ещё_и_сколько_наших_хуков_codex_вообще_видит(self):
+        """Ноль без доверия значил сразу два ответа: «все одобрены» и «наших хуков у Codex нет
+        вовсе» — и Settings рисовал галочку «Hooks approved» там, где хуки не установлены.
+        Считаются все свои, которые Codex перечислил: и одобренные, и выключенные."""
+        os.makedirs(mcpbar_codex.CODEX, exist_ok=True)
+        off = dict(self.ours("untrusted", "sessionEnd"), enabled=False)
+        alien = {"eventName": "preToolUse", "command": "/usr/local/bin/somebody-else",
+                 "enabled": True, "trustStatus": "untrusted"}
+        mcpbar_codex.codex_hooks_list = lambda: (self.groups(self.ours("trusted"), off, alien), None)
+        mcpbar_codex.fetch_codex_hooks()
+        with open(mcpbar_codex.CODEX_HOOKS) as fh:
+            written = json.load(fh)
+        self.assertEqual((written["untrusted"], written["ours"]), (0, 2))
+
+        mcpbar_codex.codex_hooks_list = lambda: (self.groups(alien), None)
+        mcpbar_codex.fetch_codex_hooks()
+        with open(mcpbar_codex.CODEX_HOOKS) as fh:
+            written = json.load(fh)
+        self.assertEqual((written["untrusted"], written["ours"]), (0, 0))
+
+    def command(self, *argv):
+        import contextlib
+        import io
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = mcpbar.main(["codex-hooks", *argv])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_молчание_app_server_это_ненулевой_код_и_причина_в_stderr(self):
+        """Ошибка печаталась в stdout с кодом 0. Приложение stdout не читает, а stderr пишет в
+        лог только при ненулевом выходе — нажатие Approve при неответившем Codex не оставляло
+        следа нигде."""
+        os.makedirs(mcpbar_codex.CODEX, exist_ok=True)
+        mcpbar_codex.codex_hooks_list = lambda: ([], "app-server timed out")
+        for argv in ((), ("approve",)):
+            code, out, err = self.command(*argv)
+            self.assertEqual(code, 2, argv)
+            self.assertIn("app-server timed out", err, argv)
+            self.assertEqual(out, "", argv)
+        self.assertFalse(os.path.exists(mcpbar_codex.CODEX_HOOKS))
+
+    def test_отказ_записи_доверия_это_ненулевой_код(self):
+        os.makedirs(mcpbar_codex.CODEX, exist_ok=True)
+        waiting = dict(self.ours("untrusted"), key="k", currentHash="sha256:aa")
+        self.fake_app_server(self.groups(waiting), self.groups(waiting),
+                             write_error="config is locked")
+        code, _, err = self.command("approve")
+        self.assertEqual(code, 2)
+        self.assertIn("config is locked", err)
+
+    def test_ответ_codex_это_ноль(self):
+        os.makedirs(mcpbar_codex.CODEX, exist_ok=True)
+        done = dict(self.ours("trusted"), key="k", currentHash="sha256:aa")
+        self.fake_app_server(self.groups(done), self.groups(done))
+        for argv in ((), ("approve",)):
+            code, _, err = self.command(*argv)
+            self.assertEqual((code, err), (0, ""), argv)
 
     def test_изменённый_после_одобрения_тоже_ждёт(self):
         """`modified` — хук, одобренный раньше, чья команда с тех пор поменялась: так бывает
@@ -3435,7 +3495,8 @@ class CodexHooks(unittest.TestCase):
         self.fake_app_server(self.groups(waiting),
                              self.groups(dict(waiting, trustStatus="trusted")),
                              write_error="config is locked")
-        self.assertEqual(mcpbar_codex.approve_codex_hooks(), "config is locked")
+        with self.assertRaisesRegex(mcpbar.Refused, "config is locked"):
+            mcpbar_codex.approve_codex_hooks()
         self.assertFalse(os.path.exists(mcpbar_codex.CODEX_HOOKS))
 
 
@@ -3538,6 +3599,34 @@ class CodexMCP(unittest.TestCase):
         with open(mcpbar_codex.CODEX_MCP) as fh:
             data = json.load(fh)
         return {s["name"]: s for s in data["servers"]}, data
+
+    def test_вторая_проверка_при_занятом_замке_не_поднимает_серверы(self):
+        """Проверку Codex зовут и таймер приложения, и переключатель сервера после записи.
+        Вторая, пока идёт первая, — это дважды поднятые серверы пользователя: она обязана
+        никого не спрашивать и оставить файл как есть (замок держит другой дескриптор —
+        семантика та же, что у другого процесса)."""
+        import fcntl
+
+        mcpbar_codex.secure_codex_root()
+        mcpbar.write_json(mcpbar_codex.CODEX_MCP, {"checked_at": 42, "servers": []})
+        asked = []
+        holder = open(os.path.join(mcpbar_codex.CODEX_ROOT, "refresh.lock"), "w")
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        try:
+            with mock.patch.object(mcpbar_codex, "codex_mcp_list",
+                                   side_effect=lambda: asked.append("list") or ([], None)):
+                answer = mcpbar_codex.refresh_codex_mcp()
+        finally:
+            holder.close()
+        self.assertEqual(asked, [])
+        self.assertEqual(answer, mcpbar.t("check.running"))
+        self.assertEqual(self.servers()[1]["checked_at"], 42)
+
+    def test_свободный_замок_отпускается_после_проверки(self):
+        self.refresh()
+        os.remove(mcpbar_codex.CODEX_MCP)
+        self.refresh()
+        self.assertIn("wiki", self.servers()[0], "замок не отпущен — вторая проверка не прошла")
 
     def test_сервер_пишется_в_той_же_форме_что_у_claude(self):
         """MCPModel читает оба файла ОДНИМ парсером — значит ключи обязаны совпадать."""

@@ -79,11 +79,13 @@ extension StatusController {
     /// told its hooks are fine.
     func loadCodexHooks() {
         switch codexStateFile(at: "codex/hooks.json", gate: &codexHooksMTime) {
-        case .missing: codexHooksUntrusted = 0; codexHooksAnswered = false
+        case .missing: codexHooksUntrusted = 0; codexHooksListed = nil; codexHooksAnswered = false
         case .unchanged: break
         case .changed(let object):
             codexHooksUntrusted = (object["untrusted"] as? NSNumber)?.intValue ?? 0
+            codexHooksListed = CodexHookTrust.listed(in: object)
             codexHooksAnswered = true
+            codexApproveFailed = false
         }
     }
 
@@ -189,7 +191,11 @@ extension StatusController {
                                        hiddenModelServices: hiddenModelServices)
         let tick = board.tick(now: now, rules: rules, pidAlive: pidAlive,
                               frontmost: { NSWorkspace.shared.frontmostApplication?.bundleIdentifier },
-                              owner: { [self] session in
+                              frontmostHosts: { session in
+            NSWorkspace.shared.frontmostApplication.map {
+                RunningProcesses.descends(session.pid, from: $0.processIdentifier)
+            } ?? false
+        }, owner: { [self] session in
             guard let snapshot = sessionOwners, now - snapshot.takenAt.timeIntervalSince1970 < 5
             else { return .unknown }
             return snapshot.presence(of: session)

@@ -118,6 +118,17 @@ enum UpdateFeed {
         guard let data = try? Data(contentsOf: file, options: .mappedIfSafe) else { return "unreadable download" }
         return key.isValidSignature(sig, for: data) ? nil : "the signature does not match the update key"
     }
+
+    /// nil when a bundle whose Info.plist asks for macOS `minimum` (LSMinimumSystemVersion) can
+    /// start on `system`; otherwise why not. Asked of the staged bundle before the running copy
+    /// is moved aside: `open` refuses a bundle that needs a newer system, and by then the old
+    /// copy is deleted and nothing is left running to say so. A bundle that names no minimum has
+    /// no requirement, which is how macOS reads it too.
+    static func systemProblem(minimum: String?, system: OperatingSystemVersion) -> String? {
+        let running = "\(system.majorVersion).\(system.minorVersion).\(system.patchVersion)"
+        guard let minimum, ReleaseVersion.isNewer(minimum, than: running) else { return nil }
+        return "the update needs macOS \(minimum), this Mac runs \(running)"
+    }
 }
 
 extension UpdateFeed.ReleaseAsset {

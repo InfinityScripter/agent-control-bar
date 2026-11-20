@@ -106,21 +106,23 @@ struct PanelCard<Content: View>: View {
     }
 }
 
-/// The amber one-line notice: something outside this app is holding a feature back, and the line
+/// The amber notice: something outside this app is holding a feature back, and the line
 /// says which. One shape for both of them, because two hand-built copies of the same amber pill
 /// drift apart at the first change of radius or tint — and an inconsistent warning reads as a
 /// different KIND of warning. Whether the line is clickable is the caller's business: one opens
 /// System Settings, the other has nowhere to go, since Codex asks for hook trust on its own screen.
+/// A short title stays on one line; a longer message wraps, because the half that got cut off at
+/// 300pt was the half saying what to do ("…The session is still shown. Try again.").
 struct PanelNotice: View {
     let glyph: String
     let text: String
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: glyph).font(.system(size: 10))
             Text(text)
                 .font(.system(size: 11))
-                .lineLimit(1)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .foregroundStyle(Color(nsColor: .systemOrange))
         .frame(maxWidth: .infinity, alignment: .leading)

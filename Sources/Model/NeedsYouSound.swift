@@ -17,10 +17,17 @@ enum NeedsYouSound {
     /// the app the user is looking at: when it is the very terminal or
     /// desktop app that hosts the session, the prompt is already on their screen and a sound
     /// is noise — the cue is for the session behind another window.
+    ///
+    /// Two ways to recognise that host, because each misses what the other catches. The recorded
+    /// bundle id is wrong when a launcher is wrapped around the app: the session file then names
+    /// the launcher, and the app in front never matches it. `frontmostHosts` — the app in front
+    /// is an ancestor of the session's process — sees through that, but cannot replace the
+    /// string: iTerm's shells hang off a detached server and tmux's off its own, so their tree
+    /// never reaches the terminal window.
     static func shouldCue(prevState: String?, effective: String,
-                          hostBundle: String, frontmost: String?) -> Bool {
+                          hostBundle: String, frontmost: String?, frontmostHosts: Bool = false) -> Bool {
         guard effective == "permission", prevState != "permission" else { return false }
         if !hostBundle.isEmpty, let front = frontmost, front == hostBundle { return false }
-        return true
+        return !frontmostHosts
     }
 }
