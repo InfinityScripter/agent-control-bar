@@ -132,6 +132,17 @@ SIGNED=1
 if [[ -n "$SIGN_ID" ]]; then
   echo "Signing with Developer ID: $SIGN_ID"
   codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS" --sign "$SIGN_ID" "$STAGE_APP"
+elif [[ -n "${ACB_SIGNING_PEM_FILE:-}" ]]; then
+  # Release builds: a self-signed certificate that stays the same across versions, so firewalls
+  # such as Little Snitch recognise an update as the same app. Gatekeeper still treats it as
+  # unnotarized. rcodesign, because codesign only signs with an identity from a keychain.
+  echo "Signing with the release certificate"
+  "$ACB_RCODESIGN_BIN" sign --timestamp-url none --code-signature-flags runtime \
+    --entitlements-xml-file "$ENTITLEMENTS" --pem-file "$ACB_SIGNING_PEM_FILE" "$STAGE_APP"
+  # Pinned to the certificate itself: an ad-hoc seal would pass a plain --verify.
+  CERT_SHA1="$(/usr/bin/openssl x509 -in "$ACB_SIGNING_PEM_FILE" -noout -fingerprint -sha1 \
+    | sed -E 's/.*=//; s/://g')"
+  codesign --verify --deep --strict -R="certificate leaf = H\"$CERT_SHA1\"" "$STAGE_APP"
 else
   echo "No Developer ID certificate found — ad-hoc signing. The result is NOT notarized:"
   echo "  macOS will block the first launch. See README, section \"Gatekeeper\"."
