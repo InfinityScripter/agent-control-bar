@@ -17,9 +17,9 @@ name: Release
 # section fails here, before anything is tagged.
 #
 # The DMG is built by a second job on a macOS runner, from the tag's own checkout, with the
-# same `./build.sh --dmg` a maintainer would run by hand. It is ad-hoc signed and not
-# notarized: the runner has no Developer ID certificate, which is also the state every
-# release so far has shipped in (README, "Gatekeeper"). Uploaded with --clobber so re-running
+# same `./build.sh --dmg` a maintainer would run by hand. It is signed with a self-signed
+# release certificate (the ACB_SIGNING_PEM_B64 secret) and not notarized: the runner has no
+# Developer ID certificate (README, "Gatekeeper"). Uploaded with --clobber so re-running
 # the workflow for an existing release replaces the asset instead of failing on it. The app's
 # one-click update installs exactly this file, checked against the size and sha256 the
 # releases API reports for it — and against `<dmg>.sig`, an Ed25519 signature made here with
@@ -142,12 +142,41 @@ jobs:
         with:
           ref: refs/tags/${{ needs.publish.outputs.tag }}
           persist-credentials: false
+          # Full history for the main-ancestry check below.
+          fetch-depth: 0
 
       # The Finder window layout inside build.sh needs a Finder that accepts Apple events; on a
       # runner that step reports itself skipped and the image still carries the app and the
       # Applications shortcut. The job timeout is the guard against it hanging instead.
+      # The app is signed with the self-signed ACB_SIGNING_PEM_B64 certificate (see build.sh);
+      # the key goes only to commits already on main, never to a dispatch naming another commit.
       - name: Build the DMG
-        run: ./build.sh --dmg
+        shell: bash
+        env:
+          ACB_SIGNING_PEM_B64: ${{ secrets.ACB_SIGNING_PEM_B64 }}
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
+          : "${ACB_SIGNING_PEM_B64:?The ACB_SIGNING_PEM_B64 secret is not set}"
+
+          umask 077
+          signing_dir="$(mktemp -d "$RUNNER_TEMP/acb-signing.XXXXXXXX")"
+          trap 'rm -rf -- "$signing_dir"' EXIT
+
+          asset=apple-codesign-0.29.0-x86_64-apple-darwin.tar.gz
+          curl --fail --silent --show-error --location \
+            "https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign/0.29.0/$asset" \
+            -o "$signing_dir/$asset"
+          echo "14ef11bedd51a8d95eafd767939ae96d5900e5a61511bef75bb21db6e7c74140  $signing_dir/$asset" \
+            | shasum -a 256 -c -
+          tar -xzf "$signing_dir/$asset" -C "$signing_dir" --strip-components 1
+
+          export ACB_RCODESIGN_BIN="$signing_dir/rcodesign"
+          export ACB_SIGNING_PEM_FILE="$signing_dir/signing.pem"
+          printf '%s' "$ACB_SIGNING_PEM_B64" | openssl base64 -d -A -out "$ACB_SIGNING_PEM_FILE"
+          unset ACB_SIGNING_PEM_B64
+
+          ./build.sh --dmg
 
       - name: Hand the DMG to the upload job
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
